@@ -1,0 +1,201 @@
+"""LangGraph pipeline for the Trend Discovery run.
+
+    START ─┬─> collect_google_trends ─┐
+           ├─> collect_reddit ────────┤
+           ├─> collect_rss ───────────┼─> merge_and_dedupe ─> enrich_with_claude ─> persist ─> END
+           └─> collect_youtube ───────┘
+
+Collector nodes fan out from START and run concurrently; LangGraph waits for
+all four before running `merge_and_dedupe` (fan-in). Using a graph instead of
+a plain `asyncio.gather` buys two things: LangGraph automatically exports
+per-node traces to LangSmith when `LANGCHAIN_TRACING_V2`/`LANGCHAIN_API_KEY`
+are set (nothing else to wire up), and `enrich_with_claude` only ever sees
+`new_items` — trends already in the DB never reach the LLM node again, which
+is what keeps Claude token spend bounded as the trend feed grows.
+"""
+
+from __future__ import annotations
+
+import logging
+import operator
+import uuid
+from typing import Annotated, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from sqlalchemy import select, tuple_
+from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agents.trend_analyzer.collectors.base import Collector
+from app.agents.trend_analyzer.collectors.google_trends import GoogleTrendsCollector
+from app.agents.trend_analyzer.collectors.reddit import RedditCollector
+from app.agents.trend_analyzer.collectors.rss import RSSCollector
+from app.agents.trend_analyzer.collectors.youtube import YouTubeCollector
+from app.agents.trend_analyzer.enrichment import enrich_items
+from app.agents.trend_analyzer.schemas import (
+    EnrichedTrendItem,
+    RawTrendItem,
+    RunResult,
+    SourceResult,
+    TrendSource,
+)
+from app.db.models import Trend
+from app.db.session import async_session_factory
+
+logger = logging.getLogger(__name__)
+
+
+def _merge_source_results(
+    a: dict[str, SourceResult], b: dict[str, SourceResult]
+) -> dict[str, SourceResult]:
+    return {**a, **b}
+
+
+class TrendGraphState(TypedDict):
+    raw_items: Annotated[list[RawTrendItem], operator.add]
+    run_summary: Annotated[dict[str, SourceResult], _merge_source_results]
+    new_items: list[RawTrendItem]
+    enriched_items: list[EnrichedTrendItem]
+
+
+def _make_collector_node(source: TrendSource, collector: Collector):
+    async def node(_state: TrendGraphState) -> dict:
+        try:
+            items = await collector.collect()
+        except Exception as exc:
+            logger.exception("Collector %s failed", source.value)
+            return {"raw_items": [], "run_summary": {source.value: SourceResult(source=source, error=str(exc))}}
+        return {
+            "raw_items": items,
+            "run_summary": {source.value: SourceResult(source=source, item_count=len(items))},
+        }
+
+    return node
+
+
+async def _existing_pairs(session: AsyncSession, items: list[RawTrendItem]) -> set[tuple[str, str]]:
+    if not items:
+        return set()
+    pairs = [(item.source.value, item.url) for item in items]
+    stmt = select(Trend.source, Trend.url).where(tuple_(Trend.source, Trend.url).in_(pairs))
+    result = await session.execute(stmt)
+    return {(row.source, row.url) for row in result}
+
+
+async def _merge_and_dedupe_node(state: TrendGraphState) -> dict:
+    seen: set[tuple[str, str]] = set()
+    unique_items: list[RawTrendItem] = []
+    for item in state["raw_items"]:
+        key = (item.source.value, item.url)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_items.append(item)
+
+    async with async_session_factory() as session:
+        existing = await _existing_pairs(session, unique_items)
+
+    new_items = [item for item in unique_items if (item.source.value, item.url) not in existing]
+    return {"new_items": new_items}
+
+
+async def _enrich_with_claude_node(state: TrendGraphState) -> dict:
+    enriched = await enrich_items(state["new_items"])
+    return {"enriched_items": enriched}
+
+
+async def _upsert(session: AsyncSession, enriched_items: list[EnrichedTrendItem]) -> None:
+    rows = [
+        {
+            "id": uuid.uuid4(),
+            "source": enriched.item.source.value,
+            "title": enriched.item.title,
+            "description": enriched.item.description,
+            "url": enriched.item.url,
+            "score": enriched.item.score,
+            "category": enriched.category,
+            "insight": enriched.insight,
+            "raw_metadata": enriched.item.raw_metadata,
+            "discovered_at": enriched.item.discovered_at,
+        }
+        for enriched in enriched_items
+    ]
+    dialect_name = session.bind.dialect.name if session.bind is not None else "postgresql"
+    insert = postgresql.insert if dialect_name == "postgresql" else sqlite.insert
+    stmt = insert(Trend).values(rows).on_conflict_do_nothing(index_elements=["source", "url"])
+    await session.execute(stmt)
+
+
+async def _persist_node(state: TrendGraphState) -> dict:
+    enriched_items = state["enriched_items"]
+    if enriched_items:
+        async with async_session_factory() as session:
+            await _upsert(session, enriched_items)
+            await session.commit()
+    return {}
+
+
+_DEFAULT_COLLECTORS: dict[str, tuple[TrendSource, Collector]] = {
+    "collect_google_trends": (TrendSource.GOOGLE_TRENDS, GoogleTrendsCollector()),
+    "collect_reddit": (TrendSource.REDDIT, RedditCollector()),
+    "collect_rss": (TrendSource.RSS, RSSCollector()),
+    "collect_youtube": (TrendSource.YOUTUBE, YouTubeCollector()),
+}
+
+
+def _build_graph(collectors: dict[str, tuple[TrendSource, Collector]] | None = None):
+    """Build the Trend Discovery graph. `collectors` defaults to the real,
+    network-calling ones; tests pass stub collectors here instead of
+    patching the module-level singleton, so the graph's wiring (fan-out,
+    dedupe, error isolation) can be verified without touching the network or
+    the Anthropic API.
+    """
+    graph = StateGraph(TrendGraphState)
+    collectors = collectors if collectors is not None else _DEFAULT_COLLECTORS
+
+    for node_name, (source, collector) in collectors.items():
+        graph.add_node(node_name, _make_collector_node(source, collector))
+    graph.add_node("merge_and_dedupe", _merge_and_dedupe_node)
+    graph.add_node("enrich_with_claude", _enrich_with_claude_node)
+    graph.add_node("persist", _persist_node)
+
+    for node_name in collectors:
+        graph.add_edge(START, node_name)
+        graph.add_edge(node_name, "merge_and_dedupe")
+    graph.add_edge("merge_and_dedupe", "enrich_with_claude")
+    graph.add_edge("enrich_with_claude", "persist")
+    graph.add_edge("persist", END)
+
+    return graph.compile()
+
+
+_trend_graph = _build_graph()
+
+# Last run's per-source outcome, kept in-memory for the GET /sources status
+# endpoint (item counts/errors from a run aren't persisted to the DB — only
+# the trends themselves are). Single-process only; fine for the APScheduler
+# in-process MVP described in the build plan.
+_last_run_summary: dict[str, SourceResult] = {}
+
+
+def get_last_run_summary() -> dict[str, SourceResult]:
+    return dict(_last_run_summary)
+
+
+async def run_collection() -> RunResult:
+    """Run one full Trend Discovery pass. Used by both the APScheduler job and
+    the manual `POST /trend-analyzer/collect` endpoint."""
+    global _last_run_summary
+
+    initial_state: TrendGraphState = {
+        "raw_items": [],
+        "run_summary": {},
+        "new_items": [],
+        "enriched_items": [],
+    }
+    final_state = await _trend_graph.ainvoke(initial_state)
+    _last_run_summary = dict(final_state["run_summary"])
+    return RunResult(
+        new_item_count=len(final_state["enriched_items"]),
+        source_results=list(final_state["run_summary"].values()),
+    )

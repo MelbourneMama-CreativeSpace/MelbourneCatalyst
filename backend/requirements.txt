@@ -4,3 +4,18 @@ pydantic==2.11.3
 pydantic-settings==2.9.1
 python-dotenv==1.1.0
 httpx==0.28.1
+
+# Database
+sqlalchemy[asyncio]==2.0.51
+asyncpg==0.30.0
+alembic==1.18.5
+
+# Trend Analyzer
+apscheduler==3.11.3
+# pytrends (last released Apr 2023, unmaintained, breaks on Google anti-bot
+# changes) replaced by pytrends-modern: same sync API, built-in retry/backoff
+# and user-agent rotation, actively maintained.
+pytrends-modern==0.2.12
+feedparser==6.0.12
+langgraph==1.2.9
+anthropic==0.116.0

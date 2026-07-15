@@ -2,6 +2,8 @@
 
 from fastapi import APIRouter
 
+from app.api.v1.endpoints.trends import router as trends_router
+
 api_router = APIRouter()
 
 
@@ -11,10 +13,7 @@ async def company_analyzer_status():
     return {"module": "Company Analyzer", "status": "active", "agents": ["BusinessAnalyst", "CompetitorResearch", "KnowledgeManager"]}
 
 
-@api_router.get("/trend-analyzer", tags=["Trend Analyzer"])
-async def trend_analyzer_status():
-    """Trend Analyzer module status."""
-    return {"module": "Trend Analyzer", "status": "active", "agents": ["TrendDiscovery", "TrendMatching", "PerformanceDiscovery"]}
+api_router.include_router(trends_router, prefix="/trend-analyzer", tags=["Trend Analyzer"])
 
 
 @api_router.get("/content-management", tags=["Content Management"])

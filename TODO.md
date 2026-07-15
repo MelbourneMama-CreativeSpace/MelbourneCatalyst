@@ -14,15 +14,15 @@
 - [x] Set up frontend (Next.js 15 + TypeScript + shadcn/ui)
 - [x] Set up backend (Python FastAPI)
 - [ ] Configure CI/CD pipeline
-- [ ] Set up Docker containers (frontend, backend, database)
-- [ ] Configure environment variables & secrets management
+- [x] Set up Docker containers (frontend, backend — no database container; Supabase is hosted/remote)
+- [x] Configure environment variables & secrets management (`.env.example` covers Trend Analyzer config; still no secrets manager for production)
 
 ### Database & Storage
-- [ ] Set up PostgreSQL database
-- [ ] Design database schema (companies, campaigns, analytics, etc.)
-- [ ] Create database migrations
+- [x] Set up PostgreSQL database (Supabase, connected via `DATABASE_URL`)
+- [x] Design database schema (only `trends` so far — companies/campaigns/analytics tables land with their respective modules)
+- [x] Create database migrations (Alembic, `backend/alembic/`)
 - [ ] Set up vector database for Knowledge Base (e.g., Pinecone, Weaviate, or pgvector)
-- [ ] Implement database connection pooling
+- [x] Implement database connection pooling (SQLAlchemy async engine, default pool)
 
 ### Authentication & Authorization
 - [ ] Implement user authentication (JWT / OAuth)
@@ -99,16 +99,16 @@
 ## Phase 4: Trend Analyzer
 
 ### Trend Discovery
-- [ ] Integrate Google Trends API
-- [ ] Build Reddit trending topics scraper
-- [ ] Implement YouTube trending analysis
-- [ ] Integrate LinkedIn trending topics
-- [ ] Build X (Twitter) trends collector
-- [ ] Implement TikTok trends analysis
-- [ ] Create RSS feed aggregator
-- [ ] Build news website monitor
-- [ ] Implement industry blog tracker
-- [ ] Create unified trend feed
+- [x] Integrate Google Trends API (via `pytrends-modern`, no key required)
+- [x] Build Reddit trending topics scraper (public JSON endpoints, no auth)
+- [x] Implement YouTube trending analysis (YouTube Data API v3, needs `YOUTUBE_API_KEY`)
+- [ ] Integrate LinkedIn trending topics (needs paid/OAuth API access — deferred)
+- [ ] Build X (Twitter) trends collector (needs paid/OAuth API access — deferred)
+- [ ] Implement TikTok trends analysis (needs paid/OAuth API access — deferred)
+- [x] Create RSS feed aggregator
+- [x] Build news website monitor (covered by the RSS/news feed aggregator above)
+- [x] Implement industry blog tracker (covered by the RSS/news feed aggregator above)
+- [x] Create unified trend feed (LangGraph pipeline → Supabase `trends` table → `GET /api/v1/trend-analyzer` → `/trends` dashboard)
 
 ### Trend Matching
 - [ ] Build niche relevance scoring algorithm
