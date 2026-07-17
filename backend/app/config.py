@@ -38,6 +38,20 @@ class Settings(BaseSettings):
     YOUTUBE_API_KEY: str = ""
     YOUTUBE_SEARCH_QUERIES: list[str] = ["marketing trends", "social media strategy"]
 
+    # X / Twitter — API v2 recent search needs a paid developer tier
+    TWITTER_BEARER_TOKEN: str = ""
+    TWITTER_SEARCH_QUERIES: list[str] = ["marketing trends", "social media strategy"]
+
+    # Instagram — Graph API hashtag search needs a Business/Creator account
+    INSTAGRAM_ACCESS_TOKEN: str = ""
+    INSTAGRAM_BUSINESS_ACCOUNT_ID: str = ""
+    INSTAGRAM_HASHTAGS: list[str] = ["marketing", "socialmedia"]
+
+    # TikTok — Research API needs academic/institutional approval
+    TIKTOK_CLIENT_KEY: str = ""
+    TIKTOK_CLIENT_SECRET: str = ""
+    TIKTOK_SEARCH_KEYWORDS: list[str] = ["marketing trends", "social media"]
+
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 

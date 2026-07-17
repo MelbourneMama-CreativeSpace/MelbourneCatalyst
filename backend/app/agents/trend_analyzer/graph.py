@@ -2,11 +2,14 @@
 
     START ─┬─> collect_google_trends ─┐
            ├─> collect_reddit ────────┤
-           ├─> collect_rss ───────────┼─> merge_and_dedupe ─> enrich_with_claude ─> persist ─> END
-           └─> collect_youtube ───────┘
+           ├─> collect_rss ───────────┤
+           ├─> collect_youtube ───────┼─> merge_and_dedupe ─> enrich_with_claude ─> persist ─> END
+           ├─> collect_twitter ───────┤
+           ├─> collect_instagram ─────┤
+           └─> collect_tiktok ────────┘
 
 Collector nodes fan out from START and run concurrently; LangGraph waits for
-all four before running `merge_and_dedupe` (fan-in). Using a graph instead of
+all seven before running `merge_and_dedupe` (fan-in). Using a graph instead of
 a plain `asyncio.gather` buys two things: LangGraph automatically exports
 per-node traces to LangSmith when `LANGCHAIN_TRACING_V2`/`LANGCHAIN_API_KEY`
 are set (nothing else to wire up), and `enrich_with_claude` only ever sees
@@ -28,8 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.trend_analyzer.collectors.base import Collector
 from app.agents.trend_analyzer.collectors.google_trends import GoogleTrendsCollector
+from app.agents.trend_analyzer.collectors.instagram import InstagramCollector
 from app.agents.trend_analyzer.collectors.reddit import RedditCollector
 from app.agents.trend_analyzer.collectors.rss import RSSCollector
+from app.agents.trend_analyzer.collectors.tiktok import TikTokCollector
+from app.agents.trend_analyzer.collectors.twitter import TwitterCollector
 from app.agents.trend_analyzer.collectors.youtube import YouTubeCollector
 from app.agents.trend_analyzer.enrichment import enrich_items
 from app.agents.trend_analyzer.schemas import (
@@ -140,6 +146,9 @@ _DEFAULT_COLLECTORS: dict[str, tuple[TrendSource, Collector]] = {
     "collect_reddit": (TrendSource.REDDIT, RedditCollector()),
     "collect_rss": (TrendSource.RSS, RSSCollector()),
     "collect_youtube": (TrendSource.YOUTUBE, YouTubeCollector()),
+    "collect_twitter": (TrendSource.TWITTER, TwitterCollector()),
+    "collect_instagram": (TrendSource.INSTAGRAM, InstagramCollector()),
+    "collect_tiktok": (TrendSource.TIKTOK, TikTokCollector()),
 }
 
 

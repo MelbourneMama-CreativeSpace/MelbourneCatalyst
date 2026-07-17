@@ -7,6 +7,9 @@ const SOURCE_LABELS: Record<string, string> = {
   reddit: "Reddit",
   rss: "RSS / News",
   youtube: "YouTube",
+  twitter: "X / Twitter",
+  instagram: "Instagram",
+  tiktok: "TikTok",
 };
 
 function formatRelativeTime(iso: string): string {

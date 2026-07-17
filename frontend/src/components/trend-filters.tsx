@@ -8,6 +8,9 @@ const SOURCES = [
   { value: "reddit", label: "Reddit" },
   { value: "rss", label: "RSS / News" },
   { value: "youtube", label: "YouTube" },
+  { value: "twitter", label: "X / Twitter" },
+  { value: "instagram", label: "Instagram" },
+  { value: "tiktok", label: "TikTok" },
 ];
 
 const CATEGORIES = [

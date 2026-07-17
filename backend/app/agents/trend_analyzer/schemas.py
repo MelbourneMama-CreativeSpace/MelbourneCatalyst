@@ -17,6 +17,9 @@ class TrendSource(StrEnum):
     REDDIT = "reddit"
     RSS = "rss"
     YOUTUBE = "youtube"
+    TWITTER = "twitter"
+    INSTAGRAM = "instagram"
+    TIKTOK = "tiktok"
 
 
 @dataclass(slots=True)

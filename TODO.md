@@ -102,13 +102,14 @@
 - [x] Integrate Google Trends API (via `pytrends-modern`, no key required)
 - [x] Build Reddit trending topics scraper (public JSON endpoints, no auth)
 - [x] Implement YouTube trending analysis (YouTube Data API v3, needs `YOUTUBE_API_KEY`)
-- [ ] Integrate LinkedIn trending topics (needs paid/OAuth API access — deferred)
-- [ ] Build X (Twitter) trends collector (needs paid/OAuth API access — deferred)
-- [ ] Implement TikTok trends analysis (needs paid/OAuth API access — deferred)
+- [ ] Integrate LinkedIn trending topics (no public trends API exists outside approved Marketing Partners — not attempted, would require scraping)
+- [x] Build X (Twitter) trends collector (X API v2 recent search; needs a paid `TWITTER_BEARER_TOKEN` — free tier can't search)
+- [x] Implement TikTok trends analysis (TikTok Research API; needs `TIKTOK_CLIENT_KEY`/`SECRET` from an academic/institutional grant — most teams can't get access)
+- [x] Add Instagram trends collector (Graph API hashtag search; needs `INSTAGRAM_ACCESS_TOKEN` + a Business/Creator account behind a Meta app) — not in the original checklist, added alongside X/TikTok
 - [x] Create RSS feed aggregator
 - [x] Build news website monitor (covered by the RSS/news feed aggregator above)
 - [x] Implement industry blog tracker (covered by the RSS/news feed aggregator above)
-- [x] Create unified trend feed (LangGraph pipeline → Supabase `trends` table → `GET /api/v1/trend-analyzer` → `/trends` dashboard)
+- [x] Create unified trend feed (LangGraph pipeline → Supabase `trends` table → `GET /api/v1/trend-analyzer` → `/trends` dashboard) — now spans 7 sources: Google Trends, Reddit, RSS, YouTube, X/Twitter, Instagram, TikTok
 
 ### Trend Matching
 - [ ] Build niche relevance scoring algorithm
