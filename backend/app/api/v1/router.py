@@ -2,17 +2,16 @@
 
 from fastapi import APIRouter
 
+from app.api.v1.endpoints.companies import router as companies_router
+from app.api.v1.endpoints.knowledge_base import router as knowledge_base_router
 from app.api.v1.endpoints.trends import router as trends_router
 
 api_router = APIRouter()
 
-
-@api_router.get("/company-analyzer", tags=["Company Analyzer"])
-async def company_analyzer_status():
-    """Company Analyzer module status."""
-    return {"module": "Company Analyzer", "status": "active", "agents": ["BusinessAnalyst", "CompetitorResearch", "KnowledgeManager"]}
-
-
+api_router.include_router(companies_router, prefix="/companies", tags=["Company Analyzer"])
+api_router.include_router(
+    knowledge_base_router, prefix="/knowledge-base", tags=["Knowledge Base"]
+)
 api_router.include_router(trends_router, prefix="/trend-analyzer", tags=["Trend Analyzer"])
 
 

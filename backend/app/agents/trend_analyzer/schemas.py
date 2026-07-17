@@ -37,11 +37,17 @@ class RawTrendItem:
 
 @dataclass(slots=True)
 class EnrichedTrendItem:
-    """A `RawTrendItem` plus Claude-generated category/insight, ready to persist."""
+    """A `RawTrendItem` plus Claude-generated category/insight, ready to persist.
+
+    `relevance_score` is filled in later by the graph's `score_relevance`
+    node (against the current company's niche keywords). Stays None when no
+    company has been onboarded, or when the KB embedding call failed.
+    """
 
     item: RawTrendItem
     category: str
     insight: str
+    relevance_score: float | None = None
 
 
 @dataclass(slots=True)
