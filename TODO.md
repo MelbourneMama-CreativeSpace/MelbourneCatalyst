@@ -41,23 +41,23 @@
 ## Phase 2: Shared Knowledge Base
 
 ### Knowledge Base Core
-- [ ] Design knowledge base schema
-- [ ] Implement document ingestion pipeline
-- [ ] Create vector embedding generation
-- [ ] Implement semantic search & retrieval
-- [ ] Build knowledge base CRUD API
+- [x] Design knowledge base schema (`documents` table with `pgvector`-backed `embedding` column, `companies` FK)
+- [x] Implement document ingestion pipeline (Company Analyzer graph: scrape → chunk → embed → persist)
+- [x] Create vector embedding generation (`voyage-3-lite` via `AsyncVoyageClient` wrapper, batching + graceful failure)
+- [x] Implement semantic search & retrieval (`similarity_search` via pgvector cosine distance)
+- [x] Build knowledge base CRUD API (`GET /api/v1/knowledge-base/search`; write path is currently agent-only, no manual CRUD endpoints yet)
 
 ### Data Sources Integration
-- [ ] Website content scraper
-- [ ] Social media profile importer
-- [ ] Blog/article indexer
-- [ ] Product page parser
+- [x] Website content scraper (httpx + trafilatura main-content extraction; discovers /, /about, /services, /products, /team)
+- [ ] Social media profile importer (deferred — same OAuth/API-tier issues as trend collectors)
+- [ ] Blog/article indexer (partly covered by the RSS trend collector; deferred as a KB source)
+- [ ] Product page parser (covered by the website scraper's page-discovery loop today; specialised extraction deferred)
 - [ ] Business document uploader (PDF, DOCX, etc.)
 
 ### Knowledge Base Management
-- [ ] Build knowledge base dashboard UI
+- [ ] Build knowledge base dashboard UI (search UI exists via the API; no dedicated dashboard yet)
 - [ ] Create data freshness indicators
-- [ ] Implement automatic re-indexing
+- [ ] Implement automatic re-indexing (re-onboarding a company re-runs the pipeline; incremental sync deferred)
 - [ ] Add manual data entry interface
 - [ ] Build knowledge base search UI
 
@@ -66,14 +66,14 @@
 ## Phase 3: Company Analyzer
 
 ### Business Analyst Agent
-- [ ] Implement company profile analysis
-- [ ] Build business model identification
-- [ ] Create target audience profiling
-- [ ] Implement brand voice analysis
-- [ ] Build products & services cataloging
-- [ ] Create market positioning assessment
-- [ ] Build company onboarding wizard UI
-- [ ] Create business analysis dashboard
+- [x] Implement company profile analysis (LangGraph pipeline + Claude tool-use extractor)
+- [x] Build business model identification (extracted field on Company profile)
+- [x] Create target audience profiling (extracted field)
+- [x] Implement brand voice analysis (extracted field)
+- [ ] Build products & services cataloging (not extracted as a distinct field yet; captured in scraped content + summary — dedicated extraction deferred)
+- [x] Create market positioning assessment (extracted `unique_value_prop` + `summary` on the profile)
+- [x] Build company onboarding wizard UI (`/onboarding` — URL-only for the MVP; full multi-step wizard deferred)
+- [x] Create business analysis dashboard (`/companies/[id]` — extracted profile view with live status polling)
 
 ### Competitor Research Agent
 - [ ] Implement competitor discovery (manual + AI-assisted)
@@ -112,13 +112,13 @@
 - [x] Create unified trend feed (LangGraph pipeline → Supabase `trends` table → `GET /api/v1/trend-analyzer` → `/trends` dashboard) — now spans 7 sources: Google Trends, Reddit, RSS, YouTube, X/Twitter, Instagram, TikTok
 
 ### Trend Matching
-- [ ] Build niche relevance scoring algorithm
-- [ ] Implement campaign history comparison
-- [ ] Create customer interest matching
-- [ ] Build competitor activity correlation
-- [ ] Implement trend priority ranking
-- [ ] Create trend recommendation engine
-- [ ] Build trend matching dashboard UI
+- [x] Build niche relevance scoring algorithm (`score_relevance` node — cosine similarity between trend title and company niche_keywords embeddings)
+- [ ] Implement campaign history comparison (needs Phase 5 campaign history; deferred)
+- [x] Create customer interest matching (via niche_keywords; more sophisticated persona matching deferred)
+- [ ] Build competitor activity correlation (needs Competitor Research Agent from Phase 3; deferred)
+- [x] Implement trend priority ranking (`min_relevance` filter + relevance-badge sort in dashboard)
+- [ ] Create trend recommendation engine (currently a filter; proactive recommendations deferred)
+- [x] Build trend matching dashboard UI (relevance badge on `TrendCard`, `min_relevance` filter in `/trends`)
 
 ### Performance Discovery
 - [ ] Implement content performance analyzer

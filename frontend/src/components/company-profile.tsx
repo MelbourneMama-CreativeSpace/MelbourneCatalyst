@@ -1,0 +1,139 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getCompany, type Company } from "@/lib/api";
+
+const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set(["complete", "failed"]);
+
+export function CompanyProfile({ initialCompany }: { initialCompany: Company }) {
+  const [company, setCompany] = useState(initialCompany);
+
+  // Poll until the onboarding pipeline reaches a terminal status.
+  useEffect(() => {
+    if (TERMINAL_STATUSES.has(company.status)) return;
+    const timer = setInterval(async () => {
+      try {
+        const fresh = await getCompany(company.id);
+        setCompany(fresh);
+        if (TERMINAL_STATUSES.has(fresh.status)) clearInterval(timer);
+      } catch {
+        // Transient network errors are fine — the next tick retries.
+      }
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [company.id, company.status]);
+
+  const statusVariant = company.status === "failed" ? "outline" : "default";
+
+  return (
+    <div className="mt-6 flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">{company.name ?? company.url}</h1>
+          <a
+            href={company.url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-sm text-muted-foreground hover:underline"
+          >
+            {company.url}
+          </a>
+        </div>
+        <Badge variant={statusVariant}>{company.status}</Badge>
+      </div>
+
+      {company.status === "failed" && (
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm text-destructive">
+              Onboarding failed{company.status_error ? `: ${company.status_error}` : "."}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {!TERMINAL_STATUSES.has(company.status) && (
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm text-muted-foreground">
+              Analyzing the website. This usually takes ~30 seconds. This page updates as the
+              agent completes each step (currently: <code>{company.status}</code>).
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {company.summary && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Summary</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm leading-relaxed">{company.summary}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <ProfileField label="Industry" value={company.industry} />
+        <ProfileField label="Business model" value={company.business_model} />
+        <ProfileField label="Target audience" value={company.target_audience} />
+        <ProfileField label="Brand voice" value={company.brand_voice} />
+        <ProfileField label="Unique value prop" value={company.unique_value_prop} full />
+      </div>
+
+      {company.niche_keywords && company.niche_keywords.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Niche keywords</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-2">
+              {company.niche_keywords.map((keyword) => (
+                <Badge key={keyword} variant="outline">
+                  {keyword}
+                </Badge>
+              ))}
+            </div>
+            <p className="mt-4 text-xs text-muted-foreground">
+              The Trend Analyzer uses these keywords to score how relevant each trending
+              topic is to your business.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {TERMINAL_STATUSES.has(company.status) && (
+        <div className="flex gap-3">
+          <Button render={<Link href="/trends">View matched trends</Link>} nativeButton={false} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProfileField({
+  label,
+  value,
+  full,
+}: {
+  label: string;
+  value: string | null;
+  full?: boolean;
+}) {
+  return (
+    <Card className={full ? "md:col-span-2" : undefined}>
+      <CardHeader>
+        <CardTitle className="text-sm text-muted-foreground">{label}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm">{value ?? <span className="text-muted-foreground">—</span>}</p>
+      </CardContent>
+    </Card>
+  );
+}

@@ -30,6 +30,7 @@ async def list_trends(
     source: str | None = None,
     category: str | None = None,
     since: datetime | None = None,
+    min_relevance: float | None = Query(default=None, ge=0.0, le=1.0),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
@@ -41,6 +42,8 @@ async def list_trends(
         filters.append(Trend.category == category)
     if since:
         filters.append(Trend.discovered_at >= since)
+    if min_relevance is not None:
+        filters.append(Trend.relevance_score >= min_relevance)
 
     count_stmt = select(func.count()).select_from(Trend)
     list_stmt = select(Trend).order_by(Trend.discovered_at.desc()).limit(limit).offset(offset)

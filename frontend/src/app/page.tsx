@@ -35,6 +35,7 @@ const modules = [
     bgGlow: "bg-violet-500/10",
     borderColor: "border-violet-500/20",
     delay: "delay-100",
+    href: "/onboarding",
   },
   {
     title: "Trend Analyzer",

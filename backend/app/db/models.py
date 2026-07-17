@@ -1,18 +1,36 @@
-"""SQLAlchemy ORM models for the Trend Analyzer."""
+"""SQLAlchemy ORM models: trends, companies, and the shared documents store."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, String, UniqueConstraint, Uuid, func
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
 
 # JSONB on Postgres (Supabase), plain JSON on SQLite (used in tests).
 _MetadataType = JSON().with_variant(JSONB(), "postgresql")
+# Postgres ARRAY(String) for niche_keywords; JSON list on SQLite for tests.
+_StringArrayType = JSON().with_variant(ARRAY(String()), "postgresql")
+
+# Voyage voyage-3-lite embedding dimensionality.
+EMBEDDING_DIM = 1024
+# Vector column on Postgres via pgvector; JSON list on SQLite so the ORM
+# still loads/saves it (semantic-search queries are Postgres-only anyway).
+_EmbeddingType = JSON().with_variant(Vector(EMBEDDING_DIM), "postgresql")
 
 
 class Trend(Base):
@@ -27,6 +45,60 @@ class Trend(Base):
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
     category: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     insight: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Filled in by the Trend Analyzer graph's score_relevance node against
+    # the current company's niche_keywords. Null when no company is
+    # onboarded, or when scoring failed.
+    relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     raw_metadata: Mapped[dict] = mapped_column(_MetadataType, nullable=False, default=dict)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Company(Base):
+    __tablename__ = "companies"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False, unique=True)
+    # `name` is nullable because the extractor fills it in during
+    # onboarding — it doesn't exist yet when the pending row is created.
+    name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Onboarding lifecycle: pending -> scraping -> extracting -> complete | failed.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # All extracted profile fields are nullable so the row can exist in a
+    # pending state before Claude has filled it in.
+    industry: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    business_model: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    target_audience: Mapped[str | None] = mapped_column(String, nullable=True)
+    brand_voice: Mapped[str | None] = mapped_column(String, nullable=True)
+    unique_value_prop: Mapped[str | None] = mapped_column(String, nullable=True)
+    niche_keywords: Mapped[list[str] | None] = mapped_column(_StringArrayType, nullable=True)
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    raw_metadata: Mapped[dict] = mapped_column(_MetadataType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    documents: Mapped[list[Document]] = relationship(back_populates="company", cascade="all, delete-orphan")
+
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # e.g. "website", "blog", "product_page" — future: "social_post", "doc_upload".
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(nullable=False)
+    content: Mapped[str] = mapped_column(String, nullable=False)
+    embedding = mapped_column(_EmbeddingType, nullable=True)
+    raw_metadata: Mapped[dict] = mapped_column(_MetadataType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    company: Mapped[Company] = relationship(back_populates="documents")

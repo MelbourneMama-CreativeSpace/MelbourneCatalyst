@@ -2,11 +2,11 @@
 
     START ─┬─> collect_google_trends ─┐
            ├─> collect_reddit ────────┤
-           ├─> collect_rss ───────────┤
-           ├─> collect_youtube ───────┼─> merge_and_dedupe ─> enrich_with_claude ─> persist ─> END
-           ├─> collect_twitter ───────┤
-           ├─> collect_instagram ─────┤
-           └─> collect_tiktok ────────┘
+           ├─> collect_rss ───────────┤                                             ┌─> score_relevance ─┐
+           ├─> collect_youtube ───────┼─> merge_and_dedupe ─> enrich_with_claude ──┤                     ├─> persist ─> END
+           ├─> collect_twitter ───────┤                                             └────────────────────┘
+           ├─> collect_instagram ─────┤   (score_relevance is a no-op when no company has been onboarded
+           └─> collect_tiktok ────────┘    yet — it just leaves relevance_score NULL on new trends)
 
 Collector nodes fan out from START and run concurrently; LangGraph waits for
 all seven before running `merge_and_dedupe` (fan-in). Using a graph instead of
@@ -38,6 +38,7 @@ from app.agents.trend_analyzer.collectors.rss import RSSCollector
 from app.agents.trend_analyzer.collectors.tiktok import TikTokCollector
 from app.agents.trend_analyzer.collectors.twitter import TwitterCollector
 from app.agents.trend_analyzer.collectors.youtube import YouTubeCollector
+from app.agents.knowledge_base.embeddings import embed_documents
 from app.agents.trend_analyzer.enrichment import enrich_items
 from app.agents.trend_analyzer.schemas import (
     EnrichedTrendItem,
@@ -46,7 +47,7 @@ from app.agents.trend_analyzer.schemas import (
     SourceResult,
     TrendSource,
 )
-from app.db.models import Trend
+from app.db.models import Company, Trend
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,75 @@ async def _enrich_with_claude_node(state: TrendGraphState) -> dict:
     return {"enriched_items": enriched}
 
 
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity in [-1, 1], mapped to [0, 1] by the caller.
+
+    Using pure Python to avoid pulling numpy into hot-path arithmetic for a
+    handful of vectors — numpy is a dep, but its startup cost dominates at
+    these sizes.
+    """
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+async def _score_relevance_node(state: TrendGraphState) -> dict:
+    """Score each new trend against the current company's niche keywords.
+
+    Skips scoring (leaves relevance_score=None) when no company has been
+    onboarded, or when the company has no niche_keywords, or when
+    embeddings fail — any of which is a legitimate operational state,
+    not an error.
+    """
+    enriched_items = state["enriched_items"]
+    if not enriched_items:
+        return {}
+
+    async with async_session_factory() as session:
+        # Single-tenant assumption for MVP: use the most recently updated
+        # complete company as "the" company. Multi-tenancy comes later.
+        stmt = (
+            select(Company)
+            .where(Company.status == "complete")
+            .order_by(Company.updated_at.desc())
+            .limit(1)
+        )
+        company = (await session.execute(stmt)).scalar_one_or_none()
+
+    if company is None or not company.niche_keywords:
+        return {"enriched_items": enriched_items}
+
+    trend_titles = [enriched.item.title for enriched in enriched_items]
+    to_embed = list(company.niche_keywords) + trend_titles
+    embeddings = await embed_documents(to_embed)
+
+    keyword_count = len(company.niche_keywords)
+    keyword_embeddings = embeddings[:keyword_count]
+    trend_embeddings = embeddings[keyword_count:]
+
+    valid_keyword_embeddings = [e for e in keyword_embeddings if e is not None]
+    if not valid_keyword_embeddings:
+        return {"enriched_items": enriched_items}
+
+    scored: list[EnrichedTrendItem] = []
+    for enriched, trend_embedding in zip(enriched_items, trend_embeddings):
+        if trend_embedding is None:
+            scored.append(enriched)
+            continue
+        # Cosine similarity is in [-1, 1]; websites usually cluster > 0, so
+        # normalize to [0, 1] via (x + 1) / 2 rather than clamping — no
+        # information lost and the threshold controls in the UI are natural.
+        best = max(
+            _cosine_similarity(trend_embedding, kw_emb) for kw_emb in valid_keyword_embeddings
+        )
+        scored.append(dataclasses.replace(enriched, relevance_score=(best + 1.0) / 2.0))
+
+    return {"enriched_items": scored}
+
+
 async def _upsert(session: AsyncSession, enriched_items: list[EnrichedTrendItem]) -> None:
     rows = [
         {
@@ -136,6 +206,7 @@ async def _upsert(session: AsyncSession, enriched_items: list[EnrichedTrendItem]
             "score": enriched.item.score,
             "category": enriched.category,
             "insight": enriched.insight,
+            "relevance_score": enriched.relevance_score,
             "raw_metadata": enriched.item.raw_metadata,
             "discovered_at": enriched.item.discovered_at,
         }
@@ -181,13 +252,15 @@ def _build_graph(collectors: dict[str, tuple[TrendSource, Collector]] | None = N
         graph.add_node(node_name, _make_collector_node(source, collector))
     graph.add_node("merge_and_dedupe", _merge_and_dedupe_node)
     graph.add_node("enrich_with_claude", _enrich_with_claude_node)
+    graph.add_node("score_relevance", _score_relevance_node)
     graph.add_node("persist", _persist_node)
 
     for node_name in collectors:
         graph.add_edge(START, node_name)
         graph.add_edge(node_name, "merge_and_dedupe")
     graph.add_edge("merge_and_dedupe", "enrich_with_claude")
-    graph.add_edge("enrich_with_claude", "persist")
+    graph.add_edge("enrich_with_claude", "score_relevance")
+    graph.add_edge("score_relevance", "persist")
     graph.add_edge("persist", END)
 
     return graph.compile()

@@ -19,13 +19,22 @@ function formatRelativeTime(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function formatRelevance(score: number): string {
+  return `${Math.round(score * 100)}% match`;
+}
+
 export function TrendCard({ trend }: { trend: Trend }) {
   return (
     <Card className="hover-lift">
       <CardHeader>
-        <div className="flex items-center justify-between gap-2">
-          <Badge variant="outline">{SOURCE_LABELS[trend.source] ?? trend.source}</Badge>
-          {trend.category && <Badge>{trend.category}</Badge>}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline">{SOURCE_LABELS[trend.source] ?? trend.source}</Badge>
+            {trend.category && <Badge>{trend.category}</Badge>}
+          </div>
+          {trend.relevance_score !== null && (
+            <Badge variant="outline">{formatRelevance(trend.relevance_score)}</Badge>
+          )}
         </div>
         <CardTitle className="line-clamp-2">
           <a href={trend.url} target="_blank" rel="noreferrer" className="hover:underline">

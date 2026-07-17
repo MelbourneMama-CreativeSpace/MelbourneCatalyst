@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.agents.trend_analyzer import graph as graph_module
 from app.agents.trend_analyzer.schemas import EnrichedTrendItem, RawTrendItem, SourceResult, TrendSource
-from app.db.models import Trend
+from app.db.models import Company, Trend
 
 
 def _item(source: TrendSource, title: str, url: str) -> RawTrendItem:
@@ -151,3 +151,72 @@ async def test_run_collection_end_to_end_with_stub_collectors(monkeypatch, test_
     async with test_session_factory() as session:
         rows = (await session.execute(select(Trend))).scalars().all()
     assert len(rows) == 1
+
+
+async def test_score_relevance_node_skips_when_no_company_exists(monkeypatch, test_session_factory):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    enriched = [
+        graph_module.EnrichedTrendItem(
+            item=_item(TrendSource.RSS, "AI news", "https://example.com/ai"),
+            category="technology",
+            insight="matters",
+        )
+    ]
+
+    update = await graph_module._score_relevance_node({"enriched_items": enriched})
+
+    # No company → return enriched_items untouched, relevance_score stays None
+    assert update["enriched_items"][0].relevance_score is None
+
+
+async def test_score_relevance_node_scores_against_company_keywords(
+    monkeypatch, test_session_factory
+):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    async with test_session_factory() as session:
+        session.add(
+            Company(
+                id=uuid.uuid4(),
+                url="https://example.com",
+                status="complete",
+                niche_keywords=["marketing automation", "content strategy"],
+            )
+        )
+        await session.commit()
+
+    async def _fake_embed(texts):
+        # Return unit vectors where the first component encodes which "topic"
+        # each text belongs to. Trend matches keyword[0] more than keyword[1].
+        # Keywords: index 0, 1 → embeddings shaped [1, 0], [0, 1]
+        # Trend title: index 2 → embedding [1, 0] (matches keyword[0])
+        base_dim = 1024
+        result = []
+        for i, _ in enumerate(texts):
+            vec = [0.0] * base_dim
+            if i == 0:
+                vec[0] = 1.0
+            elif i == 1:
+                vec[1] = 1.0
+            else:
+                vec[0] = 1.0
+            result.append(vec)
+        return result
+
+    monkeypatch.setattr(graph_module, "embed_documents", _fake_embed)
+
+    enriched = [
+        graph_module.EnrichedTrendItem(
+            item=_item(TrendSource.RSS, "AI marketing tools", "https://example.com/ai"),
+            category="marketing",
+            insight="matters",
+        )
+    ]
+
+    update = await graph_module._score_relevance_node({"enriched_items": enriched})
+
+    scored = update["enriched_items"][0]
+    assert scored.relevance_score is not None
+    # Cosine sim with [1,0] is 1.0, normalized to (1+1)/2 = 1.0
+    assert scored.relevance_score == 1.0

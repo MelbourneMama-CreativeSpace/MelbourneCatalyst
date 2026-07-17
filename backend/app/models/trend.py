@@ -21,6 +21,7 @@ class TrendOut(BaseModel):
     score: float | None
     category: str | None
     insight: str | None
+    relevance_score: float | None
     discovered_at: datetime
     created_at: datetime
 

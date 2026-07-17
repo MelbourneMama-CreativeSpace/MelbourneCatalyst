@@ -5,12 +5,22 @@ import { TrendFilters } from "@/components/trend-filters";
 import { listTrends } from "@/lib/api";
 
 interface TrendsPageProps {
-  searchParams: Promise<{ source?: string; category?: string }>;
+  searchParams: Promise<{
+    source?: string;
+    category?: string;
+    min_relevance?: string;
+  }>;
 }
 
 export default async function TrendsPage({ searchParams }: TrendsPageProps) {
-  const { source, category } = await searchParams;
-  const { items, total } = await listTrends({ source, category, limit: 24 });
+  const { source, category, min_relevance } = await searchParams;
+  const minRelevanceNumber = min_relevance ? Number(min_relevance) : undefined;
+  const { items, total } = await listTrends({
+    source,
+    category,
+    min_relevance: Number.isFinite(minRelevanceNumber) ? minRelevanceNumber : undefined,
+    limit: 24,
+  });
 
   return (
     <div className="min-h-screen bg-background">
@@ -23,10 +33,14 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
             <h1 className="mt-2 text-3xl font-bold">Trend Analyzer</h1>
             <p className="mt-1 text-muted-foreground">
               {total} trending {total === 1 ? "topic" : "topics"} discovered across Google
-              Trends, Reddit, RSS, and YouTube.
+              Trends, Reddit, RSS, YouTube, X, Instagram, and TikTok.
             </p>
           </div>
-          <TrendFilters currentSource={source} currentCategory={category} />
+          <TrendFilters
+            currentSource={source}
+            currentCategory={category}
+            currentMinRelevance={min_relevance}
+          />
         </div>
 
         {items.length === 0 ? (

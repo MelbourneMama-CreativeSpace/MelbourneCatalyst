@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     TIKTOK_CLIENT_SECRET: str = ""
     TIKTOK_SEARCH_KEYWORDS: list[str] = ["marketing trends", "social media"]
 
+    # Knowledge Base — Voyage AI embeddings (voyage-3-lite is 1024-dim)
+    VOYAGE_API_KEY: str = ""
+    VOYAGE_MODEL: str = "voyage-3-lite"
+
+    # Company Analyzer — onboarding crawl
+    COMPANY_ONBOARDING_MAX_PAGES: int = 10
+
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 

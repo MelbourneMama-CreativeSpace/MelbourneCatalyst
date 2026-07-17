@@ -19,3 +19,13 @@ pytrends-modern==0.2.12
 feedparser==6.0.12
 langgraph==1.2.9
 anthropic==0.116.0
+
+# Knowledge Base + Company Analyzer
+voyageai==0.4.1
+pgvector==0.4.2
+trafilatura==2.1.0
+# trafilatura → justext still imports lxml.html.clean, which was split out
+# of lxml core in 5.x. Pin the standalone package so the import chain works.
+lxml_html_clean==0.4.3
+langchain-text-splitters==1.1.2
+numpy==2.2.1
