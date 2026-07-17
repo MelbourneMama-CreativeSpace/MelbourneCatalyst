@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -43,6 +45,7 @@ const modules = [
     bgGlow: "bg-blue-500/10",
     borderColor: "border-blue-500/20",
     delay: "delay-200",
+    href: "/trends",
   },
   {
     title: "Content Management",
@@ -231,9 +234,8 @@ export default function Home() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {modules.map((module) => {
               const IconComponent = module.icon;
-              return (
+              const card = (
                 <Card
-                  key={module.title}
                   className={`animate-slide-up ${module.delay} group relative overflow-hidden glass border ${module.borderColor} hover-lift cursor-pointer`}
                 >
                   {/* Glow effect */}
@@ -268,6 +270,14 @@ export default function Home() {
                   {/* Shimmer overlay */}
                   <div className="absolute inset-0 animate-shimmer opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
                 </Card>
+              );
+
+              return module.href ? (
+                <Link key={module.title} href={module.href}>
+                  {card}
+                </Link>
+              ) : (
+                <div key={module.title}>{card}</div>
               );
             })}
           </div>
