@@ -40,12 +40,14 @@ export interface SourceStatus {
   total_stored: number;
   last_discovered_at: string | null;
   last_run_at: string | null;
+  last_run_collected_count: number | null;
   last_run_new_items: number | null;
   last_run_error: string | null;
 }
 
 export interface CollectionSourceResult {
   source: string;
+  collected_count: number;
   new_item_count: number;
   error: string | null;
   ran_at: string;

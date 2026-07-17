@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.agents.trend_analyzer import graph as graph_module
-from app.agents.trend_analyzer.schemas import EnrichedTrendItem, RawTrendItem, TrendSource
+from app.agents.trend_analyzer.schemas import EnrichedTrendItem, RawTrendItem, SourceResult, TrendSource
 from app.db.models import Trend
 
 
@@ -79,12 +79,27 @@ async def test_merge_and_dedupe_drops_within_batch_and_already_persisted_duplica
         _item(TrendSource.REDDIT, "Duplicate in batch", "https://reddit.com/dupe"),  # dupe within batch
         _item(TrendSource.RSS, "Genuinely new", "https://example.com/new"),
     ]
+    # As it would actually arrive from the fan-in: one SourceResult per
+    # source, item_count set by the collector nodes, new_item_count not yet
+    # filled in (that's this node's job).
+    run_summary = {
+        "reddit": SourceResult(source=TrendSource.REDDIT, item_count=3),
+        "rss": SourceResult(source=TrendSource.RSS, item_count=1),
+    }
 
-    update = await graph_module._merge_and_dedupe_node({"raw_items": raw_items})
+    update = await graph_module._merge_and_dedupe_node(
+        {"raw_items": raw_items, "run_summary": run_summary}
+    )
 
     new_urls = {item.url for item in update["new_items"]}
     assert new_urls == {"https://reddit.com/dupe", "https://example.com/new"}
     assert len(update["new_items"]) == 2
+
+    # Per-source new_item_count reflects post-dedup contributions, not raw
+    # collected counts: reddit collected 3 but only 1 was genuinely new.
+    assert update["run_summary"]["reddit"].new_item_count == 1
+    assert update["run_summary"]["reddit"].item_count == 3  # unchanged
+    assert update["run_summary"]["rss"].new_item_count == 1
 
 
 async def test_persist_node_upserts_without_duplicating_on_conflict(monkeypatch, test_session_factory):
@@ -130,6 +145,7 @@ async def test_run_collection_end_to_end_with_stub_collectors(monkeypatch, test_
 
     assert len(final_state["enriched_items"]) == 1
     assert final_state["run_summary"]["reddit"].item_count == 1
+    assert final_state["run_summary"]["reddit"].new_item_count == 1
     assert final_state["run_summary"]["rss"].error == "down"
 
     async with test_session_factory() as session:

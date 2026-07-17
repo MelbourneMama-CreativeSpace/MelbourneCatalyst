@@ -19,6 +19,7 @@ is what keeps Claude token spend bounded as the trend feed grows.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import operator
 import uuid
@@ -102,7 +103,21 @@ async def _merge_and_dedupe_node(state: TrendGraphState) -> dict:
         existing = await _existing_pairs(session, unique_items)
 
     new_items = [item for item in unique_items if (item.source.value, item.url) not in existing]
-    return {"new_items": new_items}
+
+    new_counts_by_source: dict[str, int] = {}
+    for item in new_items:
+        new_counts_by_source[item.source.value] = new_counts_by_source.get(item.source.value, 0) + 1
+
+    # Fill in new_item_count on each source's result now that dedup has run;
+    # dataclasses.replace() so item_count/error set by the collector nodes
+    # survive rather than being clobbered by the run_summary reducer's
+    # per-key overwrite (see `_merge_source_results`).
+    updated_run_summary = {
+        source: dataclasses.replace(result, new_item_count=new_counts_by_source.get(source, 0))
+        for source, result in state["run_summary"].items()
+    }
+
+    return {"new_items": new_items, "run_summary": updated_run_summary}
 
 
 async def _enrich_with_claude_node(state: TrendGraphState) -> dict:

@@ -46,10 +46,18 @@ class EnrichedTrendItem:
 
 @dataclass(slots=True)
 class SourceResult:
-    """Per-source outcome of a single collection run, for the /sources status endpoint."""
+    """Per-source outcome of a single collection run, for the /sources status endpoint.
+
+    `item_count` is set by the collector node — how many raw items this
+    source returned. `new_item_count` is filled in later by
+    `merge_and_dedupe` — of those, how many were genuinely new (not already
+    in the DB). Keep both: a source can legitimately collect 10 and persist
+    0 on a re-run, and collapsing that into one field hides it.
+    """
 
     source: TrendSource
     item_count: int = 0
+    new_item_count: int = 0
     error: str | None = None
     ran_at: datetime = field(default_factory=datetime.utcnow)
 

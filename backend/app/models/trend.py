@@ -39,14 +39,21 @@ class SourceStatusOut(BaseModel):
     total_stored: int
     last_discovered_at: datetime | None
     last_run_at: datetime | None
+    last_run_collected_count: int | None
     last_run_new_items: int | None
     last_run_error: str | None
 
 
 class CollectionSourceResult(BaseModel):
-    """Outcome for one source from a single POST /collect invocation."""
+    """Outcome for one source from a single POST /collect invocation.
+
+    `collected_count` is what the collector fetched; `new_item_count` is how
+    many of those were genuinely new (not already in the DB) — a source can
+    legitimately collect 10 and persist 0 on a re-run.
+    """
 
     source: str
+    collected_count: int
     new_item_count: int
     error: str | None
     ran_at: datetime

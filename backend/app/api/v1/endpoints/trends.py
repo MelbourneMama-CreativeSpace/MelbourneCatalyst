@@ -80,7 +80,8 @@ async def source_status(session: AsyncSession = Depends(get_session)) -> list[So
                 total_stored=stored.total_stored if stored else 0,
                 last_discovered_at=stored.last_discovered_at if stored else None,
                 last_run_at=run.ran_at if run else None,
-                last_run_new_items=run.item_count if run else None,
+                last_run_collected_count=run.item_count if run else None,
+                last_run_new_items=run.new_item_count if run else None,
                 last_run_error=run.error if run else None,
             )
         )
@@ -103,7 +104,8 @@ async def trigger_collection() -> CollectionRunResult:
         source_results=[
             CollectionSourceResult(
                 source=source_result.source.value,
-                new_item_count=source_result.item_count,
+                collected_count=source_result.item_count,
+                new_item_count=source_result.new_item_count,
                 error=source_result.error,
                 ran_at=source_result.ran_at,
             )

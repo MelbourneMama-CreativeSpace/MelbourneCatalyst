@@ -104,7 +104,9 @@ async def test_collect_endpoint_invokes_run_collection(monkeypatch, client):
     async def fake_run_collection():
         return RunResult(
             new_item_count=2,
-            source_results=[SourceResult(source=TrendSource.REDDIT, item_count=2)],
+            source_results=[
+                SourceResult(source=TrendSource.REDDIT, item_count=5, new_item_count=2)
+            ],
         )
 
     monkeypatch.setattr(trends_module, "run_collection", fake_run_collection)
@@ -115,3 +117,7 @@ async def test_collect_endpoint_invokes_run_collection(monkeypatch, client):
     body = response.json()
     assert body["new_item_count"] == 2
     assert body["source_results"][0]["source"] == "reddit"
+    # Collected 5 raw items but only 2 were genuinely new — both numbers
+    # must survive the API boundary distinctly, not collapse into one.
+    assert body["source_results"][0]["collected_count"] == 5
+    assert body["source_results"][0]["new_item_count"] == 2
