@@ -13,10 +13,10 @@ export default function TrendsError({
 }) {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-6 text-center">
-      <h1 className="text-2xl font-bold">Couldn't load trends</h1>
+      <h1 className="text-2xl font-bold">Couldn&apos;t load trends</h1>
       <p className="max-w-md text-muted-foreground">
-        The Trend Analyzer API didn't respond as expected. This usually means the backend
-        isn't reachable yet, or its database isn't configured — check{" "}
+        The Trend Analyzer API didn&apos;t respond as expected. This usually means the
+        backend isn&apos;t reachable yet, or its database isn&apos;t configured — check{" "}
         <code className="rounded bg-muted px-1.5 py-0.5">DATABASE_URL</code> in{" "}
         <code className="rounded bg-muted px-1.5 py-0.5">backend/.env</code>.
       </p>
