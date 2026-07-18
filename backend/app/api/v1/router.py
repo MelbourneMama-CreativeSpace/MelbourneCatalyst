@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints.companies import router as companies_router
+from app.api.v1.endpoints.competitor_research import router as competitor_research_router
 from app.api.v1.endpoints.content_management import router as content_management_router
 from app.api.v1.endpoints.knowledge_base import router as knowledge_base_router
 from app.api.v1.endpoints.trends import router as trends_router
@@ -16,6 +17,9 @@ api_router.include_router(
 api_router.include_router(trends_router, prefix="/trend-analyzer", tags=["Trend Analyzer"])
 api_router.include_router(
     content_management_router, prefix="/content-management", tags=["Content Management"]
+)
+api_router.include_router(
+    competitor_research_router, prefix="/competitor-research", tags=["Competitor Research"]
 )
 
 

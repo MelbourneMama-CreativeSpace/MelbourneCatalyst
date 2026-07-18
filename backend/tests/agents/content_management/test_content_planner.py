@@ -136,6 +136,66 @@ async def test_generate_content_plan_skips_malformed_items(monkeypatch):
     assert generated.items[0].title == "Valid item"
 
 
+async def test_generate_content_plan_skips_items_missing_title_or_description(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        content_planner,
+        "_client",
+        _fake_client_returning(
+            [
+                # content_type/platform present, but title/description missing —
+                # previously raised an uncaught KeyError and crashed the whole plan.
+                {"content_type": "post", "platform": "linkedin", "days_from_now": 1},
+                {
+                    "title": "Valid item",
+                    "description": "d",
+                    "content_type": "post",
+                    "platform": "linkedin",
+                    "days_from_now": 1,
+                },
+            ]
+        ),
+    )
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is True
+    assert len(generated.items) == 1
+    assert generated.items[0].title == "Valid item"
+
+
+async def test_generate_content_plan_skips_items_with_non_numeric_days_from_now(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        content_planner,
+        "_client",
+        _fake_client_returning(
+            [
+                {
+                    "title": "Bad days_from_now",
+                    "description": "d",
+                    "content_type": "post",
+                    "platform": "linkedin",
+                    "days_from_now": "soon",
+                },
+                {
+                    "title": "Valid item",
+                    "description": "d",
+                    "content_type": "post",
+                    "platform": "linkedin",
+                    "days_from_now": 1,
+                },
+            ]
+        ),
+    )
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is True
+    assert len(generated.items) == 1
+    assert generated.items[0].title == "Valid item"
+
+
 async def test_generate_content_plan_empty_related_trend_becomes_none(monkeypatch):
     monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(

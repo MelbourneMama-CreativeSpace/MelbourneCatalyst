@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     CONTENT_PLAN_MAX_TRENDS: int = 10
     CONTENT_PLAN_DAYS: int = 14
 
+    # Content Management — Campaign Manager + Brand Collaboration
+    COLLABORATION_MAX_IDEAS: int = 5
+
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 

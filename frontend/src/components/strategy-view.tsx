@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { createContentPlan, getStrategy, type Strategy } from "@/lib/api";
+import { createCollaboration, createContentPlan, getStrategy, type Strategy } from "@/lib/api";
 
 const TERMINAL_STATUSES: ReadonlySet<Strategy["status"]> = new Set(["complete", "failed"]);
 
@@ -15,6 +15,8 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
   const [strategy, setStrategy] = useState(initialStrategy);
   const [generatingPlan, setGeneratingPlan] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [generatingCollaboration, setGeneratingCollaboration] = useState(false);
+  const [collaborationError, setCollaborationError] = useState<string | null>(null);
 
   // Strategy generation is a synchronous POST, so this row should already be
   // terminal by the time this page renders — poll defensively in case it's
@@ -42,6 +44,20 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
     } catch (err) {
       setPlanError(err instanceof Error ? err.message : "Failed to generate content plan.");
       setGeneratingPlan(false);
+    }
+  }
+
+  async function handleGenerateCollaboration() {
+    setGeneratingCollaboration(true);
+    setCollaborationError(null);
+    try {
+      const collaboration = await createCollaboration(strategy.company_id, strategy.id);
+      router.push(`/collaboration/${collaboration.id}`);
+    } catch (err) {
+      setCollaborationError(
+        err instanceof Error ? err.message : "Failed to generate collaboration ideas.",
+      );
+      setGeneratingCollaboration(false);
     }
   }
 
@@ -84,8 +100,18 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
             <Button onClick={handleGenerateContentPlan} disabled={generatingPlan}>
               {generatingPlan ? "Generating content plan…" : "Generate content plan"}
             </Button>
+            <Button
+              variant="outline"
+              onClick={handleGenerateCollaboration}
+              disabled={generatingCollaboration}
+            >
+              {generatingCollaboration
+                ? "Generating collaboration ideas…"
+                : "Generate collaboration ideas"}
+            </Button>
           </div>
           {planError && <p className="text-sm text-destructive">{planError}</p>}
+          {collaborationError && <p className="text-sm text-destructive">{collaborationError}</p>}
         </div>
       )}
     </div>

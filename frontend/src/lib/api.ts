@@ -171,6 +171,106 @@ export interface ContentPlanListResponse {
   total: number;
 }
 
+export type LifecycleStage = "draft" | "scheduled" | "active" | "completed" | "archived";
+
+export interface Campaign {
+  id: string;
+  company_id: string;
+  content_plan_id: string | null;
+  strategy_id: string | null;
+  status: GenerationStatus;
+  status_error: string | null;
+  lifecycle_stage: LifecycleStage;
+  name: string | null;
+  objective: string | null;
+  budget_allocation: string | null;
+  success_metrics: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  created_at: string;
+}
+
+export interface CampaignListResponse {
+  items: Campaign[];
+  total: number;
+}
+
+export type CollaborationPriority = "low" | "medium" | "high";
+
+export interface CollaborationIdea {
+  id: string;
+  collaborator_archetype: string;
+  partnership_angle: string;
+  outreach_template: string;
+  priority: CollaborationPriority;
+  rationale: string | null;
+}
+
+export interface Collaboration {
+  id: string;
+  company_id: string;
+  strategy_id: string | null;
+  status: GenerationStatus;
+  status_error: string | null;
+  created_at: string;
+  ideas: CollaborationIdea[];
+}
+
+export interface CollaborationSummary {
+  id: string;
+  company_id: string;
+  strategy_id: string | null;
+  status: GenerationStatus;
+  status_error: string | null;
+  created_at: string;
+}
+
+export interface CollaborationListResponse {
+  items: CollaborationSummary[];
+  total: number;
+}
+
+// ---------------------------------------------------------------------------
+// Competitor Research
+// ---------------------------------------------------------------------------
+
+export type ComparisonStatus = "not_started" | "pending" | "complete" | "failed";
+
+export interface Competitor {
+  id: string;
+  company_id: string;
+  url: string;
+  name: string | null;
+  status: CompanyStatus;
+  status_error: string | null;
+  industry: string | null;
+  business_model: string | null;
+  target_audience: string | null;
+  brand_voice: string | null;
+  unique_value_prop: string | null;
+  summary: string | null;
+  comparison_status: ComparisonStatus;
+  comparison_status_error: string | null;
+  product_pricing_comparison: string | null;
+  marketing_strategy_analysis: string | null;
+  competitive_gaps: string | null;
+  strategic_recommendations: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CompetitorListResponse {
+  items: Competitor[];
+  total: number;
+}
+
+export interface CompetitorCreatedResponse {
+  id: string;
+  company_id: string;
+  url: string;
+  status: CompanyStatus;
+}
+
 // ---------------------------------------------------------------------------
 // Knowledge Base
 // ---------------------------------------------------------------------------
@@ -229,6 +329,14 @@ export function listTrends(params: ListTrendsParams = {}): Promise<TrendListResp
 
 export function getTrend(id: string): Promise<Trend> {
   return apiFetch<Trend>(`/trend-analyzer/${id}`);
+}
+
+export function getTrendsByIds(ids: string[]): Promise<TrendListResponse> {
+  if (ids.length === 0) return Promise.resolve({ items: [], total: 0, limit: 0, offset: 0 });
+  const query = new URLSearchParams();
+  for (const id of ids) query.append("ids", id);
+  query.set("limit", String(ids.length));
+  return apiFetch<TrendListResponse>(`/trend-analyzer/?${query.toString()}`);
 }
 
 export function getSourceStatus(): Promise<SourceStatus[]> {
@@ -301,4 +409,95 @@ export function listContentPlans(companyId?: string): Promise<ContentPlanListRes
   return apiFetch<ContentPlanListResponse>(
     `/content-management/content-plans${toQueryString({ company_id: companyId })}`,
   );
+}
+
+export function createCampaign(
+  companyId: string,
+  options: { contentPlanId?: string; strategyId?: string } = {},
+): Promise<Campaign> {
+  return apiFetch<Campaign>("/content-management/campaigns", {
+    method: "POST",
+    body: JSON.stringify({
+      company_id: companyId,
+      content_plan_id: options.contentPlanId,
+      strategy_id: options.strategyId,
+    }),
+  });
+}
+
+export function getCampaign(id: string): Promise<Campaign> {
+  return apiFetch<Campaign>(`/content-management/campaigns/${id}`);
+}
+
+export function listCampaigns(companyId?: string): Promise<CampaignListResponse> {
+  return apiFetch<CampaignListResponse>(
+    `/content-management/campaigns${toQueryString({ company_id: companyId })}`,
+  );
+}
+
+export function updateCampaignLifecycle(
+  id: string,
+  lifecycleStage: LifecycleStage,
+): Promise<Campaign> {
+  return apiFetch<Campaign>(`/content-management/campaigns/${id}/lifecycle`, {
+    method: "PATCH",
+    body: JSON.stringify({ lifecycle_stage: lifecycleStage }),
+  });
+}
+
+export function createCollaboration(
+  companyId: string,
+  strategyId?: string,
+): Promise<Collaboration> {
+  return apiFetch<Collaboration>("/content-management/collaborations", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId, strategy_id: strategyId }),
+  });
+}
+
+export function getCollaboration(id: string): Promise<Collaboration> {
+  return apiFetch<Collaboration>(`/content-management/collaborations/${id}`);
+}
+
+export function listCollaborations(companyId?: string): Promise<CollaborationListResponse> {
+  return apiFetch<CollaborationListResponse>(
+    `/content-management/collaborations${toQueryString({ company_id: companyId })}`,
+  );
+}
+
+// Competitor Research
+export function createCompetitor(
+  companyId: string,
+  url: string,
+  name?: string,
+): Promise<CompetitorCreatedResponse> {
+  return apiFetch<CompetitorCreatedResponse>("/competitor-research/competitors", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId, url, name }),
+  });
+}
+
+export function getCompetitor(id: string): Promise<Competitor> {
+  return apiFetch<Competitor>(`/competitor-research/competitors/${id}`);
+}
+
+export function listCompetitors(companyId?: string): Promise<CompetitorListResponse> {
+  return apiFetch<CompetitorListResponse>(
+    `/competitor-research/competitors${toQueryString({ company_id: companyId })}`,
+  );
+}
+
+export function generateComparison(competitorId: string): Promise<Competitor> {
+  return apiFetch<Competitor>(`/competitor-research/competitors/${competitorId}/comparison`, {
+    method: "POST",
+  });
+}
+
+export function suggestCompetitorNames(
+  companyId: string,
+): Promise<{ suggestions: string[]; ok: boolean }> {
+  return apiFetch<{ suggestions: string[]; ok: boolean }>("/competitor-research/suggestions", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId }),
+  });
 }

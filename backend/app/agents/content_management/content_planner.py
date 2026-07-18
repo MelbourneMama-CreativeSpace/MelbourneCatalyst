@@ -109,20 +109,20 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
     items = []
     for raw in raw_items:
         try:
-            content_type = raw["content_type"]
-            platform = raw["platform"]
-        except KeyError:
-            continue  # malformed item from the model — skip rather than crash the whole plan
-        days_from_now = max(0, min(int(raw.get("days_from_now", 0)), days - 1))
-        items.append(
-            GeneratedContentItem(
-                title=raw["title"],
-                description=raw["description"],
-                content_type=content_type,
-                platform=platform,
-                suggested_date=today + timedelta(days=days_from_now),
-                theme=raw.get("theme") or None,
-                related_trend_title=raw.get("related_trend_title") or None,
+            days_from_now = max(0, min(int(raw.get("days_from_now", 0)), days - 1))
+            items.append(
+                GeneratedContentItem(
+                    title=raw["title"],
+                    description=raw["description"],
+                    content_type=raw["content_type"],
+                    platform=raw["platform"],
+                    suggested_date=today + timedelta(days=days_from_now),
+                    theme=raw.get("theme") or None,
+                    related_trend_title=raw.get("related_trend_title") or None,
+                )
             )
-        )
+        except (KeyError, TypeError, ValueError):
+            # Malformed item from the model (missing/wrong-typed field) —
+            # skip it rather than losing the whole plan to one bad entry.
+            continue
     return GeneratedContentPlan(items=items), True
