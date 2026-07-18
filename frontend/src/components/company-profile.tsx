@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getCompany, type Company } from "@/lib/api";
+import { createStrategy, getCompany, type Company } from "@/lib/api";
 
 const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set([
   "complete",
@@ -15,7 +16,10 @@ const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set([
 ]);
 
 export function CompanyProfile({ initialCompany }: { initialCompany: Company }) {
+  const router = useRouter();
   const [company, setCompany] = useState(initialCompany);
+  const [generatingStrategy, setGeneratingStrategy] = useState(false);
+  const [strategyError, setStrategyError] = useState<string | null>(null);
 
   // Poll until the onboarding pipeline reaches a terminal status.
   useEffect(() => {
@@ -31,6 +35,18 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
     }, 2500);
     return () => clearInterval(timer);
   }, [company.id, company.status]);
+
+  async function handleGenerateStrategy() {
+    setGeneratingStrategy(true);
+    setStrategyError(null);
+    try {
+      const strategy = await createStrategy(company.id);
+      router.push(`/strategy/${strategy.id}`);
+    } catch (err) {
+      setStrategyError(err instanceof Error ? err.message : "Failed to generate strategy.");
+      setGeneratingStrategy(false);
+    }
+  }
 
   const statusVariant = company.status === "complete" ? "default" : "outline";
 
@@ -129,8 +145,14 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
       )}
 
       {TERMINAL_STATUSES.has(company.status) && (
-        <div className="flex gap-3">
-          <Button render={<Link href="/trends">View matched trends</Link>} nativeButton={false} />
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-3">
+            <Button render={<Link href="/trends">View matched trends</Link>} nativeButton={false} />
+            <Button variant="outline" onClick={handleGenerateStrategy} disabled={generatingStrategy}>
+              {generatingStrategy ? "Generating strategy…" : "Generate strategy"}
+            </Button>
+          </div>
+          {strategyError && <p className="text-sm text-destructive">{strategyError}</p>}
         </div>
       )}
     </div>

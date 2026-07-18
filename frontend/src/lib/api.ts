@@ -103,6 +103,75 @@ export interface CompanyCreatedResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Content Management
+// ---------------------------------------------------------------------------
+
+export type GenerationStatus = "pending" | "complete" | "failed";
+
+export interface Strategy {
+  id: string;
+  company_id: string;
+  status: GenerationStatus;
+  status_error: string | null;
+  summary: string | null;
+  marketing_strategy: string | null;
+  campaign_direction: string | null;
+  growth_recommendations: string | null;
+  business_suggestions: string | null;
+  created_at: string;
+}
+
+export interface StrategyListResponse {
+  items: Strategy[];
+  total: number;
+}
+
+export type ContentType = "post" | "video" | "article" | "carousel" | "story";
+export type Platform =
+  | "instagram"
+  | "linkedin"
+  | "twitter"
+  | "tiktok"
+  | "youtube"
+  | "blog"
+  | "facebook";
+
+export interface ContentItem {
+  id: string;
+  title: string;
+  description: string;
+  content_type: ContentType;
+  platform: Platform;
+  theme: string | null;
+  suggested_date: string;
+  source_trend_id: string | null;
+}
+
+export interface ContentPlan {
+  id: string;
+  company_id: string;
+  strategy_id: string | null;
+  status: GenerationStatus;
+  status_error: string | null;
+  created_at: string;
+  items: ContentItem[];
+}
+
+export interface ContentPlanSummary {
+  id: string;
+  company_id: string;
+  strategy_id: string | null;
+  status: GenerationStatus;
+  status_error: string | null;
+  created_at: string;
+}
+
+export interface ContentPlanListResponse {
+  items: ContentPlanSummary[];
+  total: number;
+}
+
+// ---------------------------------------------------------------------------
 // Knowledge Base
 // ---------------------------------------------------------------------------
 
@@ -193,5 +262,43 @@ export function searchKnowledgeBase(
 ): Promise<SearchResponse> {
   return apiFetch<SearchResponse>(
     `/knowledge-base/search${toQueryString({ q, ...options })}`,
+  );
+}
+
+// Content Management
+export function createStrategy(companyId: string): Promise<Strategy> {
+  return apiFetch<Strategy>("/content-management/strategies", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId }),
+  });
+}
+
+export function getStrategy(id: string): Promise<Strategy> {
+  return apiFetch<Strategy>(`/content-management/strategies/${id}`);
+}
+
+export function listStrategies(companyId?: string): Promise<StrategyListResponse> {
+  return apiFetch<StrategyListResponse>(
+    `/content-management/strategies${toQueryString({ company_id: companyId })}`,
+  );
+}
+
+export function createContentPlan(
+  companyId: string,
+  strategyId?: string,
+): Promise<ContentPlan> {
+  return apiFetch<ContentPlan>("/content-management/content-plans", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId, strategy_id: strategyId }),
+  });
+}
+
+export function getContentPlan(id: string): Promise<ContentPlan> {
+  return apiFetch<ContentPlan>(`/content-management/content-plans/${id}`);
+}
+
+export function listContentPlans(companyId?: string): Promise<ContentPlanListResponse> {
+  return apiFetch<ContentPlanListResponse>(
+    `/content-management/content-plans${toQueryString({ company_id: companyId })}`,
   );
 }

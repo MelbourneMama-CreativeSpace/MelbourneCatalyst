@@ -57,6 +57,7 @@ const modules = [
     bgGlow: "bg-emerald-500/10",
     borderColor: "border-emerald-500/20",
     delay: "delay-300",
+    href: "/companies",
   },
   {
     title: "Social Media Analyzer",
