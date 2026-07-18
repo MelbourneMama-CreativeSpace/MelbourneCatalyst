@@ -19,7 +19,7 @@
 
 ### Database & Storage
 - [x] Set up PostgreSQL database (Supabase, connected via `DATABASE_URL`)
-- [x] Design database schema (only `trends` so far — companies/campaigns/analytics tables land with their respective modules)
+- [x] Design database schema (`trends`, `companies`, `documents`, `strategies`, `content_plans`/`content_items` so far — campaign/analytics tables land with their respective modules)
 - [x] Create database migrations (Alembic, `backend/alembic/`)
 - [ ] Set up vector database for Knowledge Base (e.g., Pinecone, Weaviate, or pgvector)
 - [x] Implement database connection pooling (SQLAlchemy async engine, default pool)
@@ -140,15 +140,15 @@
 ## Phase 5: Content Management
 
 ### Strategy Consultant Agent
-- [ ] Implement marketing strategy generator
-- [ ] Build campaign direction planner
-- [ ] Create growth recommendation engine
-- [ ] Implement business suggestion generator
-- [ ] Build strategy dashboard UI
+- [x] Implement marketing strategy generator
+- [x] Build campaign direction planner
+- [x] Create growth recommendation engine
+- [x] Implement business suggestion generator
+- [x] Build strategy dashboard UI
 - [ ] Create strategy approval workflow
 
 ### Content Planner Agent
-- [ ] Build content calendar engine
+- [x] Build content calendar engine
 - [ ] Create daily post generator
 - [ ] Implement weekly schedule builder
 - [ ] Build monthly campaign planner
