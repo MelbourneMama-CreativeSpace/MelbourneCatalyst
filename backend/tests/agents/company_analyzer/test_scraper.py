@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 import respx
 
-from app.agents.company_analyzer.scraper import _normalize_base, discover_and_scrape
+from app.agents.company_analyzer import scraper
+from app.agents.company_analyzer.scraper import normalize_url, discover_and_scrape
+from app.security import UnsafeUrlError
 
 _SAMPLE_HTML = """
 <html>
@@ -25,10 +28,18 @@ _SAMPLE_HTML = """
 """
 
 
-def test_normalize_base_adds_scheme_and_strips_path():
-    assert _normalize_base("example.com") == "https://example.com"
-    assert _normalize_base("https://example.com/foo/bar") == "https://example.com"
-    assert _normalize_base("http://example.com") == "http://example.com"
+@pytest.fixture(autouse=True)
+def _skip_real_ssrf_dns_lookup(monkeypatch):
+    """These tests exercise scraping/extraction logic, not SSRF blocking
+    (that's covered by test_security.py and the dedicated tests below) —
+    no-op the check so tests don't depend on real DNS resolution."""
+    monkeypatch.setattr(scraper, "validate_public_url", lambda url: None)
+
+
+def test_normalize_url_adds_scheme_and_strips_path():
+    assert normalize_url("example.com") == "https://example.com"
+    assert normalize_url("https://example.com/foo/bar") == "https://example.com"
+    assert normalize_url("http://example.com") == "http://example.com"
 
 
 @respx.mock
@@ -72,3 +83,40 @@ async def test_discover_and_scrape_returns_empty_when_no_page_yields_content():
     pages = await discover_and_scrape("https://example.com", max_pages=5)
 
     assert pages == []
+
+
+# --- SSRF protection ---------------------------------------------------
+
+
+async def test_discover_and_scrape_refuses_an_unsafe_base_url(monkeypatch):
+    def fake_validate(url: str) -> None:
+        raise UnsafeUrlError("blocked for test")
+
+    monkeypatch.setattr(scraper, "validate_public_url", fake_validate)
+
+    pages = await discover_and_scrape("https://internal.example.com", max_pages=5)
+
+    assert pages == []
+
+
+@respx.mock
+async def test_discover_and_scrape_blocks_a_redirect_to_an_unsafe_target(monkeypatch):
+    def fake_validate(url: str) -> None:
+        # Base URL is fine; only the redirect target is "unsafe" here —
+        # proves the event hook checks every hop, not just the first request.
+        if "169.254.169.254" in url:
+            raise UnsafeUrlError("blocked for test")
+
+    monkeypatch.setattr(scraper, "validate_public_url", fake_validate)
+
+    respx.get("https://example.com/").mock(
+        return_value=httpx.Response(
+            302, headers={"Location": "http://169.254.169.254/secret"}
+        )
+    )
+    for path in ["/about", "/about-us", "/services", "/products"]:
+        respx.get(f"https://example.com{path}").mock(return_value=httpx.Response(404))
+
+    pages = await discover_and_scrape("https://example.com", max_pages=5)
+
+    assert pages == []  # redirect target was blocked; nothing else yielded content
