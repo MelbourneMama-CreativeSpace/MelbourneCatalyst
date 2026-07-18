@@ -29,7 +29,12 @@ class Settings(BaseSettings):
 
     # Trend Analyzer
     TREND_COLLECTION_INTERVAL_HOURS: int = 6
-    GOOGLE_TRENDS_REGION: str = "united_states"
+    # ISO 3166-1 alpha-2 country code for the `explore` API's `geo` param
+    # (e.g. "US", "AU"); "" means worldwide. Note: this is a different
+    # format than the old trending_searches()'s `pn` param used (full
+    # country names) — that method is no longer used (see google_trends.py).
+    GOOGLE_TRENDS_REGION: str = ""
+    GOOGLE_TRENDS_SEED_KEYWORDS: list[str] = ["marketing", "social media", "AI"]
     # Reddit — read-only OAuth (a free "script" app registration), not the
     # public JSON endpoints (those return 403 Blocked in practice now).
     REDDIT_CLIENT_ID: str = ""
