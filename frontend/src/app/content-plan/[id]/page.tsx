@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ContentPlanView } from "@/components/content-plan-view";
-import { getContentPlan, getTrend, type ContentPlan } from "@/lib/api";
+import { getContentPlan, getTrendsByIds, type ContentPlan } from "@/lib/api";
 
 interface ContentPlanPageProps {
   params: Promise<{ id: string }>;
@@ -27,17 +27,13 @@ async function resolveTrendTitles(contentPlan: ContentPlan): Promise<Record<stri
         .filter((id): id is string => id !== null),
     ),
   ];
-  const entries = await Promise.all(
-    trendIds.map(async (id) => {
-      try {
-        const trend = await getTrend(id);
-        return [id, trend.title] as const;
-      } catch {
-        return null;
-      }
-    }),
-  );
-  return Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => entry !== null));
+  if (trendIds.length === 0) return {};
+  try {
+    const { items } = await getTrendsByIds(trendIds);
+    return Object.fromEntries(items.map((trend) => [trend.id, trend.title]));
+  } catch {
+    return {};
+  }
 }
 
 export default async function ContentPlanPage({ params }: ContentPlanPageProps) {

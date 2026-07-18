@@ -7,6 +7,8 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CompetitorList } from "@/components/competitor-list";
+import { ContentHistory } from "@/components/content-history";
 import { createStrategy, getCompany, type Company } from "@/lib/api";
 
 const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set([
@@ -148,13 +150,19 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap gap-3">
             <Button render={<Link href="/trends">View matched trends</Link>} nativeButton={false} />
-            <Button variant="outline" onClick={handleGenerateStrategy} disabled={generatingStrategy}>
-              {generatingStrategy ? "Generating strategy…" : "Generate strategy"}
-            </Button>
+            {company.status === "complete" && (
+              <Button variant="outline" onClick={handleGenerateStrategy} disabled={generatingStrategy}>
+                {generatingStrategy ? "Generating strategy…" : "Generate strategy"}
+              </Button>
+            )}
           </div>
           {strategyError && <p className="text-sm text-destructive">{strategyError}</p>}
         </div>
       )}
+
+      {company.status === "complete" && <CompetitorList companyId={company.id} />}
+
+      {company.status === "complete" && <ContentHistory companyId={company.id} />}
     </div>
   );
 }
