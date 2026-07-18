@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     # Company Analyzer — onboarding crawl
     COMPANY_ONBOARDING_MAX_PAGES: int = 10
 
+    # Content Management — Strategy Consultant + Content Planner
+    STRATEGY_MAX_TRENDS: int = 10
+    CONTENT_PLAN_MAX_TRENDS: int = 10
+    CONTENT_PLAN_DAYS: int = 14
+
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 

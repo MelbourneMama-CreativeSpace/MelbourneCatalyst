@@ -1,0 +1,161 @@
+"""Tests for Claude-powered content plan generation."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+from types import SimpleNamespace
+
+from app.agents.content_management import content_planner
+
+
+async def test_generate_content_plan_falls_back_without_api_key(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "")
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is False
+    assert generated.items == []
+
+
+async def test_generate_content_plan_falls_back_on_api_failure(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+
+    class _FailingMessages:
+        async def create(self, **kwargs):
+            raise RuntimeError("Anthropic API error")
+
+    class _FailingClient:
+        messages = _FailingMessages()
+
+    monkeypatch.setattr(content_planner, "_client", lambda: _FailingClient())
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is False
+    assert generated.items == []
+
+
+def _fake_client_returning(items: list[dict]):
+    tool_use = SimpleNamespace(type="tool_use", input={"items": items})
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            return SimpleNamespace(content=[tool_use])
+
+    class _FakeClient:
+        messages = _FakeMessages()
+
+    return lambda: _FakeClient()
+
+
+async def test_generate_content_plan_converts_days_from_now_to_real_dates(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        content_planner,
+        "_client",
+        _fake_client_returning(
+            [
+                {
+                    "title": "AI marketing carousel",
+                    "description": "5-slide carousel on AI-native marketing tools.",
+                    "content_type": "carousel",
+                    "platform": "instagram",
+                    "theme": "AI trends",
+                    "days_from_now": 3,
+                    "related_trend_title": "ai marketing tools",
+                },
+            ]
+        ),
+    )
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is True
+    assert len(generated.items) == 1
+    item = generated.items[0]
+    assert item.title == "AI marketing carousel"
+    assert item.suggested_date == date.today() + timedelta(days=3)
+    assert item.related_trend_title == "ai marketing tools"
+
+
+async def test_generate_content_plan_clamps_days_from_now_to_valid_range(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        content_planner,
+        "_client",
+        _fake_client_returning(
+            [
+                {
+                    "title": "Too far out",
+                    "description": "d",
+                    "content_type": "post",
+                    "platform": "linkedin",
+                    "days_from_now": 999,
+                },
+                {
+                    "title": "Negative",
+                    "description": "d",
+                    "content_type": "post",
+                    "platform": "linkedin",
+                    "days_from_now": -5,
+                },
+            ]
+        ),
+    )
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is True
+    assert generated.items[0].suggested_date == date.today() + timedelta(days=13)  # clamped to days-1
+    assert generated.items[1].suggested_date == date.today()  # clamped to 0
+
+
+async def test_generate_content_plan_skips_malformed_items(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        content_planner,
+        "_client",
+        _fake_client_returning(
+            [
+                {"title": "Missing required fields"},  # malformed — should be skipped
+                {
+                    "title": "Valid item",
+                    "description": "d",
+                    "content_type": "post",
+                    "platform": "linkedin",
+                    "days_from_now": 1,
+                },
+            ]
+        ),
+    )
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is True
+    assert len(generated.items) == 1
+    assert generated.items[0].title == "Valid item"
+
+
+async def test_generate_content_plan_empty_related_trend_becomes_none(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        content_planner,
+        "_client",
+        _fake_client_returning(
+            [
+                {
+                    "title": "No trend tie-in",
+                    "description": "d",
+                    "content_type": "post",
+                    "platform": "blog",
+                    "days_from_now": 0,
+                    "related_trend_title": "",
+                },
+            ]
+        ),
+    )
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is True
+    assert generated.items[0].related_trend_title is None
