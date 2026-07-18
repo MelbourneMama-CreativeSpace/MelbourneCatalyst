@@ -1,6 +1,12 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { ContentItem, ContentPlan } from "@/lib/api";
+import { createCampaign, type ContentItem, type ContentPlan } from "@/lib/api";
 
 function formatDate(isoDate: string): string {
   return new Date(`${isoDate}T00:00:00`).toLocaleDateString(undefined, {
@@ -17,10 +23,29 @@ export function ContentPlanView({
   contentPlan: ContentPlan;
   trendTitlesById: Record<string, string>;
 }) {
+  const router = useRouter();
+  const [generatingCampaign, setGeneratingCampaign] = useState(false);
+  const [campaignError, setCampaignError] = useState<string | null>(null);
+
   const statusVariant = contentPlan.status === "complete" ? "default" : "outline";
   const sortedItems = [...contentPlan.items].sort((a, b) =>
     a.suggested_date.localeCompare(b.suggested_date),
   );
+
+  async function handleGenerateCampaign() {
+    setGeneratingCampaign(true);
+    setCampaignError(null);
+    try {
+      const campaign = await createCampaign(contentPlan.company_id, {
+        contentPlanId: contentPlan.id,
+        strategyId: contentPlan.strategy_id ?? undefined,
+      });
+      router.push(`/campaign/${campaign.id}`);
+    } catch (err) {
+      setCampaignError(err instanceof Error ? err.message : "Failed to generate campaign.");
+      setGeneratingCampaign(false);
+    }
+  }
 
   return (
     <div className="mt-6 flex flex-col gap-6">
@@ -61,6 +86,17 @@ export function ContentPlanView({
           />
         ))}
       </div>
+
+      {contentPlan.status === "complete" && (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-3">
+            <Button onClick={handleGenerateCampaign} disabled={generatingCampaign}>
+              {generatingCampaign ? "Generating campaign…" : "Generate campaign"}
+            </Button>
+          </div>
+          {campaignError && <p className="text-sm text-destructive">{campaignError}</p>}
+        </div>
+      )}
     </div>
   );
 }

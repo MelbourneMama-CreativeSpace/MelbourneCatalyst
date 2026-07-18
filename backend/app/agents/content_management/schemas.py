@@ -36,3 +36,35 @@ class GeneratedContentItem:
 @dataclass(slots=True)
 class GeneratedContentPlan:
     items: list[GeneratedContentItem] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class GeneratedCampaign:
+    """Claude's structured output for `generate_campaign`. `start_date`/
+    `end_date` are optional — Claude may leave the timeline unset when no
+    content plan was given to seed it from."""
+
+    name: str | None = None
+    objective: str | None = None
+    budget_allocation: str | None = None
+    success_metrics: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+
+
+@dataclass(slots=True)
+class GeneratedCollaborationIdea:
+    """One partnership idea from `generate_collaboration` — an archetype
+    (e.g. "micro-influencer food bloggers"), not a named real account, since
+    there's no live social search available to find actual candidates."""
+
+    collaborator_archetype: str
+    partnership_angle: str
+    outreach_template: str
+    priority: str
+    rationale: str | None = None
+
+
+@dataclass(slots=True)
+class GeneratedCollaboration:
+    ideas: list[GeneratedCollaborationIdea] = field(default_factory=list)

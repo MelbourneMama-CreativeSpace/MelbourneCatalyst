@@ -176,3 +176,121 @@ class ContentItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     content_plan: Mapped[ContentPlan] = relationship(back_populates="items")
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Optional — a campaign can be generated straight from the company
+    # profile + trends, or seeded from a prior content plan and/or strategy.
+    content_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("content_plans.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    strategy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategies.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # One-shot generation lifecycle: pending -> complete | failed — same
+    # meaning as Strategy.status.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Separate from `status` above: a manually-advanced lifecycle the user
+    # drives after generation completes. No state-machine enforcement — any
+    # of the five values is accepted via the lifecycle PATCH endpoint.
+    lifecycle_stage: Mapped[str] = mapped_column(String(16), nullable=False, default="draft", index=True)
+
+    name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    objective: Mapped[str | None] = mapped_column(String, nullable=True)
+    budget_allocation: Mapped[str | None] = mapped_column(String, nullable=True)
+    success_metrics: Mapped[str | None] = mapped_column(String, nullable=True)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Collaboration(Base):
+    __tablename__ = "collaborations"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    strategy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategies.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    ideas: Mapped[list[CollaborationIdea]] = relationship(
+        back_populates="collaboration", cascade="all, delete-orphan"
+    )
+
+
+class CollaborationIdea(Base):
+    __tablename__ = "collaboration_ideas"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    collaboration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("collaborations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # A collaborator profile ("micro-influencer food bloggers, 5-20k
+    # followers, Melbourne-based") rather than a named real account — there's
+    # no live social search available to find actual candidates.
+    collaborator_archetype: Mapped[str] = mapped_column(String(256), nullable=False)
+    partnership_angle: Mapped[str] = mapped_column(String, nullable=False)
+    outreach_template: Mapped[str] = mapped_column(String, nullable=False)
+    priority: Mapped[str] = mapped_column(String(16), nullable=False)
+    rationale: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    collaboration: Mapped[Collaboration] = relationship(back_populates="ideas")
+
+
+class Competitor(Base):
+    __tablename__ = "competitors"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # `name` is nullable because the extractor fills it in during onboarding
+    # — same rationale as `Company.name`.
+    name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Onboarding lifecycle — identical value set to Company.status. This is
+    # the competitor's *own* scrape+extract pipeline, independent of the
+    # comparison generation tracked by comparison_status below.
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    industry: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    business_model: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    target_audience: Mapped[str | None] = mapped_column(String, nullable=True)
+    brand_voice: Mapped[str | None] = mapped_column(String, nullable=True)
+    unique_value_prop: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Separate lifecycle from `status` above: whether the Company-vs-Competitor
+    # comparison has been generated yet. pending -> complete | failed, same
+    # meaning as Strategy.status; starts at not_started since comparison
+    # can't run until both profiles exist.
+    comparison_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="not_started", index=True
+    )
+    comparison_status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    product_pricing_comparison: Mapped[str | None] = mapped_column(String, nullable=True)
+    marketing_strategy_analysis: Mapped[str | None] = mapped_column(String, nullable=True)
+    competitive_gaps: Mapped[str | None] = mapped_column(String, nullable=True)
+    strategic_recommendations: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
