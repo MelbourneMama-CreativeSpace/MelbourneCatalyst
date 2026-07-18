@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Trend Analyzer
     TREND_COLLECTION_INTERVAL_HOURS: int = 6
     GOOGLE_TRENDS_REGION: str = "united_states"
+    # Reddit — read-only OAuth (a free "script" app registration), not the
+    # public JSON endpoints (those return 403 Blocked in practice now).
+    REDDIT_CLIENT_ID: str = ""
+    REDDIT_CLIENT_SECRET: str = ""
     REDDIT_SUBREDDITS: list[str] = ["marketing", "socialmedia", "smallbusiness"]
     RSS_FEED_URLS: list[str] = [
         "https://feeds.feedburner.com/TechCrunch",

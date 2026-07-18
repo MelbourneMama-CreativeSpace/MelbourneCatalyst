@@ -16,6 +16,9 @@ apscheduler==3.11.3
 # changes) replaced by pytrends-modern: same sync API, built-in retry/backoff
 # and user-agent rotation, actively maintained.
 pytrends-modern==0.2.12
+# Reddit's public .json endpoints return 403 Blocked in practice (confirmed
+# live) — praw uses OAuth read-only mode instead, Reddit's supported path.
+praw==8.0.2
 feedparser==6.0.12
 langgraph==1.2.9
 anthropic==0.116.0
@@ -28,4 +31,3 @@ trafilatura==2.1.0
 # of lxml core in 5.x. Pin the standalone package so the import chain works.
 lxml_html_clean==0.4.3
 langchain-text-splitters==1.1.2
-numpy==2.2.1
