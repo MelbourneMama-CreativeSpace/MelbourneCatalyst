@@ -1,0 +1,38 @@
+"""Internal data shapes for Content Management."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+
+
+@dataclass(slots=True)
+class GeneratedStrategy:
+    """Claude's structured output for `generate_strategy`."""
+
+    summary: str | None = None
+    marketing_strategy: str | None = None
+    campaign_direction: str | None = None
+    growth_recommendations: str | None = None
+    business_suggestions: str | None = None
+
+
+@dataclass(slots=True)
+class GeneratedContentItem:
+    """One calendar entry from `generate_content_plan`, before persistence
+    (dates are already resolved from the model's relative `days_from_now`;
+    `related_trend_title` is resolved to `source_trend_id` by the graph,
+    not here — this dataclass doesn't know about DB ids)."""
+
+    title: str
+    description: str
+    content_type: str
+    platform: str
+    suggested_date: date
+    theme: str | None = None
+    related_trend_title: str | None = None
+
+
+@dataclass(slots=True)
+class GeneratedContentPlan:
+    items: list[GeneratedContentItem] = field(default_factory=list)

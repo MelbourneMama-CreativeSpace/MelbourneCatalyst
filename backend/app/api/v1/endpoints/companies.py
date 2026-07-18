@@ -7,11 +7,12 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.company_analyzer.graph import run_onboarding
-from app.db.models import Company
+from app.agents.company_analyzer.scraper import normalize_url
+from app.db.models import Company, Document
 from app.db.session import get_session
 from app.models.company import (
     CompanyCreatedResponse,
@@ -33,13 +34,18 @@ async def create_company(
     kicks off the LangGraph pipeline in the background — the caller polls
     `GET /companies/{id}` until status becomes 'complete' or 'failed'.
     """
-    url = str(payload.url)
+    # Normalize before the dedup lookup and storage so "example.com",
+    # "https://example.com", and "https://example.com/" all resolve to the
+    # same Company row instead of creating duplicates — Pydantic's HttpUrl
+    # doesn't normalize this consistently on its own.
+    url = normalize_url(str(payload.url))
 
     existing = (await session.execute(select(Company).where(Company.url == url))).scalar_one_or_none()
     if existing is not None:
-        # Re-onboard: reset to pending and re-run the graph. Existing
-        # documents will accumulate; that's fine for now since search
-        # will pick the most similar chunks anyway.
+        # Re-onboard: wipe the previous run's Documents before resetting to
+        # pending. Without this, search results accumulate stale/duplicate
+        # chunks across repeated onboardings of the same company.
+        await session.execute(delete(Document).where(Document.company_id == existing.id))
         existing.status = "pending"
         existing.status_error = None
         await session.commit()

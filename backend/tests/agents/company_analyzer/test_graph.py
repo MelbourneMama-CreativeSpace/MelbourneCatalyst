@@ -32,17 +32,24 @@ async def _stub_embed_documents(texts):
     return [[0.1] * 1024 for _ in texts]
 
 
-async def _stub_extract_profile(content: str) -> CompanyProfile:
-    return CompanyProfile(
-        name="Widget Co",
-        industry="Consumer goods",
-        business_model="DTC subscription",
-        target_audience="Small business marketers",
-        brand_voice="Friendly and confident",
-        unique_value_prop="Best widgets in the world",
-        niche_keywords=["widgets", "small business", "marketing tools"],
-        summary="Widget Co makes the best widgets for marketers.",
+async def _stub_extract_profile(content: str) -> tuple[CompanyProfile, bool]:
+    return (
+        CompanyProfile(
+            name="Widget Co",
+            industry="Consumer goods",
+            business_model="DTC subscription",
+            target_audience="Small business marketers",
+            brand_voice="Friendly and confident",
+            unique_value_prop="Best widgets in the world",
+            niche_keywords=["widgets", "small business", "marketing tools"],
+            summary="Widget Co makes the best widgets for marketers.",
+        ),
+        True,
     )
+
+
+async def _stub_extract_profile_skipped(content: str) -> tuple[CompanyProfile, bool]:
+    return CompanyProfile(), False
 
 
 async def test_run_onboarding_persists_company_profile_and_documents(
@@ -96,3 +103,33 @@ async def test_run_onboarding_marks_failed_when_no_pages_scraped(
 
     assert company.status == "failed"
     assert company.status_error is not None
+
+
+async def test_run_onboarding_marks_complete_no_profile_when_extraction_is_skipped(
+    monkeypatch, test_session_factory
+):
+    """Scraping succeeds but extraction is skipped (e.g. no ANTHROPIC_API_KEY)
+    — status must say so distinctly, not silently claim "complete" with a
+    blank profile."""
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+    monkeypatch.setattr(graph_module, "discover_and_scrape", _stub_discover_and_scrape)
+    monkeypatch.setattr(graph_module, "embed_documents", _stub_embed_documents)
+    monkeypatch.setattr(graph_module, "extract_company_profile", _stub_extract_profile_skipped)
+
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="pending"))
+        await session.commit()
+
+    await graph_module.run_onboarding(company_id, "https://example.com")
+
+    async with test_session_factory() as session:
+        company = await session.get(Company, company_id)
+        docs = (
+            await session.execute(select(Document).where(Document.company_id == company_id))
+        ).scalars().all()
+
+    assert company.status == "complete_no_profile"
+    assert company.status_error is not None
+    assert company.name is None
+    assert len(docs) >= 2  # scraping/embedding still happened

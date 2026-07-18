@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints.companies import router as companies_router
+from app.api.v1.endpoints.content_management import router as content_management_router
 from app.api.v1.endpoints.knowledge_base import router as knowledge_base_router
 from app.api.v1.endpoints.trends import router as trends_router
 
@@ -13,12 +14,9 @@ api_router.include_router(
     knowledge_base_router, prefix="/knowledge-base", tags=["Knowledge Base"]
 )
 api_router.include_router(trends_router, prefix="/trend-analyzer", tags=["Trend Analyzer"])
-
-
-@api_router.get("/content-management", tags=["Content Management"])
-async def content_management_status():
-    """Content Management module status."""
-    return {"module": "Content Management", "status": "active", "agents": ["StrategyConsultant", "ContentPlanner", "CampaignManager", "BrandCollaboration", "Analytics"]}
+api_router.include_router(
+    content_management_router, prefix="/content-management", tags=["Content Management"]
+)
 
 
 @api_router.get("/social-media-analyzer", tags=["Social Media Analyzer"])

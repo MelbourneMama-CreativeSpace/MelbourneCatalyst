@@ -19,7 +19,7 @@
 
 ### Database & Storage
 - [x] Set up PostgreSQL database (Supabase, connected via `DATABASE_URL`)
-- [x] Design database schema (only `trends` so far — companies/campaigns/analytics tables land with their respective modules)
+- [x] Design database schema (`trends`, `companies`, `documents`, `strategies`, `content_plans`/`content_items` so far — campaign/analytics tables land with their respective modules)
 - [x] Create database migrations (Alembic, `backend/alembic/`)
 - [ ] Set up vector database for Knowledge Base (e.g., Pinecone, Weaviate, or pgvector)
 - [x] Implement database connection pooling (SQLAlchemy async engine, default pool)
@@ -99,7 +99,7 @@
 ## Phase 4: Trend Analyzer
 
 ### Trend Discovery
-- [x] Integrate Google Trends API (via `pytrends-modern`, no key required)
+- [x] Integrate Google Trends API (via `pytrends-modern`'s `related_queries()`, no key required — verified live, real data flowing)
 - [x] Build Reddit trending topics scraper (public JSON endpoints, no auth)
 - [x] Implement YouTube trending analysis (YouTube Data API v3, needs `YOUTUBE_API_KEY`)
 - [ ] Integrate LinkedIn trending topics (no public trends API exists outside approved Marketing Partners — not attempted, would require scraping)
@@ -140,15 +140,15 @@
 ## Phase 5: Content Management
 
 ### Strategy Consultant Agent
-- [ ] Implement marketing strategy generator
-- [ ] Build campaign direction planner
-- [ ] Create growth recommendation engine
-- [ ] Implement business suggestion generator
-- [ ] Build strategy dashboard UI
+- [x] Implement marketing strategy generator
+- [x] Build campaign direction planner
+- [x] Create growth recommendation engine
+- [x] Implement business suggestion generator
+- [x] Build strategy dashboard UI
 - [ ] Create strategy approval workflow
 
 ### Content Planner Agent
-- [ ] Build content calendar engine
+- [x] Build content calendar engine
 - [ ] Create daily post generator
 - [ ] Implement weekly schedule builder
 - [ ] Build monthly campaign planner

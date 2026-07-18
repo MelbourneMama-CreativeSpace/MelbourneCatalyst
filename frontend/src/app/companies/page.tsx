@@ -46,7 +46,7 @@ export default async function CompaniesListPage() {
                   <CardHeader>
                     <div className="flex items-start justify-between gap-2">
                       <CardTitle>{company.name ?? company.url}</CardTitle>
-                      <Badge variant={company.status === "failed" ? "outline" : "default"}>
+                      <Badge variant={company.status === "complete" ? "default" : "outline"}>
                         {company.status}
                       </Badge>
                     </div>

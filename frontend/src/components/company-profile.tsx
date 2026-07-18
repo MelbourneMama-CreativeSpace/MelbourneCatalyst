@@ -1,17 +1,25 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getCompany, type Company } from "@/lib/api";
+import { createStrategy, getCompany, type Company } from "@/lib/api";
 
-const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set(["complete", "failed"]);
+const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set([
+  "complete",
+  "complete_no_profile",
+  "failed",
+]);
 
 export function CompanyProfile({ initialCompany }: { initialCompany: Company }) {
+  const router = useRouter();
   const [company, setCompany] = useState(initialCompany);
+  const [generatingStrategy, setGeneratingStrategy] = useState(false);
+  const [strategyError, setStrategyError] = useState<string | null>(null);
 
   // Poll until the onboarding pipeline reaches a terminal status.
   useEffect(() => {
@@ -28,7 +36,19 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
     return () => clearInterval(timer);
   }, [company.id, company.status]);
 
-  const statusVariant = company.status === "failed" ? "outline" : "default";
+  async function handleGenerateStrategy() {
+    setGeneratingStrategy(true);
+    setStrategyError(null);
+    try {
+      const strategy = await createStrategy(company.id);
+      router.push(`/strategy/${strategy.id}`);
+    } catch (err) {
+      setStrategyError(err instanceof Error ? err.message : "Failed to generate strategy.");
+      setGeneratingStrategy(false);
+    }
+  }
+
+  const statusVariant = company.status === "complete" ? "default" : "outline";
 
   return (
     <div className="mt-6 flex flex-col gap-6">
@@ -52,6 +72,22 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
           <CardContent className="pt-6">
             <p className="text-sm text-destructive">
               Onboarding failed{company.status_error ? `: ${company.status_error}` : "."}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {company.status === "complete_no_profile" && (
+        <Card>
+          <CardContent className="pt-6">
+            {/* A single template-literal expression, not JSX text adjacent
+                to {expr} across line breaks — JSX collapses the leading
+                whitespace of each text line, which silently ate the space
+                after {company.url} when this was written as plain JSX text. */}
+            <p className="text-sm text-muted-foreground">
+              {`We scraped ${company.url} successfully, but couldn't generate a profile from it${
+                company.status_error ? `: ${company.status_error}` : "."
+              } You can re-run onboarding once that's fixed, from the same URL.`}
             </p>
           </CardContent>
         </Card>
@@ -109,8 +145,14 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
       )}
 
       {TERMINAL_STATUSES.has(company.status) && (
-        <div className="flex gap-3">
-          <Button render={<Link href="/trends">View matched trends</Link>} nativeButton={false} />
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-3">
+            <Button render={<Link href="/trends">View matched trends</Link>} nativeButton={false} />
+            <Button variant="outline" onClick={handleGenerateStrategy} disabled={generatingStrategy}>
+              {generatingStrategy ? "Generating strategy…" : "Generate strategy"}
+            </Button>
+          </div>
+          {strategyError && <p className="text-sm text-destructive">{strategyError}</p>}
         </div>
       )}
     </div>

@@ -13,9 +13,10 @@ from datetime import datetime, timezone
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.api.v1.endpoints import companies as companies_module
-from app.db.models import Company
+from app.db.models import Company, Document
 from app.db.session import get_session
 
 
@@ -73,6 +74,43 @@ async def test_create_company_re_onboards_existing_url(client, test_session_fact
     assert second.status_code == 202
     assert second.json()["id"] == company_id
     assert second.json()["status"] == "pending"
+
+
+async def test_create_company_normalizes_url_variants_to_the_same_row(client):
+    first = await client.post("/", json={"url": "https://example.com"})
+    second = await client.post("/", json={"url": "https://example.com/"})
+
+    # Same normalized URL -> same Company row, not two duplicates.
+    assert first.json()["id"] == second.json()["id"]
+
+
+async def test_re_onboarding_deletes_stale_documents(client, test_session_factory):
+    first = await client.post("/", json={"url": "https://example.com"})
+    company_id = uuid.UUID(first.json()["id"])
+
+    async with test_session_factory() as session:
+        company = await session.get(Company, company_id)
+        company.status = "complete"
+        session.add(
+            Document(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                source_type="website",
+                source_url="https://example.com/",
+                chunk_index=0,
+                content="stale content from a previous onboarding run",
+                raw_metadata={},
+            )
+        )
+        await session.commit()
+
+    await client.post("/", json={"url": "https://example.com"})
+
+    async with test_session_factory() as session:
+        docs = (
+            await session.execute(select(Document).where(Document.company_id == company_id))
+        ).scalars().all()
+    assert docs == []
 
 
 async def test_get_company_returns_404_for_unknown_id(client):

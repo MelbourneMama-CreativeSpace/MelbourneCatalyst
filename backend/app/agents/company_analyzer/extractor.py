@@ -70,13 +70,21 @@ def _client() -> AsyncAnthropic:
     return AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
 
-async def extract_company_profile(website_content: str) -> CompanyProfile:
+async def extract_company_profile(website_content: str) -> tuple[CompanyProfile, bool]:
     """Call Claude to extract a structured profile. Never raises — returns a
     mostly-empty CompanyProfile on any failure so onboarding still completes
-    (the row can be edited manually later)."""
+    (the row can be edited manually later).
+
+    Returns `(profile, extracted_ok)`. `extracted_ok=False` when extraction
+    was skipped (no `ANTHROPIC_API_KEY`) or the API call/parsing failed —
+    the caller (the graph's `extract_profile` node) uses this to distinguish
+    "we scraped fine but couldn't generate a profile" from a real success,
+    so the Company's final status can say so instead of claiming
+    `"complete"` with every field silently blank.
+    """
     if not settings.ANTHROPIC_API_KEY:
         logger.warning("ANTHROPIC_API_KEY not configured; skipping company profile extraction")
-        return CompanyProfile()
+        return CompanyProfile(), False
 
     trimmed = website_content[:_MAX_CONTENT_CHARS]
     try:
@@ -100,9 +108,9 @@ async def extract_company_profile(website_content: str) -> CompanyProfile:
         data = tool_use.input
     except Exception:
         logger.exception("Claude company profile extraction failed")
-        return CompanyProfile()
+        return CompanyProfile(), False
 
-    return CompanyProfile(
+    profile = CompanyProfile(
         name=data.get("name"),
         industry=data.get("industry"),
         business_model=data.get("business_model"),
@@ -112,3 +120,4 @@ async def extract_company_profile(website_content: str) -> CompanyProfile:
         niche_keywords=list(data.get("niche_keywords") or []),
         summary=data.get("summary"),
     )
+    return profile, True

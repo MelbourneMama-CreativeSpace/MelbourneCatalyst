@@ -11,6 +11,12 @@ then probe a fixed set of common "about"-style paths. That's enough for
 most marketing sites and avoids the complexity of following outbound
 links or respecting robots.txt (which we should add later, before this
 is pointed at anything at scale).
+
+`POST /companies` is unauthenticated and hands this module a
+user-supplied URL — every request (including redirects, since
+`follow_redirects=True`) is validated via an httpx event hook so this
+can't be used to probe internal/cloud-metadata addresses (SSRF). See
+`app/security.py`.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import httpx
 import trafilatura
 
 from app.agents.company_analyzer.schemas import ScrapedPage
+from app.security import UnsafeUrlError, validate_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +46,23 @@ _PROBE_PATHS = [
 ]
 
 
-def _normalize_base(url: str) -> str:
-    """Add https:// if the user pasted a bare domain, strip trailing slashes."""
+def normalize_url(url: str) -> str:
+    """Add https:// if the user pasted a bare domain, strip to scheme+host.
+
+    Public (not `_`-prefixed) because the API layer uses this too, to keep
+    `example.com` / `https://example.com` / `https://example.com/` — which
+    Pydantic's `HttpUrl` doesn't itself normalize consistently — resolving
+    to the same Company row instead of three duplicate ones.
+    """
     parsed = urlparse(url if "://" in url else f"https://{url}")
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+async def _reject_unsafe_requests(request: httpx.Request) -> None:
+    """httpx event hook: validated for every request sent through the
+    client, including each hop of a redirect chain — a malicious server
+    can't bypass the check by 302'ing to an internal address."""
+    await asyncio.to_thread(validate_public_url, str(request.url))
 
 
 async def discover_and_scrape(base_url: str, *, max_pages: int) -> list[ScrapedPage]:
@@ -52,13 +72,20 @@ async def discover_and_scrape(base_url: str, *, max_pages: int) -> list[ScrapedP
     main content. Per-page failures are logged and dropped rather than
     aborting the whole run — same isolation pattern as the trend collectors.
     """
-    base = _normalize_base(base_url)
+    base = normalize_url(base_url)
+    try:
+        await asyncio.to_thread(validate_public_url, base)
+    except UnsafeUrlError:
+        logger.warning("Refusing to scrape unsafe URL: %s", base)
+        return []
+
     candidate_urls = [urljoin(base + "/", path.lstrip("/")) for path in _PROBE_PATHS[:max_pages]]
 
     async with httpx.AsyncClient(
         headers={"User-Agent": _USER_AGENT},
         timeout=10.0,
         follow_redirects=True,
+        event_hooks={"request": [_reject_unsafe_requests]},
     ) as client:
         results = await asyncio.gather(
             *(_scrape_one(client, url) for url in candidate_urls),

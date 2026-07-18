@@ -1,13 +1,15 @@
-"""SQLAlchemy ORM models: trends, companies, and the shared documents store."""
+"""SQLAlchemy ORM models: trends, companies, the shared documents store, and
+Content Management (strategies + content plans)."""
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -62,8 +64,11 @@ class Company(Base):
     # `name` is nullable because the extractor fills it in during
     # onboarding — it doesn't exist yet when the pending row is created.
     name: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    # Onboarding lifecycle: pending -> scraping -> extracting -> complete | failed.
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    # Onboarding lifecycle: pending -> scraping -> extracting ->
+    # complete | complete_no_profile | failed. complete_no_profile means
+    # scraping succeeded but no profile could be extracted (e.g. missing
+    # ANTHROPIC_API_KEY) — distinct from a silent "complete" with blank fields.
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
     status_error: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # All extracted profile fields are nullable so the row can exist in a
@@ -102,3 +107,72 @@ class Document(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     company: Mapped[Company] = relationship(back_populates="documents")
+
+
+class Strategy(Base):
+    __tablename__ = "strategies"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # One-shot generation lifecycle: pending -> complete | failed. Simpler
+    # than Company's status set — a single Claude call, no partial-success
+    # "scraped but no profile" state to represent here.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    marketing_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
+    campaign_direction: Mapped[str | None] = mapped_column(String, nullable=True)
+    growth_recommendations: Mapped[str | None] = mapped_column(String, nullable=True)
+    business_suggestions: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ContentPlan(Base):
+    __tablename__ = "content_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Optional — a plan can be generated straight from the company profile
+    # + trends without an explicit prior strategy.
+    strategy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategies.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    items: Mapped[list[ContentItem]] = relationship(
+        back_populates="content_plan", cascade="all, delete-orphan", order_by="ContentItem.suggested_date"
+    )
+
+
+class ContentItem(Base):
+    __tablename__ = "content_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    content_plan_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("content_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str] = mapped_column(String, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    theme: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    suggested_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # Best-effort match back to the Trend that inspired this idea (matched
+    # by title against the trends passed as generation context) — nullable
+    # since not every idea traces to a specific trend, and SET NULL so an
+    # old trend disappearing doesn't take the content idea down with it.
+    source_trend_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("trends.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    content_plan: Mapped[ContentPlan] = relationship(back_populates="items")
