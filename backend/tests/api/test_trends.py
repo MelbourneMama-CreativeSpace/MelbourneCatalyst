@@ -84,6 +84,18 @@ async def test_list_trends_filters_by_source(test_session_factory, client):
     assert body["items"][0]["source"] == "rss"
 
 
+async def test_list_trends_filters_by_ids(test_session_factory, client):
+    id_a = await _seed_trend(test_session_factory, url="https://example.com/a")
+    id_b = await _seed_trend(test_session_factory, url="https://example.com/b")
+    await _seed_trend(test_session_factory, url="https://example.com/c")
+
+    response = await client.get("/", params={"ids": [str(id_a), str(id_b)]})
+
+    body = response.json()
+    assert body["total"] == 2
+    assert {item["id"] for item in body["items"]} == {str(id_a), str(id_b)}
+
+
 async def test_get_trend_returns_404_for_unknown_id(client):
     response = await client.get(f"/{uuid.uuid4()}")
     assert response.status_code == 404

@@ -31,11 +31,16 @@ async def list_trends(
     category: str | None = None,
     since: datetime | None = None,
     min_relevance: float | None = Query(default=None, ge=0.0, le=1.0),
+    ids: list[uuid.UUID] | None = Query(
+        default=None, description="Look up specific trends by id (repeatable query param)"
+    ),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
 ) -> TrendListResponse:
     filters = []
+    if ids:
+        filters.append(Trend.id.in_(ids))
     if source:
         filters.append(Trend.source == source)
     if category:
