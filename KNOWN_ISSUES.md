@@ -4,90 +4,82 @@ Audit compiled from this build session (Trend Analyzer → Company Analyzer →
 Knowledge Base → Trend Matching), verified live against a real (throwaway
 SQLite) database and a running frontend/backend, plus static review of
 what's still stubbed or deferred. Current repo state: branch
-`business-analyzer`, HEAD `188c910`.
+`business-analyzer`, HEAD `8b4a1d4`.
 
-**Backend tests: 81/81 passing. Frontend: lint/typecheck/build all clean.**
+**Backend tests: 84/84 passing. Frontend: lint/typecheck/build all clean.**
 Everything below is what those green checks don't cover.
 
-Six of the "Recommended next steps" from the previous version of this doc
-are now done (commits `8722946`, `7acf5d2`, `51ba50e`, `188c910`). What's
-left is genuinely blocked on things I don't have access to in this
-environment (real Postgres credentials) or is a design decision for the
-team, not a code fix — flagged clearly below.
+Of everything actionable from the previous round, only two items remain —
+both explicitly deferred **by your choice**, not because they're stuck:
+Postgres migration testing (no credentials available here) and auth (you
+chose to skip it for this pass). Everything else that was fixable without
+those has been fixed and verified live.
 
 ---
 
-## ✅ Resolved since the last audit
+## ✅ Resolved this round
 
 | # | Issue | Fix | Commit |
 |---|---|---|---|
-| 1 | **SSRF**: `POST /companies` fetched arbitrary user-supplied URLs with no protection against private IPs / cloud metadata endpoints | Added `app/security.py` (scheme + resolved-IP validation), wired in as an httpx event hook covering every redirect hop, not just the initial request | `7acf5d2` |
-| 2 | Stray test artifacts (`live_test.db`, `_init_live_test_db.py`) committed to the repo | Removed | `8722946` |
-| 3 | Re-onboarding accumulated stale `Document` rows across repeated runs | `create_company` now deletes old Documents before re-running the pipeline | `51ba50e` |
-| 4 | Company URL normalization inconsistent (`example.com` / `https://example.com` / `https://example.com/` could become 3 separate rows) | `scraper._normalize_base` → public `normalize_url`, applied before the dedup lookup | `7acf5d2` |
-| 5 | Dead `numpy` dependency (listed, never imported) | Removed from `requirements.txt` | `188c910` |
-| 6 | Reddit's public `.json` endpoints confirmed `403 Blocked` in practice — the collector was correctly isolating the failure but never actually returning data | Rewrote on PRAW in OAuth read-only mode (`REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`) — same graceful-skip-without-credentials pattern as the other gated collectors | `188c910` |
+| 1 | No distinct signal when a company's website scraped fine but no profile could be extracted (missing `ANTHROPIC_API_KEY`) — silently showed `status: "complete"` with every field blank | New `complete_no_profile` status; `extract_company_profile()` now returns `(profile, extracted_ok)` so the graph can tell the cases apart. Verified live. | `8ecd9f2` |
+| 2 | (Found while fixing #1) Multi-line JSX text adjacent to `{expr}` silently drops its leading space — a real, if subtle, JSX whitespace-collapsing bug | Rewrote the new status message as a single template-literal expression | `8ecd9f2` |
+| 3 | **Google Trends collector was 100% non-functional** — confirmed Google deprecated/moved its whole legacy "unofficial internal API" surface (`trending_searches`, `today_searches`, `realtime_trending_searches` all 404), not just the one endpoint flagged previously | Rewrote on `related_queries()['rising']` against configurable seed keywords — the still-live `explore` API. Verified live: 34 real trending items, zero errors (previously 100% failure). | `8b4a1d4` |
 
-Each fix has dedicated test coverage (SSRF: 19 new tests including a
-redirect-to-cloud-metadata case; re-onboarding cleanup, URL dedup, and the
-new Reddit collector all covered too). Full suite: 81/81 passing.
+## ✅ Resolved previous round (carried forward for context)
+
+SSRF protection, stray test artifacts, document accumulation on
+re-onboarding, URL normalization, dead `numpy` dependency, Reddit's
+public-JSON collector replaced with PRAW/OAuth — see commits `8722946`,
+`7acf5d2`, `51ba50e`, `188c910`.
+
+**Every collector now either returns real live data (RSS, Google Trends)
+or fails cleanly with zero errors when ungated (Instagram/TikTok/
+Twitter/YouTube skip gracefully without credentials) — none are silently
+broken anymore.** Reddit specifically still needs a real app registration
+to verify PRAW end-to-end (see below).
 
 ---
 
-## 🔴 Remaining: genuinely blocked (not something I can fix from here)
-
-### Migration `0002_kb_and_companies.py` still untested against real Postgres
-All verification (pytest + every live test this session) has used
-SQLAlchemy's `Base.metadata.create_all()` against SQLite, which bypasses
-Alembic entirely. The Postgres-specific paths in the migration
-(`CREATE EXTENSION vector`, `ARRAY(String())`, `Vector(1024)`, the IVFFlat
-index) have never actually run. **I don't have Docker or Supabase
-credentials in this environment** — this needs `alembic upgrade head` run
-against a real Postgres by someone who does, before this is trusted in
-production. If you can share a connection string (or run it yourself),
-this is the single highest-value remaining check.
+## 🔴 Remaining: deferred by your explicit choice, not blocked
 
 ### No auth on any endpoint
-Still true — `/companies`, `/trend-analyzer/*`, `/knowledge-base/search`
-are all open. Phase 1's Authentication & Authorization section is
-entirely unbuilt. Fine for local dev; **must** land before any non-local
-deployment. This is a build-out, not a quick fix — flagging so it doesn't
-get lost, not attempting it as part of this pass.
+You chose "skip auth for now" when asked. Still true — `/companies`,
+`/trend-analyzer/*`, `/knowledge-base/search` are all open. Fine for local
+dev; **must** land before any non-local deployment. Recommended approach
+when you're ready: Supabase Auth (already your DB provider, no new
+service, JWT + RLS built in) — this also directly fixes the single-tenant
+Trend Matching limitation below (a company would belong to a user).
+
+### Migration `0002_kb_and_companies.py` still untested against real Postgres
+You chose to skip providing credentials for this pass. All verification
+has used SQLite (`Base.metadata.create_all()`), which bypasses Alembic
+entirely. The Postgres-specific paths (`CREATE EXTENSION vector`,
+`ARRAY(String())`, `Vector(1024)`, the IVFFlat index) — plus the new
+migration `0003` from this round — have never actually run against real
+Postgres. Whenever you have a connection string, `alembic upgrade head`
+against it is the single highest-value remaining check.
 
 ---
 
 ## 🟡 Remaining: needs a product/design decision, not just a fix
 
-- **No distinct status for "scraped fine, but extraction was skipped due
-  to missing config."** Onboard a company without `ANTHROPIC_API_KEY` set
-  and you get `status: "complete"` with every profile field `null` — no
-  signal to the user about *why*. Options: a distinct status (e.g.
-  `complete_partial`), or surface a warning even on the graceful-skip path.
-  Didn't pick one unilaterally since it changes the status enum contract
-  the frontend already depends on.
 - **Single-tenant assumption in Trend Matching.** `score_relevance` in
   `trend_analyzer/graph.py` scores trends against "the most recently
-  updated `complete` Company" — with 2+ companies onboarded (true right
-  now from this session's live testing), trends get scored against
-  whichever was touched most recently, silently, no error. Real fix is
-  multi-tenancy (a `company_id` on the trend-scoring request, presumably
-  tied to an authenticated user) — out of scope until auth exists.
+  updated `complete` Company" — with 2+ companies onboarded, trends get
+  scored against whichever was touched most recently, silently, no error.
+  Real fix is multi-tenancy tied to auth — out of scope until that lands.
 
 ---
 
 ## 🟡 External-source fragility (verified live — not code bugs)
 
-- **`pytrends-modern`'s `trending_searches()` 404s** — confirmed live,
-  same `hottrends/visualize/internal/data` endpoint Google has moved. No
-  fix attempted this pass; would need either a different pytrends method,
-  a different library, or accepting Google Trends stays non-functional.
 - **YouTube, X/Twitter, Instagram, TikTok** collectors have never been
   tested against live credentials (none are configured anywhere) — only
   verified via mocked tests + the "skip gracefully" path.
-- **Reddit** now uses PRAW/OAuth (see above) but has likewise never been
-  tested against a real Reddit app registration — only mocked.
-- Only **RSS** has been confirmed actually returning real data
-  end-to-end, repeatedly, across sessions.
+- **Reddit** now uses PRAW/OAuth but has likewise never been tested
+  against a real Reddit app registration — only mocked.
+- **RSS and Google Trends** are the only two sources confirmed returning
+  real data end-to-end, live, this session.
 
 ---
 
@@ -95,7 +87,7 @@ get lost, not attempting it as part of this pass.
 
 **Phase 1 — Foundation**
 - CI/CD pipeline: not started
-- Auth (JWT/OAuth), RBAC, user registration, API key management: not started
+- Auth (JWT/OAuth), RBAC, user registration, API key management: not started (see above — your call to defer)
 - Task queue (Celery+Redis): deliberately not used — APScheduler in-process instead (documented tradeoff, revisit at scale)
 - WebSocket real-time updates: not started
 - Logging/monitoring/error tracking (Sentry): not started
@@ -125,13 +117,12 @@ get lost, not attempting it as part of this pass.
 
 ## Next steps, roughly in priority order
 
-1. **Run `alembic upgrade head` against a real Postgres** (Supabase or
-   local) — the one remaining check I can't do myself here.
-2. Decide the "extraction skipped due to missing config" status question
-   above, then I (or whoever) can implement it — small change once decided.
-3. Start on auth (JWT/OAuth + RBAC) — blocks both the no-auth security gap
-   and the single-tenant Trend Matching limitation.
-4. If Google Trends data matters, investigate `pytrends-modern` alternatives
-   or accept it stays non-functional.
-5. Get real credentials for at least one of YouTube/X/Instagram/TikTok/Reddit
-   to validate a collector end-to-end beyond the mocked test suite.
+1. Whenever you're ready to unblock the two deferred items: share a
+   Postgres connection string (or run `alembic upgrade head` yourself),
+   and let me know when you want to start on auth — Supabase Auth is the
+   recommendation, and it resolves the single-tenant Trend Matching gap
+   as a side effect.
+2. Get real credentials for at least one of YouTube/X/Instagram/TikTok/
+   Reddit to validate a collector end-to-end beyond the mocked test suite
+   — RSS and Google Trends are proven live now; the rest are still only
+   proven-to-skip-gracefully.

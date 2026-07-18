@@ -99,7 +99,7 @@
 ## Phase 4: Trend Analyzer
 
 ### Trend Discovery
-- [x] Integrate Google Trends API (via `pytrends-modern`, no key required)
+- [x] Integrate Google Trends API (via `pytrends-modern`'s `related_queries()`, no key required — verified live, real data flowing)
 - [x] Build Reddit trending topics scraper (public JSON endpoints, no auth)
 - [x] Implement YouTube trending analysis (YouTube Data API v3, needs `YOUTUBE_API_KEY`)
 - [ ] Integrate LinkedIn trending topics (no public trends API exists outside approved Marketing Partners — not attempted, would require scraping)
