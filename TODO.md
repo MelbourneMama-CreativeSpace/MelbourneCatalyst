@@ -19,7 +19,7 @@
 
 ### Database & Storage
 - [x] Set up PostgreSQL database (Supabase, connected via `DATABASE_URL`)
-- [x] Design database schema (`trends`, `companies`, `documents`, `strategies`, `content_plans`/`content_items` so far — campaign/analytics tables land with their respective modules)
+- [x] Design database schema (`trends`, `companies`, `documents`, `strategies`, `content_plans`/`content_items`, `campaigns`, `collaborations`/`collaboration_ideas`, `competitors` so far — analytics tables land with their respective module)
 - [x] Create database migrations (Alembic, `backend/alembic/`)
 - [ ] Set up vector database for Knowledge Base (e.g., Pinecone, Weaviate, or pgvector)
 - [x] Implement database connection pooling (SQLAlchemy async engine, default pool)
@@ -76,15 +76,15 @@
 - [x] Create business analysis dashboard (`/companies/[id]` — extracted profile view with live status polling)
 
 ### Competitor Research Agent
-- [ ] Implement competitor discovery (manual + AI-assisted)
-- [ ] Build competitor profile scraper
-- [ ] Create product & pricing comparison
-- [ ] Implement marketing strategy analysis
-- [ ] Build social presence tracker
-- [ ] Create customer engagement monitor
-- [ ] Implement competitive gap analysis
-- [ ] Build competitor dashboard UI
-- [ ] Create competitor comparison reports
+- [x] Implement competitor discovery (manual URL entry; AI-assisted is Claude suggesting candidate *names* from training knowledge — no live search, so URLs still require manual lookup)
+- [x] Build competitor profile scraper (reuses Company Analyzer's `discover_and_scrape` + `extract_company_profile` directly)
+- [x] Create product & pricing comparison
+- [x] Implement marketing strategy analysis
+- [ ] Build social presence tracker (needs live follower/engagement counts from a connected platform — not attempted)
+- [ ] Create customer engagement monitor (needs live review/social data — not attempted)
+- [x] Implement competitive gap analysis
+- [x] Build competitor dashboard UI (`/competitor/[id]`)
+- [x] Create competitor comparison reports (the comparison generation is the report)
 
 ### Knowledge Manager
 - [ ] Implement automated knowledge indexing
@@ -158,22 +158,22 @@
 - [ ] Create content preview & approval flow
 
 ### Campaign Manager Agent
-- [ ] Implement campaign creation workflow
-- [ ] Build campaign scheduling system
-- [ ] Create real-time performance tracker
-- [ ] Implement budget allocation optimizer
-- [ ] Build progress monitoring dashboard
-- [ ] Create campaign A/B testing framework
-- [ ] Implement campaign lifecycle management
-- [ ] Build campaign reports generator
+- [x] Implement campaign creation workflow (Claude-generated from company + strategy + content plan)
+- [x] Build campaign scheduling system (start/end date, seeded from the content plan's date range when given)
+- [ ] Create real-time performance tracker (needs live campaign results from a connected platform — not attempted)
+- [x] Implement budget allocation optimizer (Claude-suggested budget split — a recommendation, not computed from real ad-spend data)
+- [ ] Build progress monitoring dashboard (implies tracking real metrics over time; only static lifecycle stage exists, see below)
+- [ ] Create campaign A/B testing framework (needs live traffic/results — not attempted)
+- [x] Implement campaign lifecycle management (`draft`→`scheduled`→`active`→`completed`→`archived`, manually advanced via PATCH)
+- [ ] Build campaign reports generator (nothing to report on without live results — not attempted)
 
 ### Brand Collaboration Agent
-- [ ] Implement influencer discovery engine
-- [ ] Build content creator matching
-- [ ] Create brand partnership finder
-- [ ] Implement outreach template generator
-- [ ] Build collaboration ROI predictor
-- [ ] Create collaboration management dashboard
+- [ ] Implement influencer discovery engine (adapted to collaborator *archetypes*, not named real accounts — no live social search available; see below)
+- [x] Build content creator matching (collaborator archetype + partnership angle, Claude-generated)
+- [x] Create brand partnership finder (partnership angle generation, same as above)
+- [x] Implement outreach template generator (per-idea draft outreach message)
+- [ ] Build collaboration ROI predictor (Claude gives a qualitative rationale/priority, not a computed prediction — no historical data to predict from)
+- [x] Create collaboration management dashboard (`/collaboration/[id]` page)
 
 ### Analytics Agent
 - [ ] Implement campaign success measurement
