@@ -10,8 +10,9 @@ from app.agents.company_analyzer import extractor
 async def test_extract_falls_back_to_empty_profile_without_api_key(monkeypatch):
     monkeypatch.setattr(extractor.settings, "ANTHROPIC_API_KEY", "")
 
-    profile = await extractor.extract_company_profile("some content")
+    profile, extracted_ok = await extractor.extract_company_profile("some content")
 
+    assert extracted_ok is False
     assert profile.name is None
     assert profile.niche_keywords == []
 
@@ -42,8 +43,9 @@ async def test_extract_parses_tool_use_result(monkeypatch):
 
     monkeypatch.setattr(extractor, "_client", lambda: _FakeClient())
 
-    profile = await extractor.extract_company_profile("website content here")
+    profile, extracted_ok = await extractor.extract_company_profile("website content here")
 
+    assert extracted_ok is True
     assert profile.name == "Example Co"
     assert profile.industry == "B2B SaaS"
     assert profile.niche_keywords == ["marketing automation", "AI content", "campaign analytics"]
@@ -62,7 +64,8 @@ async def test_extract_falls_back_on_api_failure(monkeypatch):
 
     monkeypatch.setattr(extractor, "_client", lambda: _FailingClient())
 
-    profile = await extractor.extract_company_profile("content")
+    profile, extracted_ok = await extractor.extract_company_profile("content")
 
+    assert extracted_ok is False
     assert profile.name is None
     assert profile.niche_keywords == []

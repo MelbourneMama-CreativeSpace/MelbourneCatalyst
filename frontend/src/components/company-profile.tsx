@@ -8,7 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getCompany, type Company } from "@/lib/api";
 
-const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set(["complete", "failed"]);
+const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set([
+  "complete",
+  "complete_no_profile",
+  "failed",
+]);
 
 export function CompanyProfile({ initialCompany }: { initialCompany: Company }) {
   const [company, setCompany] = useState(initialCompany);
@@ -28,7 +32,7 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
     return () => clearInterval(timer);
   }, [company.id, company.status]);
 
-  const statusVariant = company.status === "failed" ? "outline" : "default";
+  const statusVariant = company.status === "complete" ? "default" : "outline";
 
   return (
     <div className="mt-6 flex flex-col gap-6">
@@ -52,6 +56,22 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
           <CardContent className="pt-6">
             <p className="text-sm text-destructive">
               Onboarding failed{company.status_error ? `: ${company.status_error}` : "."}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {company.status === "complete_no_profile" && (
+        <Card>
+          <CardContent className="pt-6">
+            {/* A single template-literal expression, not JSX text adjacent
+                to {expr} across line breaks — JSX collapses the leading
+                whitespace of each text line, which silently ate the space
+                after {company.url} when this was written as plain JSX text. */}
+            <p className="text-sm text-muted-foreground">
+              {`We scraped ${company.url} successfully, but couldn't generate a profile from it${
+                company.status_error ? `: ${company.status_error}` : "."
+              } You can re-run onboarding once that's fixed, from the same URL.`}
             </p>
           </CardContent>
         </Card>

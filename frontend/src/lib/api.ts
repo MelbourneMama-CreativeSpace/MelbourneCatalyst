@@ -66,7 +66,13 @@ export interface CollectionRunResult {
 // Companies
 // ---------------------------------------------------------------------------
 
-export type CompanyStatus = "pending" | "scraping" | "extracting" | "complete" | "failed";
+export type CompanyStatus =
+  | "pending"
+  | "scraping"
+  | "extracting"
+  | "complete"
+  | "complete_no_profile"
+  | "failed";
 
 export interface Company {
   id: string;

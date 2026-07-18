@@ -62,8 +62,11 @@ class Company(Base):
     # `name` is nullable because the extractor fills it in during
     # onboarding — it doesn't exist yet when the pending row is created.
     name: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    # Onboarding lifecycle: pending -> scraping -> extracting -> complete | failed.
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    # Onboarding lifecycle: pending -> scraping -> extracting ->
+    # complete | complete_no_profile | failed. complete_no_profile means
+    # scraping succeeded but no profile could be extracted (e.g. missing
+    # ANTHROPIC_API_KEY) — distinct from a silent "complete" with blank fields.
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
     status_error: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # All extracted profile fields are nullable so the row can exist in a

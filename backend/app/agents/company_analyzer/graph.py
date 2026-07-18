@@ -34,6 +34,10 @@ from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
 
+# Statuses that, once set by an earlier node, must not be overwritten by
+# `_persist_profile_node`'s default "extraction succeeded -> complete" path.
+_TERMINAL_STATUSES = {"failed", "complete_no_profile"}
+
 
 class CompanyGraphState(TypedDict):
     company_id: uuid.UUID
@@ -118,14 +122,30 @@ async def _extract_profile_node(state: CompanyGraphState) -> dict:
     aggregated = "\n\n---\n\n".join(
         f"# {page.title or page.url}\n{page.content}" for page in state["pages"]
     )
-    profile = await extract_company_profile(aggregated)
+    profile, extracted_ok = await extract_company_profile(aggregated)
+    if not extracted_ok:
+        # Scraping worked, but no profile came out of it (missing
+        # ANTHROPIC_API_KEY, or the Claude call failed) — distinct from
+        # "complete", so the UI doesn't show a silently blank profile as a
+        # success.
+        return {
+            "profile": profile,
+            "status": "complete_no_profile",
+            "status_error": (
+                "Website was scraped successfully, but no profile could be "
+                "generated (check ANTHROPIC_API_KEY / Claude API availability)."
+            ),
+        }
     return {"profile": profile, "status": "extracting"}
 
 
 async def _persist_profile_node(state: CompanyGraphState) -> dict:
     profile = state["profile"]
-    # If _extract_profile_node already set failed, keep that terminal state.
-    final_status = "failed" if state.get("status") == "failed" else "complete"
+    # Earlier nodes may have already set a terminal status (failed,
+    # complete_no_profile) — preserve it rather than overwriting with the
+    # extraction-succeeded default.
+    incoming_status = state.get("status")
+    final_status = incoming_status if incoming_status in _TERMINAL_STATUSES else "complete"
     status_error = state.get("status_error")
 
     async with async_session_factory() as session:
