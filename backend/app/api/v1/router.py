@@ -6,6 +6,7 @@ from app.api.v1.endpoints.companies import router as companies_router
 from app.api.v1.endpoints.competitor_research import router as competitor_research_router
 from app.api.v1.endpoints.content_management import router as content_management_router
 from app.api.v1.endpoints.knowledge_base import router as knowledge_base_router
+from app.api.v1.endpoints.social_media_analyzer import router as social_media_analyzer_router
 from app.api.v1.endpoints.trends import router as trends_router
 
 api_router = APIRouter()
@@ -21,9 +22,6 @@ api_router.include_router(
 api_router.include_router(
     competitor_research_router, prefix="/competitor-research", tags=["Competitor Research"]
 )
-
-
-@api_router.get("/social-media-analyzer", tags=["Social Media Analyzer"])
-async def social_media_analyzer_status():
-    """Social Media Analyzer module status."""
-    return {"module": "Social Media Analyzer", "status": "active", "agents": ["PlatformIntegration", "PerformanceTracking", "SocialAnalytics", "ChannelIntelligence"]}
+api_router.include_router(
+    social_media_analyzer_router, prefix="/social-media-analyzer", tags=["Social Media Analyzer"]
+)
