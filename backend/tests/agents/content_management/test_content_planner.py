@@ -219,3 +219,105 @@ async def test_generate_content_plan_empty_related_trend_becomes_none(monkeypatc
 
     assert ok is True
     assert generated.items[0].related_trend_title is None
+
+
+def test_seasonal_candidates_finds_fixed_date_events_in_window():
+    start = date(2026, 12, 20)
+    candidates = content_planner._seasonal_candidates(start, days=14)
+
+    assert any("Christmas" in c and "2026-12-25" in c for c in candidates)
+    assert any("New Year's Eve" in c and "2026-12-31" in c for c in candidates)
+    assert any("New Year's Day" in c and "2027-01-01" in c for c in candidates)
+
+
+def test_seasonal_candidates_empty_when_no_events_in_window():
+    # Mar 15 - Mar 25 has no fixed-date events in the lookup table.
+    start = date(2026, 3, 15)
+    candidates = content_planner._seasonal_candidates(start, days=10)
+
+    assert candidates == []
+
+
+async def test_generate_content_plan_parses_audience_interest_and_seasonal_event(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        content_planner,
+        "_client",
+        _fake_client_returning(
+            [
+                {
+                    "title": "Christmas gift guide",
+                    "description": "d",
+                    "content_type": "post",
+                    "platform": "instagram",
+                    "days_from_now": 0,
+                    "audience_interest": "parents shopping for young kids",
+                    "seasonal_event": "Christmas (2026-12-25)",
+                },
+            ]
+        ),
+    )
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is True
+    item = generated.items[0]
+    assert item.audience_interest == "parents shopping for young kids"
+    assert item.seasonal_event == "Christmas (2026-12-25)"
+
+
+async def test_generate_content_plan_empty_audience_interest_and_seasonal_event_become_none(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        content_planner,
+        "_client",
+        _fake_client_returning(
+            [
+                {
+                    "title": "Evergreen post",
+                    "description": "d",
+                    "content_type": "post",
+                    "platform": "instagram",
+                    "days_from_now": 0,
+                    "audience_interest": "",
+                    "seasonal_event": "",
+                },
+            ]
+        ),
+    )
+
+    generated, ok = await content_planner.generate_content_plan("context", days=14)
+
+    assert ok is True
+    item = generated.items[0]
+    assert item.audience_interest is None
+    assert item.seasonal_event is None
+
+
+async def test_generate_content_plan_injects_seasonal_context_into_prompt(monkeypatch):
+    monkeypatch.setattr(content_planner.settings, "ANTHROPIC_API_KEY", "test-key")
+
+    captured = {}
+    tool_use = SimpleNamespace(type="tool_use", input={"items": []})
+
+    class _CapturingMessages:
+        async def create(self, **kwargs):
+            captured["messages"] = kwargs["messages"]
+            return SimpleNamespace(content=[tool_use])
+
+    class _CapturingClient:
+        messages = _CapturingMessages()
+
+    monkeypatch.setattr(content_planner, "_client", lambda: _CapturingClient())
+
+    # A 14-day window from today may or may not contain a fixed-date event —
+    # force it deterministically by monkeypatching the candidate lookup.
+    monkeypatch.setattr(
+        content_planner, "_seasonal_candidates", lambda start, days: ["Halloween (2026-10-31)"]
+    )
+
+    await content_planner.generate_content_plan("context", days=14)
+
+    prompt = captured["messages"][0]["content"]
+    assert "Halloween (2026-10-31)" in prompt
+    assert "Seasonal/awareness dates" in prompt

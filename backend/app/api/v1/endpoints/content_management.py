@@ -20,7 +20,7 @@ from app.agents.content_management.campaign_graph import run_campaign_generation
 from app.agents.content_management.collaboration_graph import run_collaboration_generation
 from app.agents.content_management.content_plan_graph import run_content_plan_generation
 from app.agents.content_management.strategy_graph import run_strategy_generation
-from app.db.models import Campaign, Collaboration, Company, ContentPlan, Strategy
+from app.db.models import Campaign, Collaboration, Company, ContentItem, ContentPlan, Strategy
 from app.db.session import get_session
 from app.models.content_management import (
     CampaignCreateRequest,
@@ -31,6 +31,8 @@ from app.models.content_management import (
     CollaborationListResponse,
     CollaborationOut,
     CollaborationSummaryOut,
+    ContentItemOut,
+    ContentItemUpdateRequest,
     ContentPlanCreateRequest,
     ContentPlanListResponse,
     ContentPlanOut,
@@ -143,7 +145,9 @@ async def create_content_plan(
     session.add(content_plan)
     await session.commit()
 
-    await run_content_plan_generation(content_plan.id, payload.company_id, payload.strategy_id)
+    await run_content_plan_generation(
+        content_plan.id, payload.company_id, payload.strategy_id, payload.days
+    )
 
     # populate_existing=True — same identity-map staleness reason as
     # create_strategy above: this session's cached `content_plan` still
@@ -191,6 +195,28 @@ async def get_content_plan(
     if content_plan is None:
         raise HTTPException(status_code=404, detail="Content plan not found")
     return ContentPlanOut.model_validate(content_plan)
+
+
+@router.patch("/content-items/{item_id}", response_model=ContentItemOut)
+async def update_content_item(
+    item_id: uuid.UUID,
+    payload: ContentItemUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ContentItemOut:
+    """Content preview & approval flow, plus drag-and-drop rescheduling —
+    both are plain field updates on an existing item, no regeneration."""
+    item = await session.get(ContentItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Content item not found")
+
+    if payload.approval_status is not None:
+        item.approval_status = payload.approval_status
+    if payload.suggested_date is not None:
+        item.suggested_date = payload.suggested_date
+
+    await session.commit()
+    await session.refresh(item)
+    return ContentItemOut.model_validate(item)
 
 
 @router.post("/campaigns", response_model=CampaignOut)

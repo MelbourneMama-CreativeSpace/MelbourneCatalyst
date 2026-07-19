@@ -25,6 +25,34 @@ _MAX_CONTEXT_CHARS = 100_000
 _CONTENT_TYPES = ["post", "video", "article", "carousel", "story"]
 _PLATFORMS = ["instagram", "linkedin", "twitter", "tiktok", "youtube", "blog", "facebook"]
 
+# Fixed-date (non-movable) commercial/awareness dates worth planning content
+# around. Deliberately excludes movable-date events (Easter, Mother's/
+# Father's Day, Black Friday) since those shift year to year and this table
+# has no year-awareness — a wrong date would be worse than no suggestion.
+_SEASONAL_EVENTS: dict[tuple[int, int], str] = {
+    (1, 1): "New Year's Day",
+    (2, 14): "Valentine's Day",
+    (3, 8): "International Women's Day",
+    (4, 22): "Earth Day",
+    (5, 1): "International Workers' Day",
+    (6, 5): "World Environment Day",
+    (10, 31): "Halloween",
+    (12, 25): "Christmas",
+    (12, 31): "New Year's Eve",
+}
+
+
+def _seasonal_candidates(start: date, days: int) -> list[str]:
+    """Fixed-date seasonal/awareness events falling within [start, start+days)."""
+    candidates = []
+    for offset in range(days):
+        day = start + timedelta(days=offset)
+        event = _SEASONAL_EVENTS.get((day.month, day.day))
+        if event:
+            candidates.append(f"{event} ({day.isoformat()})")
+    return candidates
+
+
 _TOOL = {
     "name": "generate_content_plan",
     "description": "Generate a content calendar of specific, publishable content ideas.",
@@ -58,6 +86,22 @@ _TOOL = {
                                 "was inspired by, if any — empty string if none"
                             ),
                         },
+                        "audience_interest": {
+                            "type": "string",
+                            "description": (
+                                "Which audience segment or interest (from the company's target "
+                                "audience/niche keywords) this idea speaks to — empty string if "
+                                "generically aimed at the whole audience"
+                            ),
+                        },
+                        "seasonal_event": {
+                            "type": "string",
+                            "description": (
+                                "The exact seasonal/awareness event name (from the candidates given "
+                                "in context) this idea ties to, if any — empty string if none. Only "
+                                "use one of the given candidates, never invent a date."
+                            ),
+                        },
                     },
                     "required": ["title", "description", "content_type", "platform", "days_from_now"],
                 },
@@ -81,7 +125,16 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
         logger.warning("ANTHROPIC_API_KEY not configured; skipping content plan generation")
         return GeneratedContentPlan(), False
 
-    trimmed = context[:_MAX_CONTEXT_CHARS]
+    today = date.today()
+    seasonal_candidates = _seasonal_candidates(today, days)
+    seasonal_context = (
+        "\n\n# Seasonal/awareness dates in this window (tie ideas to these only if genuinely relevant)\n"
+        + "\n".join(f"- {c}" for c in seasonal_candidates)
+        if seasonal_candidates
+        else ""
+    )
+
+    trimmed = context[:_MAX_CONTEXT_CHARS] + seasonal_context
     try:
         response = await _client().messages.create(
             model=_MODEL,
@@ -105,7 +158,6 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
         logger.exception("Claude content plan generation failed")
         return GeneratedContentPlan(), False
 
-    today = date.today()
     items = []
     for raw in raw_items:
         try:
@@ -119,6 +171,8 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
                     suggested_date=today + timedelta(days=days_from_now),
                     theme=raw.get("theme") or None,
                     related_trend_title=raw.get("related_trend_title") or None,
+                    audience_interest=raw.get("audience_interest") or None,
+                    seasonal_event=raw.get("seasonal_event") or None,
                 )
             )
         except (KeyError, TypeError, ValueError):
