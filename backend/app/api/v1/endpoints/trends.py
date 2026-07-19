@@ -12,7 +12,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.trend_analyzer.graph import get_last_run_summary, run_collection
-from app.db.models import Trend
+from app.agents.trend_analyzer.report_graph import run_trend_report_generation
+from app.config import settings
+from app.db.models import Company, Trend, TrendReport
 from app.db.session import get_session
 from app.models.trend import (
     CollectionRunResult,
@@ -20,9 +22,30 @@ from app.models.trend import (
     SourceStatusOut,
     TrendListResponse,
     TrendOut,
+    TrendReportCreateRequest,
+    TrendReportListResponse,
+    TrendReportOut,
 )
 
 router = APIRouter()
+
+
+async def _get_ready_company_or_error(session: AsyncSession, company_id: uuid.UUID) -> Company:
+    """Same guard as content_management.py's — a report generated from a
+    company that hasn't finished onboarding wastes a Claude call on a
+    context that's mostly 'Unknown'."""
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if company.status != "complete":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Company profile is not ready (status: {company.status}). "
+                "Onboarding must complete successfully before generating a report."
+            ),
+        )
+    return company
 
 
 @router.get("/", response_model=TrendListResponse)
@@ -94,6 +117,66 @@ async def source_status(session: AsyncSession = Depends(get_session)) -> list[So
             )
         )
     return statuses
+
+
+# NOTE: these /reports routes must stay registered before GET /{trend_id}
+# below — that catch-all matches any single path segment, so a GET
+# /reports request would otherwise be captured by it first (and fail
+# UUID validation on trend_id="reports") if it came later.
+
+
+@router.post("/reports", response_model=TrendReportOut)
+async def create_trend_report(
+    payload: TrendReportCreateRequest, session: AsyncSession = Depends(get_session)
+) -> TrendReportOut:
+    await _get_ready_company_or_error(session, payload.company_id)
+    period_days = payload.period_days or settings.TREND_REPORT_DEFAULT_PERIOD_DAYS
+
+    report = TrendReport(
+        id=uuid.uuid4(), company_id=payload.company_id, status="pending", period_days=period_days
+    )
+    session.add(report)
+    await session.commit()
+
+    await run_trend_report_generation(report.id, payload.company_id, period_days)
+
+    # populate_existing=True — same identity-map staleness reason as
+    # content_management.py's create_strategy.
+    refreshed = (
+        await session.execute(
+            select(TrendReport)
+            .execution_options(populate_existing=True)
+            .where(TrendReport.id == report.id)
+        )
+    ).scalar_one()
+    return TrendReportOut.model_validate(refreshed)
+
+
+@router.get("/reports", response_model=TrendReportListResponse)
+async def list_trend_reports(
+    company_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
+) -> TrendReportListResponse:
+    stmt = select(TrendReport).order_by(TrendReport.created_at.desc())
+    count_stmt = select(func.count()).select_from(TrendReport)
+    if company_id is not None:
+        stmt = stmt.where(TrendReport.company_id == company_id)
+        count_stmt = count_stmt.where(TrendReport.company_id == company_id)
+
+    total = (await session.execute(count_stmt)).scalar_one()
+    rows = (await session.execute(stmt)).scalars().all()
+    return TrendReportListResponse(
+        items=[TrendReportOut.model_validate(row) for row in rows], total=total
+    )
+
+
+@router.get("/reports/{report_id}", response_model=TrendReportOut)
+async def get_trend_report(
+    report_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> TrendReportOut:
+    report = await session.get(TrendReport, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Trend report not found")
+    return TrendReportOut.model_validate(report)
 
 
 @router.get("/{trend_id}", response_model=TrendOut)

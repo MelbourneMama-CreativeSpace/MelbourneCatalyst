@@ -19,7 +19,7 @@
 
 ### Database & Storage
 - [x] Set up PostgreSQL database (Supabase, connected via `DATABASE_URL`)
-- [x] Design database schema (`trends`, `companies`, `documents`, `strategies`, `content_plans`/`content_items`, `campaigns`, `collaborations`/`collaboration_ideas`, `competitors` so far — analytics tables land with their respective module)
+- [x] Design database schema (`trends`, `companies`, `documents`, `strategies`, `content_plans`/`content_items`, `campaigns`, `collaborations`/`collaboration_ideas`, `competitors`, `platform_connections`/`platform_metric_snapshots`, `trend_reports`, `knowledge_audit_reports` so far)
 - [x] Create database migrations (Alembic, `backend/alembic/`)
 - [ ] Set up vector database for Knowledge Base (e.g., Pinecone, Weaviate, or pgvector)
 - [x] Implement database connection pooling (SQLAlchemy async engine, default pool)
@@ -42,24 +42,24 @@
 
 ### Knowledge Base Core
 - [x] Design knowledge base schema (`documents` table with `pgvector`-backed `embedding` column, `companies` FK)
-- [x] Implement document ingestion pipeline (Company Analyzer graph: scrape → chunk → embed → persist)
+- [x] Implement document ingestion pipeline (Company Analyzer graph: scrape → chunk → embed → persist; plus a shared `ingest_raw_document` primitive reused by every other source below)
 - [x] Create vector embedding generation (`voyage-3-lite` via `AsyncVoyageClient` wrapper, batching + graceful failure)
 - [x] Implement semantic search & retrieval (`similarity_search` via pgvector cosine distance)
-- [x] Build knowledge base CRUD API (`GET /api/v1/knowledge-base/search`; write path is currently agent-only, no manual CRUD endpoints yet)
+- [x] Build knowledge base CRUD API (`GET/POST/DELETE /api/v1/knowledge-base/documents` — list/preview, detail, delete, manual entry, upload, blog-index all live now)
 
 ### Data Sources Integration
 - [x] Website content scraper (httpx + trafilatura main-content extraction; discovers /, /about, /services, /products, /team)
-- [ ] Social media profile importer (deferred — same OAuth/API-tier issues as trend collectors)
-- [ ] Blog/article indexer (partly covered by the RSS trend collector; deferred as a KB source)
-- [ ] Product page parser (covered by the website scraper's page-discovery loop today; specialised extraction deferred)
-- [ ] Business document uploader (PDF, DOCX, etc.)
+- [ ] Social media profile importer (still deferred — same OAuth/API-tier issues as trend collectors; the OAuth *connection* flow exists from Phase 6 but no data-fetching logic does)
+- [x] Blog/article indexer (RSS-driven — `POST /documents/blog-index` — feedparser finds entries, each article page is scraped/extracted the same way the website scraper works; verified live against a real public RSS feed)
+- [x] Product page parser (scraped pages whose URL matches product/pricing/shop paths are now tagged `source_type="product_page"` instead of generic `"website"`, so they're filterable/auditable separately — a real "specialized" distinction, not a new structured-extraction Claude pipeline, since hallucinated pricing data with no way to verify it would be worse than the honest raw text)
+- [x] Business document uploader (PDF/DOCX/TXT/MD — `POST /documents/upload`, `pypdf`/`python-docx` for extraction; verified live with a real generated DOCX)
 
 ### Knowledge Base Management
-- [ ] Build knowledge base dashboard UI (search UI exists via the API; no dedicated dashboard yet)
-- [ ] Create data freshness indicators
-- [ ] Implement automatic re-indexing (re-onboarding a company re-runs the pipeline; incremental sync deferred)
-- [ ] Add manual data entry interface
-- [ ] Build knowledge base search UI
+- [x] Build knowledge base dashboard UI (`/knowledge-base/[companyId]` — search, document list with source-type filters, upload/manual-entry/blog-index forms, per-document delete, all wired to real endpoints)
+- [x] Create data freshness indicators (`GET /freshness`, shipped in an earlier round — shown on both the company page and the new dashboard)
+- [x] Implement automatic re-indexing (re-onboarding already rebuilt from scratch; every new source now dedups by `source_url` too — re-running blog indexing or re-uploading the same file replaces old chunks instead of accumulating duplicates, verified live by re-running blog indexing twice and confirming the document count didn't change. Content-hash-based *partial* diffing, i.e. skipping unchanged sources entirely, remains a stretch goal — out of scope here)
+- [x] Add manual data entry interface (`POST /documents/manual` + a title/content form on the dashboard)
+- [x] Build knowledge base search UI (the dashboard's search box wires up `searchKnowledgeBase()`, which existed in the API client but was never called from any component until now)
 
 ---
 
@@ -89,10 +89,10 @@
 ### Knowledge Manager
 - [ ] Implement automated knowledge indexing
 - [ ] Build incremental update pipeline
-- [ ] Create knowledge freshness scoring
-- [ ] Implement cross-reference linking
-- [ ] Build knowledge graph visualization
-- [ ] Create knowledge audit reports
+- [x] Create knowledge freshness scoring (`GET /api/v1/knowledge-base/freshness` — pure computation over `documents.created_at`, no Claude call needed; document count + last-ingested + staleness days, shown on the company page)
+- [ ] Implement cross-reference linking (needs a well-defined linking model between documents/entities — not attempted)
+- [ ] Build knowledge graph visualization (needs a graph UI this project doesn't have — not attempted)
+- [x] Create knowledge audit reports (`KnowledgeAuditReport` — Claude-generated coverage summary, identified gaps, recommendations over a sample of the company's documents; `/knowledge-audit/[id]`)
 
 ---
 
@@ -129,11 +129,11 @@
 - [ ] Create historical performance reports
 
 ### Trend Outputs
-- [ ] Build daily trending topics feed
-- [ ] Create weekly market report generator
-- [ ] Implement industry insights summarizer
-- [ ] Build content opportunity recommender
-- [ ] Create trend alerts & notifications
+- [ ] Build daily trending topics feed (the `/trends` dashboard already covers this on-demand; a scheduled digest is deferred)
+- [x] Create weekly market report generator (`TrendReport` — one Claude generation over the top-N relevance-scored trends from the last `period_days`, default 7; `POST /api/v1/trend-analyzer/reports`)
+- [x] Implement industry insights summarizer (`summary` + `notable_trends_summary` fields on the same `TrendReport` generation)
+- [x] Build content opportunity recommender (`content_opportunities` field on the same `TrendReport` generation)
+- [ ] Create trend alerts & notifications (needs a delivery channel — email/webhook — that doesn't exist; not attempted)
 
 ---
 
@@ -149,13 +149,13 @@
 
 ### Content Planner Agent
 - [x] Build content calendar engine
-- [ ] Create daily post generator
-- [ ] Implement weekly schedule builder
-- [ ] Build monthly campaign planner
-- [ ] Create audience-interest-based planning
-- [ ] Implement seasonal event integration
-- [ ] Build drag-and-drop calendar UI
-- [ ] Create content preview & approval flow
+- [x] Create daily post generator (every generated `ContentItem` is a single day's post — the calendar engine already produces day-granularity items)
+- [x] Implement weekly schedule builder (content plan generation now accepts an optional `days` window — 7/14/30 presets in the UI — instead of a fixed 14-day plan)
+- [x] Build monthly campaign planner (same `days` override, 30-day preset)
+- [x] Create audience-interest-based planning (`audience_interest` field on each generated item — Claude ties ideas to the company's target audience/niche keywords)
+- [x] Implement seasonal event integration (`seasonal_event` field — a small fixed-date lookup table of upcoming awareness/commercial dates is passed as generation context; movable holidays like Easter/Mother's Day deliberately excluded since there's no year-awareness to compute them correctly)
+- [x] Build drag-and-drop calendar UI (`content-plan-view.tsx` — a real month-grid calendar, native HTML5 drag-and-drop to reschedule items between days via `PATCH /content-items/{id}`)
+- [x] Create content preview & approval flow (`approval_status` — pending/approved/rejected — on each `ContentItem`, click-to-preview panel with Approve/Reject controls)
 
 ### Campaign Manager Agent
 - [x] Implement campaign creation workflow (Claude-generated from company + strategy + content plan)
@@ -189,17 +189,22 @@
 ## Phase 6: Social Media Analyzer
 
 ### Platform Integration Agent
-- [ ] Implement Facebook/Meta API integration
-- [ ] Implement Instagram API integration
-- [ ] Implement LinkedIn API integration
-- [ ] Implement X (Twitter) API integration
-- [ ] Implement TikTok API integration
-- [ ] Implement YouTube API integration
-- [ ] Build platform connection management UI
-- [ ] Create OAuth flow for each platform
-- [ ] Implement data sync scheduling
+- [ ] Implement Facebook/Meta API integration (OAuth connection flow is live — see below; no data-fetching against the API yet)
+- [ ] Implement Instagram API integration (same — connection only)
+- [ ] Implement LinkedIn API integration (same — connection only)
+- [ ] Implement X (Twitter) API integration (same — connection only)
+- [ ] Implement TikTok API integration (same — connection only)
+- [ ] Implement YouTube API integration (same — connection only)
+- [x] Build platform connection management UI (`PlatformConnections` on the company page — 6 platforms, Connect/Disconnect)
+- [x] Create OAuth flow for each platform (generic OAuth2 authorization-code flow, PKCE for X, signed state, encrypted token storage — scaffolded and gracefully "not configured" until a real app is registered on each platform's developer console; never tested against a real app in this environment)
+- [ ] Implement data sync scheduling (needs a real per-platform data-fetching writer first, deliberately not built this round — see Performance Tracking below)
 
 ### Performance Tracking Agent
+Storage schema exists (`PlatformMetricSnapshot`), but no items below are
+implemented — deliberately deferred, since parsing each platform's real
+analytics response shape can't be verified without a live connected
+account (none exists in this environment). All redone once a real
+connection is available to test against.
 - [ ] Build engagement rate tracker
 - [ ] Create follower growth monitor
 - [ ] Implement impressions & reach tracker
@@ -209,6 +214,8 @@
 - [ ] Build real-time performance dashboard
 
 ### Social Analytics Agent
+Same deferral as Performance Tracking above — downstream of data this
+environment can't yet produce.
 - [ ] Implement audience demographics collector
 - [ ] Build engagement pattern analyzer
 - [ ] Create platform performance benchmarker
@@ -279,4 +286,4 @@
 
 ---
 
-> **Last Updated:** July 2026
+> **Last Updated:** July 2026 (Phase 2 Knowledge Base completion round)

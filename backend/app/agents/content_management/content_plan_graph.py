@@ -29,6 +29,7 @@ class ContentPlanGraphState(TypedDict):
     content_plan_id: uuid.UUID
     company_id: uuid.UUID
     strategy_id: uuid.UUID | None
+    days: int
     context: str
     trend_ids_by_title: dict[str, uuid.UUID]
     generated: GeneratedContentPlan
@@ -42,6 +43,7 @@ def _format_context(company: Company, strategy: Strategy | None, trends: list[Tr
         f"Name: {company.name or 'Unknown'}",
         f"Industry: {company.industry or 'Unknown'}",
         f"Target audience: {company.target_audience or 'Unknown'}",
+        f"Niche keywords / audience interests: {', '.join(company.niche_keywords) if company.niche_keywords else 'Unknown'}",
         f"Brand voice: {company.brand_voice or 'Unknown'}",
         f"Summary: {company.summary or 'Unknown'}",
     ]
@@ -91,7 +93,7 @@ async def _gather_context_node(state: ContentPlanGraphState) -> dict:
 async def _generate_node(state: ContentPlanGraphState) -> dict:
     if state.get("status") == "failed":
         return {}
-    generated, ok = await generate_content_plan(state["context"], days=settings.CONTENT_PLAN_DAYS)
+    generated, ok = await generate_content_plan(state["context"], days=state["days"])
     if not ok:
         return {
             "generated": generated,
@@ -135,6 +137,9 @@ async def _persist_node(state: ContentPlanGraphState) -> dict:
                         if item.related_trend_title
                         else None
                     ),
+                    audience_interest=item.audience_interest,
+                    seasonal_event=item.seasonal_event,
+                    approval_status="pending",
                 )
                 for item in generated.items
             ]
@@ -163,14 +168,20 @@ _content_plan_graph = _build_graph()
 
 
 async def run_content_plan_generation(
-    content_plan_id: uuid.UUID, company_id: uuid.UUID, strategy_id: uuid.UUID | None
+    content_plan_id: uuid.UUID,
+    company_id: uuid.UUID,
+    strategy_id: uuid.UUID | None,
+    days: int | None = None,
 ) -> None:
     """Run content plan generation for one ContentPlan row. Awaited directly
-    by the API handler, same pattern as `run_strategy_generation`."""
+    by the API handler, same pattern as `run_strategy_generation`. `days`
+    overrides the default window (e.g. 7 for a weekly plan, 30 for a
+    monthly one) — falls back to `settings.CONTENT_PLAN_DAYS` when omitted."""
     initial_state: ContentPlanGraphState = {
         "content_plan_id": content_plan_id,
         "company_id": company_id,
         "strategy_id": strategy_id,
+        "days": days if days is not None else settings.CONTENT_PLAN_DAYS,
         "context": "",
         "trend_ids_by_title": {},
         "generated": GeneratedContentPlan(),

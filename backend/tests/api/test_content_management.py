@@ -31,7 +31,7 @@ async def client(monkeypatch, test_session_factory):
             strategy.marketing_strategy = "Fake marketing strategy."
             await session.commit()
 
-    async def _fake_run_content_plan_generation(content_plan_id, company_id, strategy_id):
+    async def _fake_run_content_plan_generation(content_plan_id, company_id, strategy_id, days=None):
         async with test_session_factory() as session:
             plan = await session.get(ContentPlan, content_plan_id)
             plan.status = "complete"
@@ -44,6 +44,10 @@ async def client(monkeypatch, test_session_factory):
                     content_type="post",
                     platform="linkedin",
                     suggested_date=date.today(),
+                    # Records the received `days` so tests can assert the
+                    # request payload's `days` field actually reached the
+                    # generation call, without a separate capture fixture.
+                    theme=f"days={days}",
                 )
             )
             await session.commit()
@@ -195,6 +199,26 @@ async def test_create_content_plan_returns_completed_plan_with_items(client, tes
     assert body["items"][0]["title"] == "Fake content item"
 
 
+async def test_create_content_plan_passes_days_through(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+
+    response = await client.post(
+        "/content-plans", json={"company_id": str(company_id), "days": 30}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["theme"] == "days=30"
+
+
+async def test_create_content_plan_defaults_days_when_omitted(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+
+    response = await client.post("/content-plans", json={"company_id": str(company_id)})
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["theme"] == "days=None"
+
+
 async def test_create_content_plan_404s_for_unknown_company(client):
     response = await client.post("/content-plans", json={"company_id": str(uuid.uuid4())})
     assert response.status_code == 404
@@ -291,6 +315,97 @@ async def test_list_content_plans_does_not_include_items(client, test_session_fa
     body = response.json()
     assert body["total"] == 1
     assert "items" not in body["items"][0]  # list view is a summary, no nested content items
+
+
+# --- Content items (approval + reschedule) ----------------------------------
+
+
+async def _seed_content_item(test_session_factory, **overrides) -> tuple[uuid.UUID, uuid.UUID]:
+    company_id = await _seed_company(test_session_factory)
+    plan_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    defaults = dict(
+        id=item_id,
+        content_plan_id=plan_id,
+        title="Item",
+        description="d",
+        content_type="post",
+        platform="instagram",
+        suggested_date=date.today(),
+    )
+    defaults.update(overrides)
+    async with test_session_factory() as session:
+        session.add(ContentPlan(id=plan_id, company_id=company_id, status="complete"))
+        session.add(ContentItem(**defaults))
+        await session.commit()
+    return item_id, plan_id
+
+
+async def test_update_content_item_sets_approval_status(client, test_session_factory):
+    item_id, _ = await _seed_content_item(test_session_factory)
+
+    response = await client.patch(f"/content-items/{item_id}", json={"approval_status": "approved"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approval_status"] == "approved"
+
+
+async def test_update_content_item_rejects(client, test_session_factory):
+    item_id, _ = await _seed_content_item(test_session_factory)
+
+    response = await client.patch(f"/content-items/{item_id}", json={"approval_status": "rejected"})
+
+    assert response.status_code == 200
+    assert response.json()["approval_status"] == "rejected"
+
+
+async def test_update_content_item_reschedules_suggested_date(client, test_session_factory):
+    item_id, _ = await _seed_content_item(test_session_factory)
+    new_date = "2026-12-25"
+
+    response = await client.patch(f"/content-items/{item_id}", json={"suggested_date": new_date})
+
+    assert response.status_code == 200
+    assert response.json()["suggested_date"] == new_date
+
+
+async def test_update_content_item_can_set_both_fields_at_once(client, test_session_factory):
+    item_id, _ = await _seed_content_item(test_session_factory)
+
+    response = await client.patch(
+        f"/content-items/{item_id}",
+        json={"approval_status": "approved", "suggested_date": "2026-12-25"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approval_status"] == "approved"
+    assert body["suggested_date"] == "2026-12-25"
+
+
+async def test_update_content_item_404s_for_unknown_id(client):
+    response = await client.patch(
+        f"/content-items/{uuid.uuid4()}", json={"approval_status": "approved"}
+    )
+    assert response.status_code == 404
+
+
+async def test_update_content_item_rejects_invalid_approval_status(client, test_session_factory):
+    item_id, _ = await _seed_content_item(test_session_factory)
+
+    response = await client.patch(f"/content-items/{item_id}", json={"approval_status": "maybe"})
+
+    assert response.status_code == 422
+
+
+async def test_new_content_items_default_to_pending_approval(client, test_session_factory):
+    _, plan_id = await _seed_content_item(test_session_factory)
+
+    response = await client.get(f"/content-plans/{plan_id}")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["approval_status"] == "pending"
 
 
 # --- Campaigns ---------------------------------------------------------

@@ -22,12 +22,24 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.v1.endpoints import trends as trends_module
-from app.db.models import Trend
+from app.db.models import Company, Trend, TrendReport
 from app.db.session import get_session
 
 
 @pytest_asyncio.fixture
-async def client(test_session_factory):
+async def client(monkeypatch, test_session_factory):
+    async def _fake_run_trend_report_generation(report_id, company_id, period_days):
+        async with test_session_factory() as session:
+            trend_report = await session.get(TrendReport, report_id)
+            trend_report.status = "complete"
+            trend_report.summary = "Fake trend report summary."
+            trend_report.key_themes = ["fake theme"]
+            await session.commit()
+
+    monkeypatch.setattr(
+        trends_module, "run_trend_report_generation", _fake_run_trend_report_generation
+    )
+
     app = FastAPI()
     app.include_router(trends_module.router)
 
@@ -40,6 +52,18 @@ async def client(test_session_factory):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
         yield async_client
+
+
+async def _seed_company(test_session_factory, **overrides) -> uuid.UUID:
+    company_id = uuid.uuid4()
+    defaults = dict(
+        id=company_id, url=f"https://example.com/{company_id}", status="complete", name="Acme"
+    )
+    defaults.update(overrides)
+    async with test_session_factory() as session:
+        session.add(Company(**defaults))
+        await session.commit()
+    return company_id
 
 
 async def _seed_trend(test_session_factory, **overrides) -> uuid.UUID:
@@ -133,3 +157,92 @@ async def test_collect_endpoint_invokes_run_collection(monkeypatch, client):
     # must survive the API boundary distinctly, not collapse into one.
     assert body["source_results"][0]["collected_count"] == 5
     assert body["source_results"][0]["new_item_count"] == 2
+
+
+# --- Trend reports -------------------------------------------------------
+
+
+async def test_create_trend_report_returns_completed_report(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+
+    response = await client.post("/reports", json={"company_id": str(company_id)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "complete"
+    assert body["summary"] == "Fake trend report summary."
+    assert body["period_days"] == 7  # TREND_REPORT_DEFAULT_PERIOD_DAYS
+
+
+async def test_create_trend_report_uses_a_custom_period(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+
+    response = await client.post(
+        "/reports", json={"company_id": str(company_id), "period_days": 30}
+    )
+
+    assert response.json()["period_days"] == 30
+
+
+async def test_create_trend_report_404s_for_unknown_company(client):
+    response = await client.post("/reports", json={"company_id": str(uuid.uuid4())})
+    assert response.status_code == 404
+
+
+async def test_create_trend_report_409s_when_company_profile_not_ready(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory, status="scraping")
+
+    response = await client.post("/reports", json={"company_id": str(company_id)})
+
+    assert response.status_code == 409
+
+
+async def test_get_trend_report_404s_for_unknown_id(client):
+    response = await client.get(f"/reports/{uuid.uuid4()}")
+    assert response.status_code == 404
+
+
+async def test_get_trend_report_returns_the_row(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+    report_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(
+            TrendReport(
+                id=report_id,
+                company_id=company_id,
+                status="complete",
+                period_days=7,
+                summary="Existing summary",
+            )
+        )
+        await session.commit()
+
+    response = await client.get(f"/reports/{report_id}")
+
+    assert response.status_code == 200
+    assert response.json()["summary"] == "Existing summary"
+
+
+async def test_list_trend_reports_filters_by_company_id(client, test_session_factory):
+    company_a = await _seed_company(test_session_factory)
+    company_b = await _seed_company(test_session_factory)
+    async with test_session_factory() as session:
+        session.add(TrendReport(id=uuid.uuid4(), company_id=company_a, status="complete", period_days=7))
+        session.add(TrendReport(id=uuid.uuid4(), company_id=company_b, status="complete", period_days=7))
+        await session.commit()
+
+    response = await client.get("/reports", params={"company_id": str(company_a)})
+
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["company_id"] == str(company_a)
+
+
+async def test_reports_route_is_not_captured_by_the_trend_id_catch_all(client, test_session_factory):
+    """Regression check: /reports must resolve to the reports list route,
+    not fall into GET /{trend_id} (which would 422 trying to parse
+    "reports" as a UUID) — this only works because /reports is registered
+    before /{trend_id} in trends.py."""
+    response = await client.get("/reports")
+    assert response.status_code == 200
+    assert "items" in response.json()

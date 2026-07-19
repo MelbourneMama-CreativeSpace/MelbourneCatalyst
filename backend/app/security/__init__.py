@@ -1,10 +1,16 @@
 """SSRF protection for outbound requests the server makes on a user's behalf.
 
-Any endpoint that fetches a user-supplied URL (currently: company
+Any endpoint that fetches a user-supplied URL (currently: company/competitor
 onboarding) needs to reject requests to private/internal/cloud-metadata
 addresses — otherwise an unauthenticated caller can make this server probe
 its own internal network. Not agent-specific, so it lives at the app level
 rather than under `agents/company_analyzer/`.
+
+`token_encryption` and `oauth_state` (submodules) are also cross-cutting
+security concerns — encrypting OAuth tokens at rest and signing OAuth
+`state` params — so they live alongside SSRF validation here rather than
+under a single agent's package, even though only `social_media_analyzer`
+uses them today.
 """
 
 from __future__ import annotations

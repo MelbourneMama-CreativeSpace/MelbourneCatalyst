@@ -10,9 +10,16 @@ import { createCollaboration, createContentPlan, getStrategy, type Strategy } fr
 
 const TERMINAL_STATUSES: ReadonlySet<Strategy["status"]> = new Set(["complete", "failed"]);
 
+const PLAN_WINDOWS: { label: string; days: number }[] = [
+  { label: "Weekly", days: 7 },
+  { label: "Standard", days: 14 },
+  { label: "Monthly", days: 30 },
+];
+
 export function StrategyView({ initialStrategy }: { initialStrategy: Strategy }) {
   const router = useRouter();
   const [strategy, setStrategy] = useState(initialStrategy);
+  const [planDays, setPlanDays] = useState(14);
   const [generatingPlan, setGeneratingPlan] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [generatingCollaboration, setGeneratingCollaboration] = useState(false);
@@ -39,7 +46,7 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
     setGeneratingPlan(true);
     setPlanError(null);
     try {
-      const plan = await createContentPlan(strategy.company_id, strategy.id);
+      const plan = await createContentPlan(strategy.company_id, strategy.id, planDays);
       router.push(`/content-plan/${plan.id}`);
     } catch (err) {
       setPlanError(err instanceof Error ? err.message : "Failed to generate content plan.");
@@ -96,7 +103,21 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
 
       {strategy.status === "complete" && (
         <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex gap-1">
+              {PLAN_WINDOWS.map((window) => (
+                <Button
+                  key={window.days}
+                  type="button"
+                  size="sm"
+                  variant={planDays === window.days ? "default" : "outline"}
+                  onClick={() => setPlanDays(window.days)}
+                  disabled={generatingPlan}
+                >
+                  {window.label}
+                </Button>
+              ))}
+            </div>
             <Button onClick={handleGenerateContentPlan} disabled={generatingPlan}>
               {generatingPlan ? "Generating content plan…" : "Generate content plan"}
             </Button>

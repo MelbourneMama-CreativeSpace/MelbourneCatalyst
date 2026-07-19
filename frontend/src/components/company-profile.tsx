@@ -9,6 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CompetitorList } from "@/components/competitor-list";
 import { ContentHistory } from "@/components/content-history";
+import { KnowledgePanel } from "@/components/knowledge-panel";
+import { PlatformConnections } from "@/components/platform-connections";
+import { TrendReports } from "@/components/trend-reports";
 import { createStrategy, getCompany, type Company } from "@/lib/api";
 
 const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set([
@@ -161,6 +164,12 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
       )}
 
       {company.status === "complete" && <CompetitorList companyId={company.id} />}
+
+      {company.status === "complete" && <PlatformConnections companyId={company.id} />}
+
+      {company.status === "complete" && <TrendReports companyId={company.id} />}
+
+      {company.status === "complete" && <KnowledgePanel companyId={company.id} />}
 
       {company.status === "complete" && <ContentHistory companyId={company.id} />}
     </div>

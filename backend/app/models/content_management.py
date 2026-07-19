@@ -33,6 +33,9 @@ class StrategyCreateRequest(BaseModel):
     company_id: uuid.UUID
 
 
+ApprovalStatus = Literal["pending", "approved", "rejected"]
+
+
 class ContentItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -44,6 +47,18 @@ class ContentItemOut(BaseModel):
     theme: str | None
     suggested_date: date
     source_trend_id: uuid.UUID | None
+    audience_interest: str | None
+    seasonal_event: str | None
+    approval_status: ApprovalStatus
+
+
+class ContentItemUpdateRequest(BaseModel):
+    """PATCH /content-items/{id} — reschedule (drag-and-drop) and/or set
+    approval status. Both fields optional; at least one is expected but
+    the endpoint doesn't hard-require it (a no-op patch is harmless)."""
+
+    approval_status: ApprovalStatus | None = None
+    suggested_date: date | None = None
 
 
 class ContentPlanOut(BaseModel):
@@ -82,6 +97,9 @@ class ContentPlanListResponse(BaseModel):
 class ContentPlanCreateRequest(BaseModel):
     company_id: uuid.UUID
     strategy_id: uuid.UUID | None = None
+    # Overrides settings.CONTENT_PLAN_DAYS (14) — e.g. 7 for a weekly plan,
+    # 30 for a monthly one.
+    days: int | None = None
 
 
 LifecycleStage = Literal["draft", "scheduled", "active", "completed", "archived"]

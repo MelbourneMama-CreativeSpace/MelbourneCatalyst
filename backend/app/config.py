@@ -76,6 +76,52 @@ class Settings(BaseSettings):
     # Content Management — Campaign Manager + Brand Collaboration
     COLLABORATION_MAX_IDEAS: int = 5
 
+    # Social Media Analyzer — Platform Integration (OAuth connections)
+    # Base URL this backend is reachable at, used to build the OAuth
+    # callback redirect_uri (must match what's registered on each
+    # platform's app). Distinct from FRONTEND_BASE_URL below.
+    APP_BASE_URL: str = "http://localhost:8000"
+    # Where the browser gets redirected after a connection completes —
+    # the frontend, not this backend.
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
+    # Fernet key (Fernet.generate_key()) — encrypts OAuth tokens at rest
+    # and doubles as the HMAC signing key for OAuth `state` params (see
+    # app/security/token_encryption.py, app/security/oauth_state.py).
+    TOKEN_ENCRYPTION_KEY: str = ""
+    # Meta app (covers both Instagram and Facebook — one Meta app, two
+    # product surfaces) — https://developers.facebook.com/apps
+    META_APP_CLIENT_ID: str = ""
+    META_APP_CLIENT_SECRET: str = ""
+    # X/Twitter OAuth2 app — distinct from TWITTER_BEARER_TOKEN above,
+    # which is a separate app-level credential for the Trend Analyzer's
+    # read-only search — https://developer.twitter.com/en/portal/dashboard
+    TWITTER_OAUTH_CLIENT_ID: str = ""
+    TWITTER_OAUTH_CLIENT_SECRET: str = ""
+    # LinkedIn app — https://www.linkedin.com/developers/apps
+    LINKEDIN_CLIENT_ID: str = ""
+    LINKEDIN_CLIENT_SECRET: str = ""
+    # TikTok "Login Kit" app — distinct from TIKTOK_CLIENT_KEY/SECRET
+    # above, which is the separate Research API used by the Trend
+    # Analyzer — https://developers.tiktok.com/apps
+    TIKTOK_OAUTH_CLIENT_KEY: str = ""
+    TIKTOK_OAUTH_CLIENT_SECRET: str = ""
+    # Google Cloud OAuth client (covers YouTube) —
+    # https://console.cloud.google.com/apis/credentials
+    GOOGLE_OAUTH_CLIENT_ID: str = ""
+    GOOGLE_OAUTH_CLIENT_SECRET: str = ""
+
+    # Trend Analyzer — Trend Outputs (weekly report / insights / content opportunities)
+    TREND_REPORT_MAX_TRENDS: int = 15
+    TREND_REPORT_DEFAULT_PERIOD_DAYS: int = 7
+
+    # Knowledge Base — Knowledge Manager (audit reports)
+    KNOWLEDGE_AUDIT_MAX_DOCUMENTS: int = 30
+
+    # Knowledge Base — document sources (blog indexer, uploads, dashboard)
+    KB_BLOG_MAX_ARTICLES: int = 5
+    KB_DOCUMENT_LIST_DEFAULT_LIMIT: int = 50
+    KB_UPLOAD_MAX_BYTES: int = 5_000_000
+
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 

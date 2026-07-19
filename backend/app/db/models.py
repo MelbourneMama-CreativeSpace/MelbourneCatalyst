@@ -173,6 +173,20 @@ class ContentItem(Base):
     source_trend_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("trends.id", ondelete="SET NULL"), nullable=True
     )
+    # Which audience segment/interest (drawn from the company's profile)
+    # this idea is aimed at — Claude-generated, distinct from `theme` which
+    # is a content/campaign tag rather than an audience descriptor.
+    audience_interest: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Name of the seasonal/awareness event (e.g. "Mother's Day") this idea
+    # ties to, if Claude chose to tie it to one of the candidates offered in
+    # generation context for the plan's date window. Null for evergreen ideas.
+    seasonal_event: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Manual review lifecycle, independent of ContentPlan.status (which is
+    # only the generation lifecycle) — same "manually advanced, no
+    # state-machine enforcement" pattern as Campaign.lifecycle_stage.
+    approval_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     content_plan: Mapped[ContentPlan] = relationship(back_populates="items")
@@ -294,3 +308,98 @@ class Competitor(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class PlatformConnection(Base):
+    __tablename__ = "platform_connections"
+    __table_args__ = (
+        UniqueConstraint("company_id", "platform", name="uq_platform_connections_company_platform"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # instagram | facebook | twitter | linkedin | tiktok | youtube
+    platform: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="disconnected", index=True
+    )
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Encrypted at the application layer (see app/security/token_encryption.py)
+    # before ever reaching this column — these are real third-party
+    # credentials, unlike everything else this app stores.
+    access_token_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
+    refresh_token_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    external_account_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    external_account_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    scopes: Mapped[str | None] = mapped_column(String, nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PlatformMetricSnapshot(Base):
+    """Storage shape for a future Performance Tracking sync writer — no
+    writer exists yet (this round scaffolds schema + connection UI only,
+    per the explicit scope decision), so this table is created but stays
+    empty until a later round adds the per-platform metrics fetcher."""
+
+    __tablename__ = "platform_metric_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    platform_connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("platform_connections.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    follower_count: Mapped[int | None] = mapped_column(nullable=True)
+    engagement_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    raw_metadata: Mapped[dict] = mapped_column(_MetadataType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TrendReport(Base):
+    __tablename__ = "trend_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    period_days: Mapped[int] = mapped_column(nullable=False)
+
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Same JSON/ARRAY-variant pattern as Company.niche_keywords — a short
+    # list of strings, not free text.
+    key_themes: Mapped[list[str] | None] = mapped_column(_StringArrayType, nullable=True)
+    notable_trends_summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    content_opportunities: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeAuditReport(Base):
+    __tablename__ = "knowledge_audit_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    coverage_summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    identified_gaps: Mapped[str | None] = mapped_column(String, nullable=True)
+    recommendations: Mapped[str | None] = mapped_column(String, nullable=True)
+    # How many Document rows existed for this company when the audit ran —
+    # context for interpreting the report later, since the KB keeps growing.
+    document_count_at_generation: Mapped[int] = mapped_column(nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

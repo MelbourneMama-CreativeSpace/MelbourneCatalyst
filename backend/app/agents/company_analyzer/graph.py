@@ -18,6 +18,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from typing import TypedDict
+from urllib.parse import urlparse
 
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import select
@@ -49,6 +50,19 @@ class CompanyGraphState(TypedDict):
     status_error: str | None
 
 
+# Path fragments that mark a scraped page as product/pricing content
+# rather than generic "website" content — lets KB search/audit tools
+# filter product pages out from general site copy.
+_PRODUCT_PAGE_PATH_MARKERS = ("product", "pricing", "shop", "store")
+
+
+def _classify_source_type(url: str) -> str:
+    path = urlparse(url).path.lower()
+    if any(marker in path for marker in _PRODUCT_PAGE_PATH_MARKERS):
+        return "product_page"
+    return "website"
+
+
 async def _scrape_pages_node(state: CompanyGraphState) -> dict:
     pages = await discover_and_scrape(
         state["url"], max_pages=settings.COMPANY_ONBOARDING_MAX_PAGES
@@ -74,7 +88,7 @@ async def _chunk_and_embed_node(state: CompanyGraphState) -> dict:
         for i, chunk in enumerate(chunks):
             embedded.append(
                 EmbeddedChunk(
-                    source_type="website",
+                    source_type=_classify_source_type(page.url),
                     source_url=page.url,
                     chunk_index=i,
                     content=chunk,

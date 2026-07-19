@@ -31,6 +31,8 @@ class GeneratedContentItem:
     suggested_date: date
     theme: str | None = None
     related_trend_title: str | None = None
+    audience_interest: str | None = None
+    seasonal_event: str | None = None
 
 
 @dataclass(slots=True)
