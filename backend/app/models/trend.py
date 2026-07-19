@@ -63,3 +63,28 @@ class CollectionSourceResult(BaseModel):
 class CollectionRunResult(BaseModel):
     new_item_count: int
     source_results: list[CollectionSourceResult]
+
+
+class TrendReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    company_id: uuid.UUID
+    status: str
+    status_error: str | None
+    period_days: int
+    summary: str | None
+    key_themes: list[str] | None
+    notable_trends_summary: str | None
+    content_opportunities: str | None
+    created_at: datetime
+
+
+class TrendReportListResponse(BaseModel):
+    items: list[TrendReportOut]
+    total: int
+
+
+class TrendReportCreateRequest(BaseModel):
+    company_id: uuid.UUID
+    period_days: int | None = None

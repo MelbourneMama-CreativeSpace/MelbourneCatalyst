@@ -74,3 +74,13 @@ class RunResult:
 
     new_item_count: int
     source_results: list[SourceResult]
+
+
+@dataclass(slots=True)
+class GeneratedTrendReport:
+    """Claude's structured output for `generate_trend_report`."""
+
+    summary: str | None = None
+    key_themes: list[str] = field(default_factory=list)
+    notable_trends_summary: str | None = None
+    content_opportunities: str | None = None

@@ -38,3 +38,12 @@ class SearchHit:
     content: str
     similarity: float
     raw_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class GeneratedAudit:
+    """Claude's structured output for `generate_audit`."""
+
+    coverage_summary: str | None = None
+    identified_gaps: str | None = None
+    recommendations: str | None = None
