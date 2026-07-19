@@ -62,6 +62,26 @@ export interface CollectionRunResult {
   source_results: CollectionSourceResult[];
 }
 
+export type ReportStatus = "pending" | "complete" | "failed";
+
+export interface TrendReport {
+  id: string;
+  company_id: string;
+  status: ReportStatus;
+  status_error: string | null;
+  period_days: number;
+  summary: string | null;
+  key_themes: string[] | null;
+  notable_trends_summary: string | null;
+  content_opportunities: string | null;
+  created_at: string;
+}
+
+export interface TrendReportListResponse {
+  items: TrendReport[];
+  total: number;
+}
+
 // ---------------------------------------------------------------------------
 // Companies
 // ---------------------------------------------------------------------------
@@ -136,6 +156,8 @@ export type Platform =
   | "blog"
   | "facebook";
 
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+
 export interface ContentItem {
   id: string;
   title: string;
@@ -145,6 +167,9 @@ export interface ContentItem {
   theme: string | null;
   suggested_date: string;
   source_trend_id: string | null;
+  audience_interest: string | null;
+  seasonal_event: string | null;
+  approval_status: ApprovalStatus;
 }
 
 export interface ContentPlan {
@@ -272,6 +297,40 @@ export interface CompetitorCreatedResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Social Media Analyzer
+// ---------------------------------------------------------------------------
+
+export type SocialPlatform =
+  | "instagram"
+  | "facebook"
+  | "twitter"
+  | "linkedin"
+  | "tiktok"
+  | "youtube";
+
+export type ConnectionStatus = "connected" | "disconnected" | "error" | "expired";
+
+export interface PlatformConnection {
+  // null for a not-yet-connected platform — the list endpoint always
+  // returns one entry per known platform, connected or not.
+  id: string | null;
+  company_id: string;
+  platform: SocialPlatform;
+  status: ConnectionStatus;
+  status_error: string | null;
+  external_account_id: string | null;
+  external_account_name: string | null;
+  scopes: string | null;
+  connected_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PlatformConnectionListResponse {
+  items: PlatformConnection[];
+}
+
+// ---------------------------------------------------------------------------
 // Knowledge Base
 // ---------------------------------------------------------------------------
 
@@ -288,14 +347,69 @@ export interface SearchResponse {
   hits: SearchHit[];
 }
 
+export interface KnowledgeFreshness {
+  company_id: string;
+  document_count: number;
+  last_ingested_at: string | null;
+  staleness_days: number | null;
+}
+
+export interface KnowledgeAuditReport {
+  id: string;
+  company_id: string;
+  status: ReportStatus;
+  status_error: string | null;
+  coverage_summary: string | null;
+  identified_gaps: string | null;
+  recommendations: string | null;
+  document_count_at_generation: number;
+  created_at: string;
+}
+
+export interface KnowledgeAuditReportListResponse {
+  items: KnowledgeAuditReport[];
+  total: number;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  source_type: string;
+  source_url: string;
+  content_preview: string;
+  created_at: string;
+}
+
+export interface KnowledgeDocumentDetail {
+  id: string;
+  source_type: string;
+  source_url: string;
+  content: string;
+  raw_metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface KnowledgeDocumentListResponse {
+  items: KnowledgeDocument[];
+  total: number;
+}
+
+export interface IngestionResult {
+  sources_processed: number;
+  chunks_persisted: number;
+}
+
 // ---------------------------------------------------------------------------
 // Fetch helper + call sites
 // ---------------------------------------------------------------------------
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // FormData bodies (file uploads) must NOT get a manual Content-Type —
+  // the browser sets `multipart/form-data; boundary=...` itself, and
+  // overriding it here would break multipart parsing on the backend.
+  const isFormData = init?.body instanceof FormData;
   const response = await fetch(`${API_BASE_URL}${API_V1}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: isFormData ? init?.headers : { "Content-Type": "application/json", ...init?.headers },
     cache: "no-store",
   });
   if (!response.ok) {
@@ -394,10 +508,11 @@ export function listStrategies(companyId?: string): Promise<StrategyListResponse
 export function createContentPlan(
   companyId: string,
   strategyId?: string,
+  days?: number,
 ): Promise<ContentPlan> {
   return apiFetch<ContentPlan>("/content-management/content-plans", {
     method: "POST",
-    body: JSON.stringify({ company_id: companyId, strategy_id: strategyId }),
+    body: JSON.stringify({ company_id: companyId, strategy_id: strategyId, days }),
   });
 }
 
@@ -409,6 +524,19 @@ export function listContentPlans(companyId?: string): Promise<ContentPlanListRes
   return apiFetch<ContentPlanListResponse>(
     `/content-management/content-plans${toQueryString({ company_id: companyId })}`,
   );
+}
+
+export function updateContentItem(
+  itemId: string,
+  updates: { approvalStatus?: ApprovalStatus; suggestedDate?: string },
+): Promise<ContentItem> {
+  return apiFetch<ContentItem>(`/content-management/content-items/${itemId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      approval_status: updates.approvalStatus,
+      suggested_date: updates.suggestedDate,
+    }),
+  });
 }
 
 export function createCampaign(
@@ -499,5 +627,120 @@ export function suggestCompetitorNames(
   return apiFetch<{ suggestions: string[]; ok: boolean }>("/competitor-research/suggestions", {
     method: "POST",
     body: JSON.stringify({ company_id: companyId }),
+  });
+}
+
+// Social Media Analyzer
+export function listConnections(companyId: string): Promise<PlatformConnectionListResponse> {
+  return apiFetch<PlatformConnectionListResponse>(
+    `/social-media-analyzer/connections${toQueryString({ company_id: companyId })}`,
+  );
+}
+
+// Not a fetch call — OAuth needs a real browser navigation so the
+// platform's own login/consent screen can render and eventually redirect
+// back. Callers render this as a plain <a href>, not an onClick handler.
+export function getPlatformAuthorizeUrl(platform: SocialPlatform, companyId: string): string {
+  return `${API_BASE_URL}${API_V1}/social-media-analyzer/connections/${platform}/authorize${toQueryString({ company_id: companyId })}`;
+}
+
+export function disconnectPlatform(connectionId: string): Promise<PlatformConnection> {
+  return apiFetch<PlatformConnection>(`/social-media-analyzer/connections/${connectionId}`, {
+    method: "DELETE",
+  });
+}
+
+// Trend Outputs
+export function createTrendReport(companyId: string, periodDays?: number): Promise<TrendReport> {
+  return apiFetch<TrendReport>("/trend-analyzer/reports", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId, period_days: periodDays }),
+  });
+}
+
+export function getTrendReport(id: string): Promise<TrendReport> {
+  return apiFetch<TrendReport>(`/trend-analyzer/reports/${id}`);
+}
+
+export function listTrendReports(companyId?: string): Promise<TrendReportListResponse> {
+  return apiFetch<TrendReportListResponse>(
+    `/trend-analyzer/reports${toQueryString({ company_id: companyId })}`,
+  );
+}
+
+// Knowledge Manager
+export function getKnowledgeFreshness(companyId: string): Promise<KnowledgeFreshness> {
+  return apiFetch<KnowledgeFreshness>(
+    `/knowledge-base/freshness${toQueryString({ company_id: companyId })}`,
+  );
+}
+
+export function createAuditReport(companyId: string): Promise<KnowledgeAuditReport> {
+  return apiFetch<KnowledgeAuditReport>("/knowledge-base/audit-reports", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId }),
+  });
+}
+
+export function getAuditReport(id: string): Promise<KnowledgeAuditReport> {
+  return apiFetch<KnowledgeAuditReport>(`/knowledge-base/audit-reports/${id}`);
+}
+
+export function listAuditReports(companyId?: string): Promise<KnowledgeAuditReportListResponse> {
+  return apiFetch<KnowledgeAuditReportListResponse>(
+    `/knowledge-base/audit-reports${toQueryString({ company_id: companyId })}`,
+  );
+}
+
+// Knowledge Base — document dashboard
+export function listDocuments(
+  companyId: string,
+  options: { sourceType?: string; limit?: number; offset?: number } = {},
+): Promise<KnowledgeDocumentListResponse> {
+  return apiFetch<KnowledgeDocumentListResponse>(
+    `/knowledge-base/documents${toQueryString({
+      company_id: companyId,
+      source_type: options.sourceType,
+      limit: options.limit,
+      offset: options.offset,
+    })}`,
+  );
+}
+
+export function getDocument(id: string): Promise<KnowledgeDocumentDetail> {
+  return apiFetch<KnowledgeDocumentDetail>(`/knowledge-base/documents/${id}`);
+}
+
+export function deleteDocument(id: string): Promise<KnowledgeDocumentDetail> {
+  return apiFetch<KnowledgeDocumentDetail>(`/knowledge-base/documents/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export function createManualDocument(
+  companyId: string,
+  title: string,
+  content: string,
+): Promise<IngestionResult> {
+  return apiFetch<IngestionResult>("/knowledge-base/documents/manual", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId, title, content }),
+  });
+}
+
+export function uploadDocument(companyId: string, file: File): Promise<IngestionResult> {
+  const formData = new FormData();
+  formData.append("company_id", companyId);
+  formData.append("file", file);
+  return apiFetch<IngestionResult>("/knowledge-base/documents/upload", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export function indexBlogFeeds(companyId: string, feedUrls: string[]): Promise<IngestionResult> {
+  return apiFetch<IngestionResult>("/knowledge-base/documents/blog-index", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId, feed_urls: feedUrls }),
   });
 }

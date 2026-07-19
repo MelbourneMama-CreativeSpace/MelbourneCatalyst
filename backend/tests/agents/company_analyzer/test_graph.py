@@ -79,6 +79,53 @@ async def test_run_onboarding_persists_company_profile_and_documents(
     assert len(docs) >= 2  # at least one chunk per page
 
 
+def test_classify_source_type_tags_product_and_pricing_paths():
+    assert graph_module._classify_source_type("https://example.com/products") == "product_page"
+    assert graph_module._classify_source_type("https://example.com/pricing") == "product_page"
+    assert graph_module._classify_source_type("https://example.com/shop/widget") == "product_page"
+    assert graph_module._classify_source_type("https://example.com/store") == "product_page"
+
+
+def test_classify_source_type_tags_other_paths_as_website():
+    assert graph_module._classify_source_type("https://example.com/about") == "website"
+    assert graph_module._classify_source_type("https://example.com/") == "website"
+    assert graph_module._classify_source_type("https://example.com/team") == "website"
+
+
+async def test_run_onboarding_tags_product_pages_distinctly(monkeypatch, test_session_factory):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    async def _pages_with_a_product_page(base_url: str, *, max_pages: int):
+        return [
+            ScrapedPage(url=f"{base_url}/", title="Home", content="We build widgets for everyone."),
+            ScrapedPage(
+                url=f"{base_url}/products",
+                title="Products",
+                content="Widget Pro: $49. Widget Mini: $19. Both ship worldwide.",
+            ),
+        ]
+
+    monkeypatch.setattr(graph_module, "discover_and_scrape", _pages_with_a_product_page)
+    monkeypatch.setattr(graph_module, "embed_documents", _stub_embed_documents)
+    monkeypatch.setattr(graph_module, "extract_company_profile", _stub_extract_profile)
+
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="pending"))
+        await session.commit()
+
+    await graph_module.run_onboarding(company_id, "https://example.com")
+
+    async with test_session_factory() as session:
+        docs = (
+            await session.execute(select(Document).where(Document.company_id == company_id))
+        ).scalars().all()
+
+    by_source = {doc.source_url: doc.source_type for doc in docs}
+    assert by_source["https://example.com/"] == "website"
+    assert by_source["https://example.com/products"] == "product_page"
+
+
 async def test_run_onboarding_marks_failed_when_no_pages_scraped(
     monkeypatch, test_session_factory
 ):

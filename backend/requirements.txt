@@ -31,3 +31,11 @@ trafilatura==2.1.0
 # of lxml core in 5.x. Pin the standalone package so the import chain works.
 lxml_html_clean==0.4.3
 langchain-text-splitters==1.1.2
+# Business document uploader — text extraction for PDF/DOCX, plus
+# python-multipart for FastAPI's UploadFile/Form parsing
+pypdf==6.14.2
+python-docx==1.2.0
+python-multipart==0.0.32
+
+# Social Media Analyzer — Fernet symmetric encryption for OAuth tokens at rest
+cryptography==44.0.2
