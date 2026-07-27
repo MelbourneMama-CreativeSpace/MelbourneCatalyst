@@ -113,3 +113,115 @@ async def test_ingest_raw_document_does_not_touch_other_sources(monkeypatch, tes
 
 async def _fake_embed(texts):
     return [[0.1] * 1024 for _ in texts]
+
+
+async def test_ingest_if_changed_persists_and_tags_hash_on_first_run(monkeypatch, test_session_factory):
+    monkeypatch.setattr(ingestion_module, "embed_documents", lambda texts: _fake_embed(texts))
+    company_id = await _seed_company(test_session_factory)
+
+    raw = RawDocument(source_type="website", source_url="https://example.com/", content="original content")
+
+    async with test_session_factory() as session:
+        count, skipped = await ingestion_module.ingest_raw_document_if_changed(session, company_id, raw)
+        await session.commit()
+
+    assert skipped is False
+    assert count == 1
+    async with test_session_factory() as session:
+        row = (
+            await session.execute(select(Document).where(Document.company_id == company_id))
+        ).scalar_one()
+    assert "content_hash" in row.raw_metadata
+
+
+async def test_ingest_if_changed_skips_unchanged_content_without_embedding(monkeypatch, test_session_factory):
+    embed_calls = []
+
+    async def _counting_embed(texts):
+        embed_calls.append(texts)
+        return await _fake_embed(texts)
+
+    monkeypatch.setattr(ingestion_module, "embed_documents", _counting_embed)
+    company_id = await _seed_company(test_session_factory)
+    raw = RawDocument(source_type="website", source_url="https://example.com/", content="same content")
+
+    async with test_session_factory() as session:
+        await ingestion_module.ingest_raw_document_if_changed(session, company_id, raw)
+        await session.commit()
+    assert len(embed_calls) == 1
+
+    # Re-run with identical content: should skip entirely, no second embed call.
+    raw_again = RawDocument(source_type="website", source_url="https://example.com/", content="same content")
+    async with test_session_factory() as session:
+        count, skipped = await ingestion_module.ingest_raw_document_if_changed(
+            session, company_id, raw_again
+        )
+        await session.commit()
+
+    assert skipped is True
+    assert count == 0
+    assert len(embed_calls) == 1  # no additional embedding call happened
+
+
+async def test_ingest_if_changed_re_ingests_when_content_differs(monkeypatch, test_session_factory):
+    monkeypatch.setattr(ingestion_module, "embed_documents", lambda texts: _fake_embed(texts))
+    company_id = await _seed_company(test_session_factory)
+
+    async with test_session_factory() as session:
+        await ingestion_module.ingest_raw_document_if_changed(
+            session,
+            company_id,
+            RawDocument(source_type="website", source_url="https://example.com/", content="version one"),
+        )
+        await session.commit()
+
+    async with test_session_factory() as session:
+        count, skipped = await ingestion_module.ingest_raw_document_if_changed(
+            session,
+            company_id,
+            RawDocument(source_type="website", source_url="https://example.com/", content="version two, changed"),
+        )
+        await session.commit()
+
+    assert skipped is False
+    assert count == 1
+    async with test_session_factory() as session:
+        row = (
+            await session.execute(select(Document).where(Document.company_id == company_id))
+        ).scalar_one()
+    assert "version two" in row.content
+
+
+async def test_ingest_if_changed_treats_missing_prior_hash_as_changed(monkeypatch, test_session_factory):
+    """Documents persisted before this feature existed (e.g. by the plain
+    onboarding pipeline) have no content_hash in raw_metadata at all —
+    that must be treated as "changed", not silently trusted as unchanged."""
+    monkeypatch.setattr(ingestion_module, "embed_documents", lambda texts: _fake_embed(texts))
+    company_id = await _seed_company(test_session_factory)
+
+    async with test_session_factory() as session:
+        session.add(
+            Document(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                source_type="website",
+                source_url="https://example.com/",
+                chunk_index=0,
+                content="pre-existing content, no hash tag",
+                raw_metadata={"page_title": "Home"},
+            )
+        )
+        await session.commit()
+
+    async with test_session_factory() as session:
+        count, skipped = await ingestion_module.ingest_raw_document_if_changed(
+            session,
+            company_id,
+            RawDocument(
+                source_type="website", source_url="https://example.com/", content="pre-existing content, no hash tag"
+            ),
+        )
+        await session.commit()
+
+    assert skipped is False
+    assert count == 1

@@ -33,3 +33,4 @@ class CompanyProfile:
     unique_value_prop: str | None = None
     niche_keywords: list[str] = field(default_factory=list)
     summary: str | None = None
+    products_and_services: list[str] = field(default_factory=list)

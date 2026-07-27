@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+ApprovalStatus = Literal["pending", "approved", "rejected"]
+
 
 class StrategyOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -21,6 +23,8 @@ class StrategyOut(BaseModel):
     campaign_direction: str | None
     growth_recommendations: str | None
     business_suggestions: str | None
+    approval_status: ApprovalStatus
+    approved_by: str | None
     created_at: datetime
 
 
@@ -33,7 +37,9 @@ class StrategyCreateRequest(BaseModel):
     company_id: uuid.UUID
 
 
-ApprovalStatus = Literal["pending", "approved", "rejected"]
+class StrategyApprovalUpdateRequest(BaseModel):
+    approval_status: ApprovalStatus
+    approved_by: str | None = None
 
 
 class ContentItemOut(BaseModel):
@@ -42,6 +48,7 @@ class ContentItemOut(BaseModel):
     id: uuid.UUID
     title: str
     description: str
+    draft_copy: str | None
     content_type: str
     platform: str
     theme: str | None
@@ -50,14 +57,18 @@ class ContentItemOut(BaseModel):
     audience_interest: str | None
     seasonal_event: str | None
     approval_status: ApprovalStatus
+    approved_by: str | None
 
 
 class ContentItemUpdateRequest(BaseModel):
     """PATCH /content-items/{id} — reschedule (drag-and-drop) and/or set
     approval status. Both fields optional; at least one is expected but
-    the endpoint doesn't hard-require it (a no-op patch is harmless)."""
+    the endpoint doesn't hard-require it (a no-op patch is harmless).
+    `approved_by` is only applied when `approval_status` is also set —
+    it's attribution for the approval action, not a standalone field."""
 
     approval_status: ApprovalStatus | None = None
+    approved_by: str | None = None
     suggested_date: date | None = None
 
 

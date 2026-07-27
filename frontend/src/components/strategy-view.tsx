@@ -6,7 +6,14 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { createCollaboration, createContentPlan, getStrategy, type Strategy } from "@/lib/api";
+import {
+  createCollaboration,
+  createContentPlan,
+  getStrategy,
+  updateStrategyApproval,
+  type ApprovalStatus,
+  type Strategy,
+} from "@/lib/api";
 
 const TERMINAL_STATUSES: ReadonlySet<Strategy["status"]> = new Set(["complete", "failed"]);
 
@@ -16,6 +23,14 @@ const PLAN_WINDOWS: { label: string; days: number }[] = [
   { label: "Monthly", days: 30 },
 ];
 
+const APPROVAL_BADGE_STYLES: Record<ApprovalStatus, string> = {
+  pending: "",
+  approved: "bg-primary/15 text-primary",
+  rejected: "bg-destructive/10 text-destructive",
+};
+
+const APPROVER_NAME_STORAGE_KEY = "mmcs_approver_name";
+
 export function StrategyView({ initialStrategy }: { initialStrategy: Strategy }) {
   const router = useRouter();
   const [strategy, setStrategy] = useState(initialStrategy);
@@ -24,6 +39,23 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
   const [planError, setPlanError] = useState<string | null>(null);
   const [generatingCollaboration, setGeneratingCollaboration] = useState(false);
   const [collaborationError, setCollaborationError] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [approverName, setApproverName] = useState("");
+
+  // Not a real auth system — just enough attribution for a small internal
+  // team to see who approved what. Same storage key as the content
+  // calendar, so it's remembered across pages, not just this one.
+  useEffect(() => {
+    // One-time read of a browser-only API on mount, not a live
+    // subscription — see the same pattern in content-plan-view.tsx.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setApproverName(localStorage.getItem(APPROVER_NAME_STORAGE_KEY) ?? "");
+  }, []);
+
+  function handleApproverNameChange(value: string) {
+    setApproverName(value);
+    localStorage.setItem(APPROVER_NAME_STORAGE_KEY, value);
+  }
 
   // Strategy generation is a synchronous POST, so this row should already be
   // terminal by the time this page renders — poll defensively in case it's
@@ -68,14 +100,49 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
     }
   }
 
+  async function handleApprovalChange(approvalStatus: ApprovalStatus) {
+    setApprovalError(null);
+    try {
+      const updated = await updateStrategyApproval(strategy.id, approvalStatus, approverName || undefined);
+      setStrategy(updated);
+    } catch (err) {
+      setApprovalError(err instanceof Error ? err.message : "Failed to update approval status.");
+    }
+  }
+
   const statusVariant = strategy.status === "complete" ? "default" : "outline";
 
   return (
     <div className="mt-6 flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-3xl font-bold">Marketing strategy</h1>
-        <Badge variant={statusVariant}>{strategy.status}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant={statusVariant}>{strategy.status}</Badge>
+          {strategy.status === "complete" && (
+            <Badge className={APPROVAL_BADGE_STYLES[strategy.approval_status]} variant="default">
+              {strategy.approval_status}
+            </Badge>
+          )}
+        </div>
       </div>
+
+      {strategy.approved_by && (
+        <p className="text-xs text-muted-foreground">
+          {strategy.approval_status === "rejected" ? "Rejected" : "Approved"} by{" "}
+          {strategy.approved_by}
+        </p>
+      )}
+
+      <label className="flex max-w-xs flex-col gap-1 text-xs text-muted-foreground">
+        Your name (recorded when you approve or reject)
+        <input
+          type="text"
+          value={approverName}
+          onChange={(e) => handleApproverNameChange(e.target.value)}
+          placeholder="e.g. Priya"
+          className="rounded-md border border-input bg-transparent px-2.5 py-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+        />
+      </label>
 
       {strategy.status === "failed" && (
         <Card>
@@ -104,6 +171,26 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
       {strategy.status === "complete" && (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant={strategy.approval_status === "approved" ? "secondary" : "default"}
+              size="sm"
+              onClick={() => handleApprovalChange("approved")}
+              disabled={strategy.approval_status === "approved"}
+            >
+              Approve
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => handleApprovalChange("rejected")}
+              disabled={strategy.approval_status === "rejected"}
+            >
+              Reject
+            </Button>
+          </div>
+          {approvalError && <p className="text-sm text-destructive">{approvalError}</p>}
+
+          <div className="flex flex-wrap items-center gap-3">
             <div className="flex gap-1">
               {PLAN_WINDOWS.map((window) => (
                 <Button
@@ -119,7 +206,7 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
               ))}
             </div>
             <Button onClick={handleGenerateContentPlan} disabled={generatingPlan}>
-              {generatingPlan ? "Generating content plan…" : "Generate content plan"}
+              {generatingPlan ? "Drafting this week's captions…" : "Draft this week's captions"}
             </Button>
             <Button
               variant="outline"

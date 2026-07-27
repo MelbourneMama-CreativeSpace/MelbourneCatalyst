@@ -2,10 +2,12 @@
 
 Same shape as `content_management/strategy.py` — forced tool-use call
 over a pre-formatted context string (company profile + recent
-relevance-scored trends, built by the graph's `gather_context` node).
-Covers three TODO.md checklist items (weekly market report, industry
-insights summarizer, content opportunity recommender) as three sections
-of one generation rather than three separate Claude calls.
+relevance-scored trends + recent campaigns + competitors, built by the
+graph's `gather_context` node). Covers five TODO.md checklist items
+(weekly market report, industry insights summarizer, content opportunity
+recommender, campaign history comparison, competitor activity
+correlation) as five sections of one generation rather than five
+separate Claude calls.
 """
 
 from __future__ import annotations
@@ -47,6 +49,22 @@ _TOOL = {
             "content_opportunities": {
                 "type": "string",
                 "description": "Concrete content/marketing opportunities this company could act on given these trends",
+            },
+            "campaign_alignment_notes": {
+                "type": "string",
+                "description": (
+                    "How these trends relate to the company's past campaigns, if any are given in "
+                    "context — echoing a prior angle, or a genuinely new direction. Empty string if "
+                    "no past campaigns were given or none are relevant."
+                ),
+            },
+            "competitor_relevance_notes": {
+                "type": "string",
+                "description": (
+                    "How these trends relate to the company's competitors, if any are given in "
+                    "context — an opportunity to differentiate, or ground competitors already occupy. "
+                    "Empty string if no competitors were given or none are relevant."
+                ),
             },
         },
         "required": ["summary", "key_themes"],
@@ -96,5 +114,7 @@ async def generate_trend_report(context: str) -> tuple[GeneratedTrendReport, boo
         key_themes=list(data.get("key_themes") or []),
         notable_trends_summary=data.get("notable_trends_summary"),
         content_opportunities=data.get("content_opportunities"),
+        campaign_alignment_notes=data.get("campaign_alignment_notes") or None,
+        competitor_relevance_notes=data.get("competitor_relevance_notes") or None,
     )
     return report, True

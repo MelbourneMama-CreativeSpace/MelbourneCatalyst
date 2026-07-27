@@ -67,7 +67,20 @@ _TOOL = {
                         "title": {"type": "string"},
                         "description": {
                             "type": "string",
-                            "description": "What the content actually says/shows — specific enough to brief a writer",
+                            "description": "A one-line brief of what the content shows/covers — for the calendar view, not the post itself",
+                        },
+                        "draft_copy": {
+                            "type": "string",
+                            "description": (
+                                "The actual finished, ready-to-publish copy for this post — not a "
+                                "brief or an outline. Write it the way it should actually appear: "
+                                "full caption text in the platform's real voice and length "
+                                "conventions (e.g. a punchy hook + body + call-to-action for "
+                                "Instagram/TikTok, a professional framing for LinkedIn, concise for "
+                                "X/Twitter), including hashtags where that platform's audience "
+                                "expects them. Someone should be able to copy this verbatim and post "
+                                "it, not rewrite it first."
+                            ),
                         },
                         "content_type": {"type": "string", "enum": _CONTENT_TYPES},
                         "platform": {"type": "string", "enum": _PLATFORMS},
@@ -103,11 +116,39 @@ _TOOL = {
                             ),
                         },
                     },
-                    "required": ["title", "description", "content_type", "platform", "days_from_now"],
+                    "required": [
+                        "title",
+                        "description",
+                        "draft_copy",
+                        "content_type",
+                        "platform",
+                        "days_from_now",
+                    ],
                 },
             }
         },
         "required": ["items"],
+    },
+}
+
+
+_REGEN_TOOL = {
+    "name": "regenerate_draft_copy",
+    "description": "Rewrite the ready-to-publish draft copy for a single content calendar item.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "draft_copy": {
+                "type": "string",
+                "description": (
+                    "The actual finished, ready-to-publish copy for this post — not a brief "
+                    "or an outline. Full caption text in the platform's real voice and length "
+                    "conventions, including hashtags where that platform's audience expects "
+                    "them. Someone should be able to copy this verbatim and post it."
+                ),
+            }
+        },
+        "required": ["draft_copy"],
     },
 }
 
@@ -138,7 +179,11 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
     try:
         response = await _client().messages.create(
             model=_MODEL,
-            max_tokens=4096,
+            # Each item now carries full publishable copy, not just a
+            # one-line brief — a 30-day plan's worth of real captions needs
+            # meaningfully more room than the old title/description-only
+            # shape did.
+            max_tokens=8192,
             tools=[_TOOL],
             tool_choice={"type": "tool", "name": "generate_content_plan"},
             messages=[
@@ -146,7 +191,9 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
                     "role": "user",
                     "content": (
                         f"Generate a {days}-day content calendar using the "
-                        "`generate_content_plan` tool from this context:\n\n"
+                        "`generate_content_plan` tool from this context. For every item, "
+                        "`draft_copy` must be finished, ready-to-publish post text — not a "
+                        "summary or an outline:\n\n"
                         f"{trimmed}"
                     ),
                 }
@@ -173,6 +220,11 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
                     related_trend_title=raw.get("related_trend_title") or None,
                     audience_interest=raw.get("audience_interest") or None,
                     seasonal_event=raw.get("seasonal_event") or None,
+                    # A required field — if the model omits it, skip this
+                    # item entirely (via the except below) rather than
+                    # silently persisting a slot with no draft, which would
+                    # just reintroduce the "spec, not a draft" gap.
+                    draft_copy=raw["draft_copy"],
                 )
             )
         except (KeyError, TypeError, ValueError):
@@ -180,3 +232,44 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
             # skip it rather than losing the whole plan to one bad entry.
             continue
     return GeneratedContentPlan(items=items), True
+
+
+async def regenerate_draft_copy(
+    context: str, title: str, description: str, content_type: str, platform: str
+) -> tuple[str | None, bool]:
+    """Rewrite just the `draft_copy` for one existing calendar item — the
+    UI's "regenerate" action when a draft needs another pass, rather than
+    a full plan regeneration. Never raises — returns `(None, False)` on
+    any failure."""
+    if not settings.ANTHROPIC_API_KEY:
+        logger.warning("ANTHROPIC_API_KEY not configured; skipping draft copy regeneration")
+        return None, False
+
+    trimmed = context[:_MAX_CONTEXT_CHARS]
+    try:
+        response = await _client().messages.create(
+            model=_MODEL,
+            max_tokens=1024,
+            tools=[_REGEN_TOOL],
+            tool_choice={"type": "tool", "name": "regenerate_draft_copy"},
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Write ready-to-publish {platform} {content_type} copy for the "
+                        f'calendar item titled "{title}" — brief: {description}. Use the '
+                        "`regenerate_draft_copy` tool. Company/strategy context:\n\n"
+                        f"{trimmed}"
+                    ),
+                }
+            ],
+        )
+        tool_use = next(block for block in response.content if block.type == "tool_use")
+        draft_copy = tool_use.input.get("draft_copy")
+    except Exception:
+        logger.exception("Claude draft copy regeneration failed")
+        return None, False
+
+    if not draft_copy:
+        return None, False
+    return draft_copy, True

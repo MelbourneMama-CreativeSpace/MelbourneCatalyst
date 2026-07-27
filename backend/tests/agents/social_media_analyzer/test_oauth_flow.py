@@ -1,116 +1,162 @@
-"""Tests for the generic OAuth2 authorization-code flow."""
+"""Tests for the Composio-brokered connection flow."""
 
 from __future__ import annotations
 
-import urllib.parse
 import uuid
+from types import SimpleNamespace
 
 import pytest
-from cryptography.fernet import Fernet
 
 from app.agents.social_media_analyzer import oauth_flow
-from app.security import oauth_state
 
 
-def _configure_token_key(monkeypatch):
-    monkeypatch.setattr(oauth_state.settings, "TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode())
-    monkeypatch.setattr(oauth_flow.settings, "TOKEN_ENCRYPTION_KEY", oauth_state.settings.TOKEN_ENCRYPTION_KEY)
+def _configure(monkeypatch, **platform_ids):
+    monkeypatch.setattr(oauth_flow.settings, "COMPOSIO_API_KEY", "test-composio-key")
+    for setting_name, value in platform_ids.items():
+        monkeypatch.setattr(oauth_flow.settings, setting_name, value)
 
 
-def test_build_authorize_url_raises_when_platform_not_configured(monkeypatch):
-    _configure_token_key(monkeypatch)
-    monkeypatch.setattr(oauth_flow.settings, "META_APP_CLIENT_ID", "")
-    monkeypatch.setattr(oauth_flow.settings, "META_APP_CLIENT_SECRET", "")
+def test_map_status_covers_every_known_composio_status():
+    assert oauth_flow.map_status("ACTIVE") == "connected"
+    assert oauth_flow.map_status("INITIALIZING") == "pending"
+    assert oauth_flow.map_status("INITIATED") == "pending"
+    assert oauth_flow.map_status("FAILED") == "error"
+    assert oauth_flow.map_status("INACTIVE") == "error"
+    assert oauth_flow.map_status("REVOKED") == "error"
+    assert oauth_flow.map_status("EXPIRED") == "expired"
 
-    with pytest.raises(oauth_flow.OAuthNotConfiguredError):
-        oauth_flow.build_authorize_url("instagram", uuid.uuid4())
+
+def test_map_status_defaults_unknown_values_to_error():
+    assert oauth_flow.map_status("SOMETHING_NEW") == "error"
 
 
-def test_build_authorize_url_raises_for_unknown_platform(monkeypatch):
-    _configure_token_key(monkeypatch)
+async def test_initiate_connection_raises_when_api_key_not_set(monkeypatch):
+    monkeypatch.setattr(oauth_flow.settings, "COMPOSIO_API_KEY", "")
+
+    with pytest.raises(oauth_flow.ComposioNotConfiguredError):
+        await oauth_flow.initiate_connection("instagram", uuid.uuid4(), "https://app.example.com/cb")
+
+
+async def test_initiate_connection_raises_when_auth_config_id_not_set(monkeypatch):
+    _configure(monkeypatch, COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID="")
+
+    with pytest.raises(oauth_flow.ComposioNotConfiguredError):
+        await oauth_flow.initiate_connection("instagram", uuid.uuid4(), "https://app.example.com/cb")
+
+
+async def test_initiate_connection_raises_for_unknown_platform(monkeypatch):
+    _configure(monkeypatch)
 
     with pytest.raises(ValueError):
-        oauth_flow.build_authorize_url("myspace", uuid.uuid4())
+        await oauth_flow.initiate_connection("myspace", uuid.uuid4(), "https://app.example.com/cb")
 
 
-def test_build_authorize_url_includes_client_id_and_signed_state(monkeypatch):
-    _configure_token_key(monkeypatch)
-    monkeypatch.setattr(oauth_flow.settings, "META_APP_CLIENT_ID", "test-client-id")
-    monkeypatch.setattr(oauth_flow.settings, "META_APP_CLIENT_SECRET", "test-client-secret")
+class _FakeConnectedAccounts:
+    def __init__(self, create_result=None, retrieve_result=None, raise_on_delete=False):
+        self._create_result = create_result
+        self._retrieve_result = retrieve_result
+        self._raise_on_delete = raise_on_delete
+        self.create_kwargs = None
+        self.retrieve_args = None
+        self.delete_args = None
+        self.delete_kwargs = None
 
-    company_id = uuid.uuid4()
-    url = oauth_flow.build_authorize_url("instagram", company_id)
+    def create(self, *, auth_config, connection):
+        self.create_kwargs = {"auth_config": auth_config, "connection": connection}
+        return self._create_result
 
-    parsed = urllib.parse.urlparse(url)
-    assert parsed.netloc == "www.facebook.com"
-    params = urllib.parse.parse_qs(parsed.query)
-    assert params["client_id"] == ["test-client-id"]
-    assert "state" in params
+    def retrieve(self, nanoid):
+        self.retrieve_args = nanoid
+        return self._retrieve_result
 
-    decoded = oauth_state.verify_state(params["state"][0])
-    assert decoded["company_id"] == str(company_id)
-    assert decoded["platform"] == "instagram"
-
-
-def test_build_authorize_url_includes_pkce_challenge_for_twitter(monkeypatch):
-    _configure_token_key(monkeypatch)
-    monkeypatch.setattr(oauth_flow.settings, "TWITTER_OAUTH_CLIENT_ID", "test-client-id")
-    monkeypatch.setattr(oauth_flow.settings, "TWITTER_OAUTH_CLIENT_SECRET", "test-client-secret")
-
-    url = oauth_flow.build_authorize_url("twitter", uuid.uuid4())
-
-    params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-    assert "code_challenge" in params
-    assert params["code_challenge_method"] == ["S256"]
-
-    decoded = oauth_state.verify_state(params["state"][0])
-    assert "pkce_code_verifier" in decoded
+    def delete(self, nanoid, *, revoke_on_delete=False):
+        self.delete_args = nanoid
+        self.delete_kwargs = {"revoke_on_delete": revoke_on_delete}
+        if self._raise_on_delete:
+            raise RuntimeError("Composio API error")
 
 
-async def test_exchange_code_for_token_rejects_platform_mismatch(monkeypatch):
-    _configure_token_key(monkeypatch)
-    monkeypatch.setattr(oauth_flow.settings, "META_APP_CLIENT_ID", "test-client-id")
-    monkeypatch.setattr(oauth_flow.settings, "META_APP_CLIENT_SECRET", "test-client-secret")
+async def test_initiate_connection_returns_id_and_redirect_url(monkeypatch):
+    _configure(monkeypatch, COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID="ac_instagram_123")
 
-    # A state token genuinely signed for "twitter", presented on the
-    # "instagram" callback — should be rejected rather than silently
-    # trusted, since that would let a callback for one platform's flow
-    # complete a different platform's connection.
-    state = oauth_state.sign_state({"company_id": str(uuid.uuid4()), "platform": "twitter"})
-
-    with pytest.raises(oauth_state.OAuthStateError):
-        await oauth_flow.exchange_code_for_token("instagram", "some-code", state)
-
-
-async def test_exchange_code_for_token_parses_a_successful_response(monkeypatch):
-    _configure_token_key(monkeypatch)
-    monkeypatch.setattr(oauth_flow.settings, "META_APP_CLIENT_ID", "test-client-id")
-    monkeypatch.setattr(oauth_flow.settings, "META_APP_CLIENT_SECRET", "test-client-secret")
+    fake_accounts = _FakeConnectedAccounts(
+        create_result=SimpleNamespace(id="ca_abc123", redirect_url="https://composio.dev/auth/xyz")
+    )
+    monkeypatch.setattr(
+        oauth_flow, "_client", lambda: SimpleNamespace(connected_accounts=fake_accounts)
+    )
 
     company_id = uuid.uuid4()
-    state = oauth_state.sign_state({"company_id": str(company_id), "platform": "instagram"})
+    connected_account_id, redirect_url = await oauth_flow.initiate_connection(
+        "instagram", company_id, "https://app.example.com/cb"
+    )
 
-    class _FakeResponse:
-        def raise_for_status(self):
-            pass
+    assert connected_account_id == "ca_abc123"
+    assert redirect_url == "https://composio.dev/auth/xyz"
+    assert fake_accounts.create_kwargs["auth_config"] == {"id": "ac_instagram_123"}
+    assert fake_accounts.create_kwargs["connection"] == {
+        "user_id": str(company_id),
+        "callback_url": "https://app.example.com/cb",
+    }
 
-        def json(self):
-            return {"access_token": "real-token", "expires_in": 3600, "scope": "instagram_basic"}
 
-    class _FakeClient:
-        async def __aenter__(self):
-            return self
+async def test_initiate_connection_raises_when_composio_returns_no_redirect_url(monkeypatch):
+    _configure(monkeypatch, COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID="ac_instagram_123")
 
-        async def __aexit__(self, *args):
-            return False
+    fake_accounts = _FakeConnectedAccounts(
+        create_result=SimpleNamespace(id="ca_abc123", redirect_url=None)
+    )
+    monkeypatch.setattr(
+        oauth_flow, "_client", lambda: SimpleNamespace(connected_accounts=fake_accounts)
+    )
 
-        async def post(self, url, data):
-            return _FakeResponse()
+    with pytest.raises(oauth_flow.ComposioNotConfiguredError):
+        await oauth_flow.initiate_connection("instagram", uuid.uuid4(), "https://app.example.com/cb")
 
-    monkeypatch.setattr(oauth_flow.httpx, "AsyncClient", lambda **kwargs: _FakeClient())
 
-    result, state_payload = await oauth_flow.exchange_code_for_token("instagram", "some-code", state)
+async def test_get_connection_status_maps_composio_status(monkeypatch):
+    fake_accounts = _FakeConnectedAccounts(retrieve_result=SimpleNamespace(status="ACTIVE"))
+    monkeypatch.setattr(
+        oauth_flow, "_client", lambda: SimpleNamespace(connected_accounts=fake_accounts)
+    )
 
-    assert result.access_token == "real-token"
-    assert result.expires_in == 3600
-    assert state_payload["company_id"] == str(company_id)
+    status = await oauth_flow.get_connection_status("ca_abc123")
+
+    assert status == "connected"
+    assert fake_accounts.retrieve_args == "ca_abc123"
+
+
+async def test_get_connection_status_returns_error_on_api_failure(monkeypatch):
+    class _FailingAccounts:
+        def retrieve(self, nanoid):
+            raise RuntimeError("Composio API error")
+
+    monkeypatch.setattr(
+        oauth_flow, "_client", lambda: SimpleNamespace(connected_accounts=_FailingAccounts())
+    )
+
+    status = await oauth_flow.get_connection_status("ca_abc123")
+
+    assert status == "error"
+
+
+async def test_disconnect_connection_calls_delete_with_revoke(monkeypatch):
+    fake_accounts = _FakeConnectedAccounts()
+    monkeypatch.setattr(
+        oauth_flow, "_client", lambda: SimpleNamespace(connected_accounts=fake_accounts)
+    )
+
+    await oauth_flow.disconnect_connection("ca_abc123")
+
+    assert fake_accounts.delete_args == "ca_abc123"
+    assert fake_accounts.delete_kwargs == {"revoke_on_delete": True}
+
+
+async def test_disconnect_connection_swallows_api_failure(monkeypatch):
+    fake_accounts = _FakeConnectedAccounts(raise_on_delete=True)
+    monkeypatch.setattr(
+        oauth_flow, "_client", lambda: SimpleNamespace(connected_accounts=fake_accounts)
+    )
+
+    # Must not raise — the local row is being cleared regardless.
+    await oauth_flow.disconnect_connection("ca_abc123")

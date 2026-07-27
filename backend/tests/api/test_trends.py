@@ -246,3 +246,81 @@ async def test_reports_route_is_not_captured_by_the_trend_id_catch_all(client, t
     response = await client.get("/reports")
     assert response.status_code == 200
     assert "items" in response.json()
+
+
+# --- Recommended trends ----------------------------------------------------
+
+
+async def test_recommended_route_is_not_captured_by_the_trend_id_catch_all(client):
+    """Same regression class as /reports above — /recommended must resolve
+    to the recommended-trends route, not 422 trying to parse "recommended"
+    as a trend_id UUID."""
+    response = await client.get("/recommended")
+    assert response.status_code == 200
+    assert "items" in response.json()
+
+
+async def test_recommended_trends_includes_highly_relevant_recent_trends(
+    client, test_session_factory
+):
+    await _seed_trend(
+        test_session_factory,
+        title="Highly relevant and fresh",
+        url="https://example.com/fresh",
+        relevance_score=0.9,
+        discovered_at=datetime.now(timezone.utc),
+    )
+
+    response = await client.get("/recommended")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["title"] == "Highly relevant and fresh"
+
+
+async def test_recommended_trends_excludes_low_relevance(client, test_session_factory):
+    await _seed_trend(
+        test_session_factory,
+        title="Barely relevant",
+        url="https://example.com/low",
+        relevance_score=0.3,
+        discovered_at=datetime.now(timezone.utc),
+    )
+
+    response = await client.get("/recommended")
+
+    assert response.json()["total"] == 0
+
+
+async def test_recommended_trends_excludes_stale_trends(client, test_session_factory):
+    from datetime import timedelta
+
+    await _seed_trend(
+        test_session_factory,
+        title="Relevant but old",
+        url="https://example.com/old",
+        relevance_score=0.95,
+        discovered_at=datetime.now(timezone.utc) - timedelta(days=60),
+    )
+
+    response = await client.get("/recommended")
+
+    assert response.json()["total"] == 0
+
+
+async def test_recommended_trends_respects_custom_limit(client, test_session_factory):
+    for i in range(5):
+        await _seed_trend(
+            test_session_factory,
+            title=f"Recommended {i}",
+            url=f"https://example.com/rec-{i}",
+            relevance_score=0.9,
+            discovered_at=datetime.now(timezone.utc),
+        )
+
+    response = await client.get("/recommended", params={"limit": 2})
+
+    body = response.json()
+    assert len(body["items"]) == 2
+    assert body["limit"] == 2

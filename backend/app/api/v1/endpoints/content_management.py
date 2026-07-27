@@ -18,7 +18,10 @@ from sqlalchemy.orm import selectinload
 
 from app.agents.content_management.campaign_graph import run_campaign_generation
 from app.agents.content_management.collaboration_graph import run_collaboration_generation
-from app.agents.content_management.content_plan_graph import run_content_plan_generation
+from app.agents.content_management.content_plan_graph import (
+    regenerate_item_draft_copy,
+    run_content_plan_generation,
+)
 from app.agents.content_management.strategy_graph import run_strategy_generation
 from app.db.models import Campaign, Collaboration, Company, ContentItem, ContentPlan, Strategy
 from app.db.session import get_session
@@ -37,6 +40,7 @@ from app.models.content_management import (
     ContentPlanListResponse,
     ContentPlanOut,
     ContentPlanSummaryOut,
+    StrategyApprovalUpdateRequest,
     StrategyCreateRequest,
     StrategyListResponse,
     StrategyOut,
@@ -119,6 +123,22 @@ async def get_strategy(
     strategy = await session.get(Strategy, strategy_id)
     if strategy is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
+    return StrategyOut.model_validate(strategy)
+
+
+@router.patch("/strategies/{strategy_id}/approval", response_model=StrategyOut)
+async def update_strategy_approval(
+    strategy_id: uuid.UUID,
+    payload: StrategyApprovalUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+) -> StrategyOut:
+    strategy = await session.get(Strategy, strategy_id)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    strategy.approval_status = payload.approval_status
+    strategy.approved_by = payload.approved_by
+    await session.commit()
+    await session.refresh(strategy)
     return StrategyOut.model_validate(strategy)
 
 
@@ -211,11 +231,31 @@ async def update_content_item(
 
     if payload.approval_status is not None:
         item.approval_status = payload.approval_status
+        item.approved_by = payload.approved_by
     if payload.suggested_date is not None:
         item.suggested_date = payload.suggested_date
 
     await session.commit()
     await session.refresh(item)
+    return ContentItemOut.model_validate(item)
+
+
+@router.post("/content-items/{item_id}/regenerate-draft", response_model=ContentItemOut)
+async def regenerate_content_item_draft(
+    item_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> ContentItemOut:
+    """Rewrite this item's draft copy — the calendar detail panel's
+    "regenerate" action, for when the first draft isn't right. Runs a
+    single Claude call synchronously, same latency profile as the other
+    content-management POSTs."""
+    item, ok = await regenerate_item_draft_copy(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Content item not found")
+    if not ok:
+        raise HTTPException(
+            status_code=502,
+            detail="Draft regeneration failed (check ANTHROPIC_API_KEY / Claude API availability).",
+        )
     return ContentItemOut.model_validate(item)
 
 

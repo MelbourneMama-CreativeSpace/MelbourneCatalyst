@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/card";
 import {
   ArrowRight,
-  BarChart3,
   Brain,
   Globe,
   Layers,
@@ -21,92 +20,78 @@ import {
   Rocket,
   Search,
   Sparkles,
-  TrendingUp,
   Zap,
 } from "lucide-react";
 
 const modules = [
   {
-    title: "Company Analyzer",
+    title: "Content Studio",
     description:
-      "Deep-dive into any company's digital presence, market positioning, and competitive landscape with AI-powered insights.",
-    icon: Search,
-    gradient: "from-violet-500 to-purple-600",
-    bgGlow: "bg-violet-500/10",
-    borderColor: "border-violet-500/20",
-    delay: "delay-100",
-    href: "/onboarding",
-  },
-  {
-    title: "Trend Analyzer",
-    description:
-      "Detect emerging trends before they go mainstream. Leverage real-time data analysis to stay ahead of market shifts.",
-    icon: TrendingUp,
-    gradient: "from-blue-500 to-cyan-500",
-    bgGlow: "bg-blue-500/10",
-    borderColor: "border-blue-500/20",
-    delay: "delay-200",
-    href: "/trends",
-  },
-  {
-    title: "Content Management",
-    description:
-      "AI-assisted content creation, scheduling, and optimization across all platforms. Maximize engagement effortlessly.",
+      "Pick a client, draft this week's captions, and get a strategy, content plan, campaign, and collaboration ideas ready to use — not a spec, a real ready-to-publish draft.",
     icon: MessageSquare,
     gradient: "from-emerald-500 to-teal-500",
     bgGlow: "bg-emerald-500/10",
     borderColor: "border-emerald-500/20",
-    delay: "delay-300",
+    delay: "delay-100",
     href: "/companies",
   },
   {
-    title: "Social Media Analyzer",
+    title: "Add a client",
     description:
-      "Comprehensive social media analytics with sentiment analysis, audience insights, and performance benchmarking.",
-    icon: BarChart3,
-    gradient: "from-orange-500 to-rose-500",
-    bgGlow: "bg-orange-500/10",
-    borderColor: "border-orange-500/20",
-    delay: "delay-400",
+      "Onboard a new company from its website — builds the profile Content Studio drafts from.",
+    icon: Search,
+    gradient: "from-violet-500 to-purple-600",
+    bgGlow: "bg-violet-500/10",
+    borderColor: "border-violet-500/20",
+    delay: "delay-200",
+    href: "/onboarding",
   },
+];
+
+// Everything below Content Studio is in development, not part of the
+// daily workflow yet — still reachable directly, just not front and
+// center on the internal team's homepage.
+const inDevelopmentModules = [
+  { title: "Trend Analyzer", href: "/trends" },
+  { title: "Company research & knowledge base", href: "/companies" },
 ];
 
 const features = [
   {
     icon: Brain,
-    title: "Multi-Agent AI",
+    title: "Strategy Consultant",
     description:
-      "Autonomous AI agents that collaborate to deliver comprehensive marketing intelligence.",
+      "Generates a marketing strategy, campaign direction, and growth recommendations from a client's profile — reviewable, approve or reject.",
   },
   {
     icon: Zap,
-    title: "Real-Time Processing",
+    title: "Content Planner",
     description:
-      "Lightning-fast data processing with live updates and instant notifications.",
-  },
-  {
-    icon: Globe,
-    title: "Global Coverage",
-    description:
-      "Monitor brands, trends, and conversations across all major platforms worldwide.",
-  },
-  {
-    icon: Layers,
-    title: "Modular Architecture",
-    description:
-      "Plug-and-play modules that scale with your needs. Add capabilities as you grow.",
-  },
-  {
-    icon: LineChart,
-    title: "Predictive Analytics",
-    description:
-      "ML-powered predictions to forecast trends, engagement, and campaign performance.",
+      "Builds a content calendar and drafts real, ready-to-publish captions for every slot — not a brief, copy you can paste and post today.",
   },
   {
     icon: Rocket,
-    title: "Automated Workflows",
+    title: "Campaign Manager",
     description:
-      "Set up intelligent automation pipelines that work around the clock for you.",
+      "Turns a content plan into a scheduled campaign with a budget recommendation and lifecycle tracking from draft through archived.",
+  },
+  {
+    icon: Globe,
+    title: "Brand Collaboration",
+    description:
+      "Suggests partnership angles and drafts outreach messages for the kinds of collaborators worth reaching out to.",
+  },
+  {
+    icon: LineChart,
+    title: "Analytics",
+    description:
+      "Not built yet — needs real campaign and engagement data from a connected platform before it can report anything honestly.",
+  },
+  {
+    icon: Layers,
+    title: "One workflow per client",
+    description:
+      "Onboard a client once, then generate strategy → content → campaign → collaboration from that same profile every week.",
   },
 ];
 
@@ -140,17 +125,19 @@ export default function Home() {
             >
               Features
             </a>
-            <a
-              href="#"
+            <Link
+              href="/companies"
               className="text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
-              Documentation
-            </a>
+              Clients
+            </Link>
             <Button
+              render={<Link href="/companies" />}
+              nativeButton={false}
               size="sm"
               className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white border-0"
             >
-              Get Started
+              Open Content Studio
             </Button>
           </div>
         </div>
@@ -162,60 +149,42 @@ export default function Home() {
           {/* Badge */}
           <div className="animate-slide-up inline-flex items-center gap-2 px-4 py-2 rounded-full glass mb-8 text-sm">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-muted-foreground">
-              AI-Powered Marketing Intelligence Platform
-            </span>
+            <span className="text-muted-foreground">MMCS internal tool — Content Studio</span>
           </div>
 
           {/* Heading */}
           <h1 className="animate-slide-up delay-100 text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-tight mb-6">
-            <span className="block">Transform Your</span>
-            <span className="block gradient-text">Marketing Strategy</span>
-            <span className="block text-foreground/80">With AI Agents</span>
+            <span className="block">This Week&apos;s Captions,</span>
+            <span className="block gradient-text">Drafted</span>
           </h1>
 
           {/* Subtitle */}
           <p className="animate-slide-up delay-200 max-w-2xl mx-auto text-lg sm:text-xl text-muted-foreground mb-10 leading-relaxed">
-            MMCS Social Network combines autonomous AI agents with real-time
-            analytics to deliver unparalleled marketing intelligence across
-            every channel.
+            Pick a client, generate a content calendar, and get ready-to-publish
+            captions for every slot — not a brief, an actual draft you can copy
+            and post.
           </p>
 
           {/* CTA Buttons */}
           <div className="animate-slide-up delay-300 flex flex-col sm:flex-row items-center justify-center gap-4">
             <Button
+              render={<Link href="/companies" />}
+              nativeButton={false}
               size="lg"
               className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white border-0 px-8 py-6 text-lg rounded-xl shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40 transition-all"
             >
-              Launch Dashboard
+              Open Content Studio
               <ArrowRight className="ml-2 w-5 h-5" />
             </Button>
             <Button
+              render={<Link href="/onboarding" />}
+              nativeButton={false}
               variant="outline"
               size="lg"
               className="px-8 py-6 text-lg rounded-xl border-border/60 hover:bg-accent/50 transition-all"
             >
-              View Documentation
+              Add a client
             </Button>
-          </div>
-
-          {/* Stats */}
-          <div className="animate-slide-up delay-500 mt-20 grid grid-cols-2 md:grid-cols-4 gap-8 max-w-3xl mx-auto">
-            {[
-              { value: "4", label: "AI Modules" },
-              { value: "24/7", label: "Monitoring" },
-              { value: "100+", label: "Data Sources" },
-              { value: "<1s", label: "Response Time" },
-            ].map((stat) => (
-              <div key={stat.label} className="text-center">
-                <div className="text-3xl font-bold gradient-text-cool">
-                  {stat.value}
-                </div>
-                <div className="text-sm text-muted-foreground mt-1">
-                  {stat.label}
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       </section>
@@ -225,11 +194,11 @@ export default function Home() {
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-16">
             <h2 className="text-3xl sm:text-4xl font-bold mb-4">
-              Powerful <span className="gradient-text">AI Modules</span>
+              Start <span className="gradient-text">here</span>
             </h2>
             <p className="text-muted-foreground max-w-xl mx-auto text-lg">
-              Four specialized modules working in harmony to deliver
-              comprehensive marketing intelligence.
+              Content Studio is the whole tool for now — everything else below is
+              still in development.
             </p>
           </div>
 
@@ -283,6 +252,19 @@ export default function Home() {
               );
             })}
           </div>
+
+          <p className="mt-8 text-center text-sm text-muted-foreground">
+            Still in development, reachable directly but not the focus yet:{" "}
+            {inDevelopmentModules.map((mod, i) => (
+              <span key={mod.title}>
+                {i > 0 && ", "}
+                <Link href={mod.href} className="underline hover:text-foreground">
+                  {mod.title}
+                </Link>
+              </span>
+            ))}
+            .
+          </p>
         </div>
       </section>
 
@@ -291,11 +273,10 @@ export default function Home() {
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-16">
             <h2 className="text-3xl sm:text-4xl font-bold mb-4">
-              Built for <span className="gradient-text-warm">Excellence</span>
+              What&apos;s <span className="gradient-text-warm">live today</span>
             </h2>
             <p className="text-muted-foreground max-w-xl mx-auto text-lg">
-              Enterprise-grade features designed to give your marketing team an
-              unfair advantage.
+              Content Studio&apos;s five agents — what each one actually does right now.
             </p>
           </div>
 
@@ -335,28 +316,30 @@ export default function Home() {
 
             <div className="relative z-10">
               <h2 className="text-3xl sm:text-4xl font-bold mb-4">
-                Ready to{" "}
-                <span className="gradient-text">Supercharge</span> Your
-                Marketing?
+                This week&apos;s calendar,{" "}
+                <span className="gradient-text">drafted</span>
               </h2>
               <p className="text-muted-foreground max-w-xl mx-auto mb-8 text-lg">
-                Join the next generation of AI-powered marketing intelligence.
-                Start analyzing, optimizing, and growing today.
+                Open a client you&apos;re already working with, or onboard a new one.
               </p>
               <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
                 <Button
+                  render={<Link href="/companies" />}
+                  nativeButton={false}
                   size="lg"
                   className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white border-0 px-8 py-6 text-lg rounded-xl shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40 transition-all"
                 >
-                  Get Started Free
+                  Open Content Studio
                   <Sparkles className="ml-2 w-5 h-5" />
                 </Button>
                 <Button
+                  render={<Link href="/onboarding" />}
+                  nativeButton={false}
                   variant="outline"
                   size="lg"
                   className="px-8 py-6 text-lg rounded-xl border-border/60 hover:bg-accent/50 transition-all"
                 >
-                  Schedule Demo
+                  Add a client
                 </Button>
               </div>
             </div>
@@ -372,11 +355,11 @@ export default function Home() {
               <Sparkles className="w-3.5 h-3.5 text-white" />
             </div>
             <span className="font-semibold gradient-text">
-              MMCS Social Network
+              MMCS Content Studio
             </span>
           </div>
           <p className="text-sm text-muted-foreground">
-            © 2026 MMCS Social Network. AI-Powered Marketing Intelligence.
+            Internal tool — MMCS team use.
           </p>
         </div>
       </footer>

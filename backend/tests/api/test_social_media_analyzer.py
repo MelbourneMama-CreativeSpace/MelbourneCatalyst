@@ -1,8 +1,9 @@
 """API tests for the Social Media Analyzer routes.
 
-Same in-memory-SQLite + AsyncClient/ASGITransport pattern as the other
-API test files. `exchange_code_for_token` is monkey-patched for the
-callback tests so they don't make a real HTTP call to any platform.
+Same in-memory-SQLite + AsyncClient/ASGITransport pattern as the other API
+test files. `initiate_connection`/`get_connection_status`/
+`disconnect_connection` are monkey-patched so these tests never make a
+real call to Composio.
 """
 
 from __future__ import annotations
@@ -10,24 +11,20 @@ from __future__ import annotations
 import uuid
 
 import pytest_asyncio
-from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.agents.social_media_analyzer.oauth_flow import TokenResult
 from app.api.v1.endpoints import social_media_analyzer as social_media_analyzer_module
 from app.db.models import Company, PlatformConnection
 from app.db.session import get_session
-from app.security import oauth_state
 
 
 @pytest_asyncio.fixture
 async def client(monkeypatch, test_session_factory):
-    key = Fernet.generate_key().decode()
-    monkeypatch.setattr(social_media_analyzer_module.settings, "TOKEN_ENCRYPTION_KEY", key)
-    monkeypatch.setattr(oauth_state.settings, "TOKEN_ENCRYPTION_KEY", key)
-    monkeypatch.setattr(social_media_analyzer_module.settings, "FRONTEND_BASE_URL", "http://localhost:3000")
+    monkeypatch.setattr(
+        social_media_analyzer_module.settings, "FRONTEND_BASE_URL", "http://localhost:3000"
+    )
 
     app = FastAPI()
     app.include_router(social_media_analyzer_module.router)
@@ -101,6 +98,66 @@ async def test_list_connections_includes_a_real_connected_row(client, test_sessi
     assert youtube["id"] is not None
 
 
+async def test_list_connections_refreshes_a_pending_connection(
+    client, test_session_factory, monkeypatch
+):
+    company_id = await _seed_company(test_session_factory)
+    connection_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(
+            PlatformConnection(
+                id=connection_id,
+                company_id=company_id,
+                platform="instagram",
+                status="pending",
+                composio_connected_account_id="ca_abc123",
+            )
+        )
+        await session.commit()
+
+    async def _fake_get_status(composio_connected_account_id):
+        assert composio_connected_account_id == "ca_abc123"
+        return "connected"
+
+    monkeypatch.setattr(social_media_analyzer_module, "get_connection_status", _fake_get_status)
+
+    response = await client.get("/connections", params={"company_id": str(company_id)})
+
+    body = response.json()
+    instagram = next(item for item in body["items"] if item["platform"] == "instagram")
+    assert instagram["status"] == "connected"
+
+    async with test_session_factory() as session:
+        connection = await session.get(PlatformConnection, connection_id)
+    assert connection.status == "connected"
+
+
+async def test_list_connections_does_not_refresh_a_settled_connection(
+    client, test_session_factory, monkeypatch
+):
+    company_id = await _seed_company(test_session_factory)
+    async with test_session_factory() as session:
+        session.add(
+            PlatformConnection(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                platform="instagram",
+                status="connected",
+                composio_connected_account_id="ca_abc123",
+            )
+        )
+        await session.commit()
+
+    async def _fail_if_called(composio_connected_account_id):
+        raise AssertionError("should not check status for an already-settled connection")
+
+    monkeypatch.setattr(social_media_analyzer_module, "get_connection_status", _fail_if_called)
+
+    response = await client.get("/connections", params={"company_id": str(company_id)})
+
+    assert response.status_code == 200
+
+
 # --- Authorize -------------------------------------------------------------
 
 
@@ -124,12 +181,18 @@ async def test_authorize_404s_for_unknown_platform(client, test_session_factory)
     assert response.status_code == 404
 
 
-async def test_authorize_redirects_when_platform_is_configured(
+async def test_authorize_redirects_to_composios_url_and_persists_pending_connection(
     client, test_session_factory, monkeypatch
 ):
     company_id = await _seed_company(test_session_factory)
-    monkeypatch.setattr(social_media_analyzer_module.settings, "META_APP_CLIENT_ID", "test-id")
-    monkeypatch.setattr(social_media_analyzer_module.settings, "META_APP_CLIENT_SECRET", "test-secret")
+
+    async def _fake_initiate(platform, cid, callback_url):
+        assert platform == "instagram"
+        assert cid == company_id
+        assert callback_url == f"http://localhost:3000/integrations/{company_id}"
+        return "ca_abc123", "https://backend.composio.dev/auth/xyz"
+
+    monkeypatch.setattr(social_media_analyzer_module, "initiate_connection", _fake_initiate)
 
     response = await client.get(
         "/connections/instagram/authorize",
@@ -138,60 +201,7 @@ async def test_authorize_redirects_when_platform_is_configured(
     )
 
     assert response.status_code == 302
-    assert "facebook.com" in response.headers["location"]
-
-
-async def test_authorize_404s_for_unknown_company(client):
-    response = await client.get(
-        "/connections/instagram/authorize", params={"company_id": str(uuid.uuid4())}
-    )
-    assert response.status_code == 404
-
-
-# --- Callback ----------------------------------------------------------
-
-
-async def test_callback_redirects_with_error_param_untouched(client):
-    response = await client.get(
-        "/connections/instagram/callback",
-        params={"error": "access_denied"},
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 302
-    assert "connect_error=access_denied" in response.headers["location"]
-
-
-async def test_callback_400s_when_missing_code_or_state(client):
-    response = await client.get("/connections/instagram/callback")
-    assert response.status_code == 400
-
-
-async def test_callback_persists_a_connected_row(client, test_session_factory, monkeypatch):
-    company_id = await _seed_company(test_session_factory)
-    state = oauth_state.sign_state({"company_id": str(company_id), "platform": "instagram"})
-
-    async def _fake_exchange(platform, code, state_token):
-        return (
-            TokenResult(
-                access_token="real-access-token",
-                refresh_token="real-refresh-token",
-                expires_in=3600,
-                granted_scopes="instagram_basic",
-            ),
-            {"company_id": str(company_id), "platform": "instagram"},
-        )
-
-    monkeypatch.setattr(social_media_analyzer_module, "exchange_code_for_token", _fake_exchange)
-
-    response = await client.get(
-        "/connections/instagram/callback",
-        params={"code": "some-code", "state": state},
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 302
-    assert response.headers["location"] == f"http://localhost:3000/companies/{company_id}"
+    assert response.headers["location"] == "https://backend.composio.dev/auth/xyz"
 
     async with test_session_factory() as session:
         connection = (
@@ -202,16 +212,23 @@ async def test_callback_persists_a_connected_row(client, test_session_factory, m
                 )
             )
         ).scalar_one()
+    assert connection.status == "pending"
+    assert connection.composio_connected_account_id == "ca_abc123"
 
-    assert connection.status == "connected"
-    assert connection.access_token_encrypted != "real-access-token"  # actually encrypted
-    assert connection.scopes == "instagram_basic"
+
+async def test_authorize_404s_for_unknown_company(client):
+    response = await client.get(
+        "/connections/instagram/authorize", params={"company_id": str(uuid.uuid4())}
+    )
+    assert response.status_code == 404
 
 
 # --- Disconnect ----------------------------------------------------------
 
 
-async def test_disconnect_clears_tokens_and_marks_disconnected(client, test_session_factory):
+async def test_disconnect_clears_connection_and_marks_disconnected(
+    client, test_session_factory, monkeypatch
+):
     company_id = await _seed_company(test_session_factory)
     connection_id = uuid.uuid4()
     async with test_session_factory() as session:
@@ -221,20 +238,30 @@ async def test_disconnect_clears_tokens_and_marks_disconnected(client, test_sess
                 company_id=company_id,
                 platform="youtube",
                 status="connected",
-                access_token_encrypted="ciphertext",
+                composio_connected_account_id="ca_abc123",
+                external_account_name="Example Channel",
             )
         )
         await session.commit()
+
+    disconnected_ids = []
+
+    async def _fake_disconnect(composio_connected_account_id):
+        disconnected_ids.append(composio_connected_account_id)
+
+    monkeypatch.setattr(social_media_analyzer_module, "disconnect_connection", _fake_disconnect)
 
     response = await client.delete(f"/connections/{connection_id}")
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "disconnected"
+    assert disconnected_ids == ["ca_abc123"]
 
     async with test_session_factory() as session:
         connection = await session.get(PlatformConnection, connection_id)
-    assert connection.access_token_encrypted is None
+    assert connection.composio_connected_account_id is None
+    assert connection.external_account_name is None
 
 
 async def test_disconnect_404s_for_unknown_connection(client):

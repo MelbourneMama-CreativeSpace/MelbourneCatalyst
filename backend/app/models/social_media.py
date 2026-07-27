@@ -1,7 +1,9 @@
 """Pydantic response schemas for the Social Media Analyzer API.
 
-Deliberately never includes `access_token_encrypted`/`refresh_token_encrypted`
-— no reason to expose even the encrypted ciphertext over the API.
+No token fields here by design — Composio custodies OAuth tokens, this
+app only ever holds a reference id, and that id isn't exposed either
+(it's an internal implementation detail, not something the frontend
+needs).
 """
 
 from __future__ import annotations

@@ -128,6 +128,7 @@ async def test_get_company_returns_the_row(client, test_session_factory):
                 status="complete",
                 name="Example Co",
                 niche_keywords=["widgets"],
+                products_and_services=["Widget subscription box"],
             )
         )
         await session.commit()
@@ -138,6 +139,7 @@ async def test_get_company_returns_the_row(client, test_session_factory):
     body = response.json()
     assert body["name"] == "Example Co"
     assert body["niche_keywords"] == ["widgets"]
+    assert body["products_and_services"] == ["Widget subscription box"]
 
 
 async def test_list_companies_returns_all(client, test_session_factory):

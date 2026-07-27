@@ -43,6 +43,7 @@ async def _stub_extract_profile(content: str) -> tuple[CompanyProfile, bool]:
             unique_value_prop="Best widgets in the world",
             niche_keywords=["widgets", "small business", "marketing tools"],
             summary="Widget Co makes the best widgets for marketers.",
+            products_and_services=["Widget subscription box", "Custom widget consulting"],
         ),
         True,
     )
@@ -76,20 +77,8 @@ async def test_run_onboarding_persists_company_profile_and_documents(
     assert company.status == "complete"
     assert company.name == "Widget Co"
     assert company.niche_keywords == ["widgets", "small business", "marketing tools"]
+    assert company.products_and_services == ["Widget subscription box", "Custom widget consulting"]
     assert len(docs) >= 2  # at least one chunk per page
-
-
-def test_classify_source_type_tags_product_and_pricing_paths():
-    assert graph_module._classify_source_type("https://example.com/products") == "product_page"
-    assert graph_module._classify_source_type("https://example.com/pricing") == "product_page"
-    assert graph_module._classify_source_type("https://example.com/shop/widget") == "product_page"
-    assert graph_module._classify_source_type("https://example.com/store") == "product_page"
-
-
-def test_classify_source_type_tags_other_paths_as_website():
-    assert graph_module._classify_source_type("https://example.com/about") == "website"
-    assert graph_module._classify_source_type("https://example.com/") == "website"
-    assert graph_module._classify_source_type("https://example.com/team") == "website"
 
 
 async def test_run_onboarding_tags_product_pages_distinctly(monkeypatch, test_session_factory):

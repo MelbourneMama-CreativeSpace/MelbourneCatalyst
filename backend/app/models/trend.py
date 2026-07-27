@@ -77,6 +77,8 @@ class TrendReportOut(BaseModel):
     key_themes: list[str] | None
     notable_trends_summary: str | None
     content_opportunities: str | None
+    campaign_alignment_notes: str | None
+    competitor_relevance_notes: str | None
     created_at: datetime
 
 

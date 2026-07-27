@@ -76,43 +76,47 @@ class Settings(BaseSettings):
     # Content Management — Campaign Manager + Brand Collaboration
     COLLABORATION_MAX_IDEAS: int = 5
 
-    # Social Media Analyzer — Platform Integration (OAuth connections)
-    # Base URL this backend is reachable at, used to build the OAuth
-    # callback redirect_uri (must match what's registered on each
-    # platform's app). Distinct from FRONTEND_BASE_URL below.
-    APP_BASE_URL: str = "http://localhost:8000"
+    # Social Media Analyzer — Platform Integration (OAuth connections),
+    # brokered through Composio rather than this app doing raw OAuth
+    # itself. Composio custodies tokens; this backend never sees them.
+    #
     # Where the browser gets redirected after a connection completes —
     # the frontend, not this backend.
     FRONTEND_BASE_URL: str = "http://localhost:3000"
-    # Fernet key (Fernet.generate_key()) — encrypts OAuth tokens at rest
-    # and doubles as the HMAC signing key for OAuth `state` params (see
-    # app/security/token_encryption.py, app/security/oauth_state.py).
-    TOKEN_ENCRYPTION_KEY: str = ""
-    # Meta app (covers both Instagram and Facebook — one Meta app, two
-    # product surfaces) — https://developers.facebook.com/apps
-    META_APP_CLIENT_ID: str = ""
-    META_APP_CLIENT_SECRET: str = ""
-    # X/Twitter OAuth2 app — distinct from TWITTER_BEARER_TOKEN above,
-    # which is a separate app-level credential for the Trend Analyzer's
-    # read-only search — https://developer.twitter.com/en/portal/dashboard
-    TWITTER_OAUTH_CLIENT_ID: str = ""
-    TWITTER_OAUTH_CLIENT_SECRET: str = ""
-    # LinkedIn app — https://www.linkedin.com/developers/apps
-    LINKEDIN_CLIENT_ID: str = ""
-    LINKEDIN_CLIENT_SECRET: str = ""
-    # TikTok "Login Kit" app — distinct from TIKTOK_CLIENT_KEY/SECRET
-    # above, which is the separate Research API used by the Trend
-    # Analyzer — https://developers.tiktok.com/apps
-    TIKTOK_OAUTH_CLIENT_KEY: str = ""
-    TIKTOK_OAUTH_CLIENT_SECRET: str = ""
-    # Google Cloud OAuth client (covers YouTube) —
-    # https://console.cloud.google.com/apis/credentials
-    GOOGLE_OAUTH_CLIENT_ID: str = ""
-    GOOGLE_OAUTH_CLIENT_SECRET: str = ""
+    # https://app.composio.dev — account-level API key.
+    COMPOSIO_API_KEY: str = ""
+    # Each of these is an existing Composio "auth config" id (looks like
+    # "ac_...") — created once via the Composio dashboard using
+    # `use_custom_auth`, with that platform's own registered OAuth app
+    # client ID/secret pasted in there (not here — the Composio SDK
+    # version this app uses doesn't accept raw client credentials
+    # programmatically, only via its dashboard UI). One Meta auth config
+    # can cover both Instagram and Facebook if you registered one Meta
+    # app for both; set the same id in both settings if so.
+    COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID: str = ""
+    COMPOSIO_FACEBOOK_AUTH_CONFIG_ID: str = ""
+    COMPOSIO_TWITTER_AUTH_CONFIG_ID: str = ""
+    COMPOSIO_LINKEDIN_AUTH_CONFIG_ID: str = ""
+    COMPOSIO_TIKTOK_AUTH_CONFIG_ID: str = ""
+    COMPOSIO_YOUTUBE_AUTH_CONFIG_ID: str = ""
 
-    # Trend Analyzer — Trend Outputs (weekly report / insights / content opportunities)
+    # Trend Analyzer — Trend Outputs (weekly report / insights / content
+    # opportunities / campaign-history comparison / competitor-activity
+    # correlation)
     TREND_REPORT_MAX_TRENDS: int = 15
     TREND_REPORT_DEFAULT_PERIOD_DAYS: int = 7
+    TREND_REPORT_MAX_CAMPAIGNS: int = 5
+    TREND_REPORT_MAX_COMPETITORS: int = 5
+
+    # Trend Analyzer — recommended trends (formalizes the manual
+    # min_relevance dashboard filter into an opinionated shortlist)
+    TREND_RECOMMENDATION_MIN_RELEVANCE: float = 0.75
+    TREND_RECOMMENDATION_MAX_AGE_DAYS: int = 7
+    TREND_RECOMMENDATION_LIMIT: int = 10
+
+    # Trend Analyzer — scheduled daily trend report (period_days=1 report
+    # auto-generated per complete company, same job pattern as kb_reindex)
+    TREND_DAILY_REPORT_INTERVAL_HOURS: int = 24
 
     # Knowledge Base — Knowledge Manager (audit reports)
     KNOWLEDGE_AUDIT_MAX_DOCUMENTS: int = 30
@@ -121,6 +125,12 @@ class Settings(BaseSettings):
     KB_BLOG_MAX_ARTICLES: int = 5
     KB_DOCUMENT_LIST_DEFAULT_LIMIT: int = 50
     KB_UPLOAD_MAX_BYTES: int = 5_000_000
+
+    # Knowledge Base — scheduled re-index (automated indexing + incremental
+    # updates). Daily by default — a company's own site changes far less
+    # often than trending topics, so this is much less aggressive than
+    # TREND_COLLECTION_INTERVAL_HOURS above.
+    KB_REINDEX_INTERVAL_HOURS: int = 24
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]

@@ -8,17 +8,10 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "MMCS Social Network | AI-Powered Marketing Intelligence",
+  title: "MMCS Content Studio",
   description:
-    "MMCS Social Network is an AI-powered marketing intelligence platform featuring Company Analyzer, Trend Analyzer, Content Management, and Social Media Analyzer modules to supercharge your marketing strategy.",
-  keywords: [
-    "AI marketing",
-    "social media analytics",
-    "trend analysis",
-    "content management",
-    "company analyzer",
-    "marketing intelligence",
-  ],
+    "MMCS's internal tool for drafting weekly client content — strategy, content calendar with ready-to-publish captions, campaigns, and collaboration ideas.",
+  keywords: ["content studio", "content calendar", "content drafting", "MMCS"],
 };
 
 export default function RootLayout({

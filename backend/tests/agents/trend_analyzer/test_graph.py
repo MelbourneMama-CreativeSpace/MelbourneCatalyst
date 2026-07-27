@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.agents.trend_analyzer import graph as graph_module
 from app.agents.trend_analyzer.schemas import EnrichedTrendItem, RawTrendItem, SourceResult, TrendSource
-from app.db.models import Company, Trend
+from app.db.models import Company, CompanyTrendRelevance, Trend
 
 
 def _item(source: TrendSource, title: str, url: str) -> RawTrendItem:
@@ -220,3 +220,127 @@ async def test_score_relevance_node_scores_against_company_keywords(
     assert scored.relevance_score is not None
     # Cosine sim with [1,0] is 1.0, normalized to (1+1)/2 = 1.0
     assert scored.relevance_score == 1.0
+
+
+async def _fake_embed_matching_keywords(texts: list[str]) -> list[list[float]]:
+    # Every text embeds to the same unit vector, so every (company,
+    # trend) pair gets cosine similarity 1.0 → normalized relevance 1.0.
+    # Enough to prove rows get written; the actual scoring math is
+    # already covered by test_score_relevance_node_scores_against_company_keywords.
+    return [[1.0, 0.0] for _ in texts]
+
+
+async def test_persist_node_writes_per_company_relevance_for_every_complete_company(
+    monkeypatch, test_session_factory
+):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+    monkeypatch.setattr(graph_module, "embed_documents", _fake_embed_matching_keywords)
+
+    company_a = uuid.uuid4()
+    company_b = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(
+            Company(
+                id=company_a,
+                url="https://a.example.com",
+                status="complete",
+                niche_keywords=["marketing"],
+            )
+        )
+        session.add(
+            Company(
+                id=company_b,
+                url="https://b.example.com",
+                status="complete",
+                niche_keywords=["parenting"],
+            )
+        )
+        await session.commit()
+
+    enriched = [
+        EnrichedTrendItem(
+            item=_item(TrendSource.RSS, "Per-company scoring test", "https://example.com/multi"),
+            category="marketing",
+            insight="matters",
+        )
+    ]
+
+    await graph_module._persist_node({"enriched_items": enriched})
+
+    async with test_session_factory() as session:
+        trend = (
+            await session.execute(select(Trend).where(Trend.url == "https://example.com/multi"))
+        ).scalar_one()
+        rows = (
+            await session.execute(
+                select(CompanyTrendRelevance).where(CompanyTrendRelevance.trend_id == trend.id)
+            )
+        ).scalars().all()
+
+    scores_by_company = {row.company_id: row.relevance_score for row in rows}
+    assert scores_by_company == {company_a: 1.0, company_b: 1.0}
+
+
+async def test_persist_node_skips_companies_without_niche_keywords(
+    monkeypatch, test_session_factory
+):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+    monkeypatch.setattr(graph_module, "embed_documents", _fake_embed_matching_keywords)
+
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(
+            Company(id=company_id, url="https://no-keywords.example.com", status="complete")
+        )
+        await session.commit()
+
+    enriched = [
+        EnrichedTrendItem(
+            item=_item(TrendSource.RSS, "No keywords company", "https://example.com/no-kw"),
+            category="marketing",
+            insight="matters",
+        )
+    ]
+
+    await graph_module._persist_node({"enriched_items": enriched})
+
+    async with test_session_factory() as session:
+        rows = (await session.execute(select(CompanyTrendRelevance))).scalars().all()
+    assert rows == []
+
+
+async def test_persist_node_writes_no_relevance_rows_when_embeddings_unconfigured(
+    monkeypatch, test_session_factory
+):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    async def _no_embeddings(texts: list[str]) -> list[None]:
+        return [None] * len(texts)
+
+    monkeypatch.setattr(graph_module, "embed_documents", _no_embeddings)
+
+    async with test_session_factory() as session:
+        session.add(
+            Company(
+                id=uuid.uuid4(),
+                url="https://example.com",
+                status="complete",
+                niche_keywords=["marketing"],
+            )
+        )
+        await session.commit()
+
+    enriched = [
+        EnrichedTrendItem(
+            item=_item(TrendSource.RSS, "No embeddings", "https://example.com/no-embed"),
+            category="marketing",
+            insight="matters",
+        )
+    ]
+
+    # Must not raise even though embeddings are entirely unavailable.
+    await graph_module._persist_node({"enriched_items": enriched})
+
+    async with test_session_factory() as session:
+        rows = (await session.execute(select(CompanyTrendRelevance))).scalars().all()
+    assert rows == []

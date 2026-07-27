@@ -26,7 +26,7 @@ import uuid
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import select, tuple_
+from sqlalchemy import insert, select, tuple_
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,7 +47,7 @@ from app.agents.trend_analyzer.schemas import (
     SourceResult,
     TrendSource,
 )
-from app.db.models import Company, Trend
+from app.db.models import Company, CompanyTrendRelevance, Trend
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -218,11 +218,66 @@ async def _upsert(session: AsyncSession, enriched_items: list[EnrichedTrendItem]
     await session.execute(stmt)
 
 
+async def _score_relevance_per_company(session: AsyncSession, new_trend_rows: list) -> None:
+    """Additive per-company relevance, computed for every `complete`
+    company with niche_keywords — not just the one `_score_relevance_node`
+    happened to treat as "the" company. `new_trend_rows` are freshly
+    persisted `Trend` rows (already deduped upstream, so no conflict
+    handling is needed — a given (company, trend) pair is scored exactly
+    once, at the trend's first discovery). Degrades silently to writing no
+    rows for a company when embeddings aren't configured or fail — the
+    legacy `Trend.relevance_score` column already has the same limitation,
+    so this isn't a new failure mode, just not (yet) fully redundant."""
+    if not new_trend_rows:
+        return
+
+    companies = (
+        await session.execute(select(Company).where(Company.status == "complete"))
+    ).scalars().all()
+    trend_titles = [row.title for row in new_trend_rows]
+
+    for company in companies:
+        if not company.niche_keywords:
+            continue
+        to_embed = list(company.niche_keywords) + trend_titles
+        embeddings = await embed_documents(to_embed)
+        keyword_count = len(company.niche_keywords)
+        keyword_embeddings = [e for e in embeddings[:keyword_count] if e is not None]
+        trend_embeddings = embeddings[keyword_count:]
+        if not keyword_embeddings:
+            continue
+
+        rows = []
+        for row, trend_embedding in zip(new_trend_rows, trend_embeddings):
+            if trend_embedding is None:
+                continue
+            best = max(_cosine_similarity(trend_embedding, kw) for kw in keyword_embeddings)
+            rows.append(
+                {
+                    "id": uuid.uuid4(),
+                    "company_id": company.id,
+                    "trend_id": row.id,
+                    "relevance_score": (best + 1.0) / 2.0,
+                }
+            )
+        if rows:
+            await session.execute(insert(CompanyTrendRelevance).values(rows))
+
+
 async def _persist_node(state: TrendGraphState) -> dict:
     enriched_items = state["enriched_items"]
     if enriched_items:
         async with async_session_factory() as session:
             await _upsert(session, enriched_items)
+            await session.commit()
+
+            pairs = [(enriched.item.source.value, enriched.item.url) for enriched in enriched_items]
+            new_trend_rows = (
+                await session.execute(
+                    select(Trend.id, Trend.title).where(tuple_(Trend.source, Trend.url).in_(pairs))
+                )
+            ).all()
+            await _score_relevance_per_company(session, new_trend_rows)
             await session.commit()
     return {}
 

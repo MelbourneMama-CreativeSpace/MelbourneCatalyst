@@ -56,6 +56,35 @@ class Trend(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class CompanyTrendRelevance(Base):
+    """Per-(company, trend) relevance score, computed once when a trend is
+    first discovered — against every `complete` company's niche_keywords at
+    that time, not just one. Fixes the single-tenant assumption baked into
+    `Trend.relevance_score` (which only ever reflected whichever company
+    happened to be "most recently updated" at scoring time): with more than
+    one onboarded company, that single global score was frequently right
+    for the wrong client. Additive alongside `Trend.relevance_score` rather
+    than replacing it — only the Content Planner's trend context currently
+    reads this table (see content_plan_graph.py); other generation agents
+    still read the legacy global score, a known gap tracked in
+    KNOWN_ISSUES.md."""
+
+    __tablename__ = "company_trend_relevance"
+    __table_args__ = (
+        UniqueConstraint("company_id", "trend_id", name="uq_company_trend_relevance_company_trend"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    trend_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("trends.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    relevance_score: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Company(Base):
     __tablename__ = "companies"
 
@@ -80,6 +109,7 @@ class Company(Base):
     unique_value_prop: Mapped[str | None] = mapped_column(String, nullable=True)
     niche_keywords: Mapped[list[str] | None] = mapped_column(_StringArrayType, nullable=True)
     summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    products_and_services: Mapped[list[str] | None] = mapped_column(_StringArrayType, nullable=True)
 
     raw_metadata: Mapped[dict] = mapped_column(_MetadataType, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -127,6 +157,17 @@ class Strategy(Base):
     campaign_direction: Mapped[str | None] = mapped_column(String, nullable=True)
     growth_recommendations: Mapped[str | None] = mapped_column(String, nullable=True)
     business_suggestions: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Manual review lifecycle, independent of `status` above (which is
+    # only the generation lifecycle) — same pattern as
+    # ContentItem.approval_status.
+    approval_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", index=True
+    )
+    # Free-text name of whoever last changed `approval_status` — same
+    # lightweight attribution as ContentItem.approved_by, not a real auth
+    # system. Null until the first approval/rejection.
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -181,12 +222,22 @@ class ContentItem(Base):
     # ties to, if Claude chose to tie it to one of the candidates offered in
     # generation context for the plan's date window. Null for evergreen ideas.
     seasonal_event: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The actual finished, publishable copy for this item — what someone
+    # pastes and posts. Distinct from `description`, which is a brief of
+    # what the content says/shows, not the content itself. Nullable: older
+    # rows generated before this field existed, and the graceful
+    # no-`ANTHROPIC_API_KEY` failure path, both leave it unset.
+    draft_copy: Mapped[str | None] = mapped_column(String, nullable=True)
     # Manual review lifecycle, independent of ContentPlan.status (which is
     # only the generation lifecycle) — same "manually advanced, no
     # state-machine enforcement" pattern as Campaign.lifecycle_stage.
     approval_status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="pending", index=True
     )
+    # Free-text name of whoever last changed `approval_status` — not a real
+    # auth system, just enough attribution for a small internal team to see
+    # who signed off on what. Null until the first approval/rejection.
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     content_plan: Mapped[ContentPlan] = relationship(back_populates="items")
@@ -327,12 +378,11 @@ class PlatformConnection(Base):
     )
     status_error: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # Encrypted at the application layer (see app/security/token_encryption.py)
-    # before ever reaching this column — these are real third-party
-    # credentials, unlike everything else this app stores.
-    access_token_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
-    refresh_token_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
-    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Composio custodies the actual OAuth tokens — this app never sees or
+    # stores them, encrypted or otherwise. This is the id of the
+    # corresponding Composio "connected account" (its `nanoid`), used to
+    # check status and to disconnect.
+    composio_connected_account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     external_account_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     external_account_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -381,6 +431,8 @@ class TrendReport(Base):
     key_themes: Mapped[list[str] | None] = mapped_column(_StringArrayType, nullable=True)
     notable_trends_summary: Mapped[str | None] = mapped_column(String, nullable=True)
     content_opportunities: Mapped[str | None] = mapped_column(String, nullable=True)
+    campaign_alignment_notes: Mapped[str | None] = mapped_column(String, nullable=True)
+    competitor_relevance_notes: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

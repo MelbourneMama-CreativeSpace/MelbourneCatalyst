@@ -5,7 +5,7 @@ collection status, and trigger a manual collection run.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -119,10 +119,11 @@ async def source_status(session: AsyncSession = Depends(get_session)) -> list[So
     return statuses
 
 
-# NOTE: these /reports routes must stay registered before GET /{trend_id}
-# below — that catch-all matches any single path segment, so a GET
-# /reports request would otherwise be captured by it first (and fail
-# UUID validation on trend_id="reports") if it came later.
+# NOTE: these /reports and /recommended routes must stay registered
+# before GET /{trend_id} below — that catch-all matches any single path
+# segment, so a GET /reports or /recommended request would otherwise be
+# captured by it first (and fail UUID validation on trend_id="reports"
+# or "recommended") if either came later.
 
 
 @router.post("/reports", response_model=TrendReportOut)
@@ -177,6 +178,39 @@ async def get_trend_report(
     if report is None:
         raise HTTPException(status_code=404, detail="Trend report not found")
     return TrendReportOut.model_validate(report)
+
+
+@router.get("/recommended", response_model=TrendListResponse)
+async def list_recommended_trends(
+    limit: int | None = Query(default=None, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+) -> TrendListResponse:
+    """Formalizes the dashboard's manual `min_relevance` filter into an
+    opinionated shortlist: highly relevant AND recently discovered, so a
+    trend that was relevant six months ago but has since gone stale
+    doesn't linger at the top. No Claude call — pure filter + sort over
+    already-scored trends, same `relevance_score` the collection graph
+    computes."""
+    effective_limit = limit or settings.TREND_RECOMMENDATION_LIMIT
+    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.TREND_RECOMMENDATION_MAX_AGE_DAYS)
+
+    stmt = (
+        select(Trend)
+        .where(
+            Trend.relevance_score >= settings.TREND_RECOMMENDATION_MIN_RELEVANCE,
+            Trend.discovered_at >= cutoff,
+        )
+        .order_by(Trend.relevance_score.desc())
+        .limit(effective_limit)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+
+    return TrendListResponse(
+        items=[TrendOut.model_validate(row) for row in rows],
+        total=len(rows),
+        limit=effective_limit,
+        offset=0,
+    )
 
 
 @router.get("/{trend_id}", response_model=TrendOut)

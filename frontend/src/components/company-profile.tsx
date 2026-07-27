@@ -10,7 +10,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CompetitorList } from "@/components/competitor-list";
 import { ContentHistory } from "@/components/content-history";
 import { KnowledgePanel } from "@/components/knowledge-panel";
-import { PlatformConnections } from "@/components/platform-connections";
 import { TrendReports } from "@/components/trend-reports";
 import { createStrategy, getCompany, type Company } from "@/lib/api";
 
@@ -149,29 +148,55 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
         </Card>
       )}
 
-      {TERMINAL_STATUSES.has(company.status) && (
+      {company.products_and_services && company.products_and_services.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Products & services</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-2">
+              {company.products_and_services.map((item) => (
+                <Badge key={item} variant="default">
+                  {item}
+                </Badge>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {company.status === "complete" && (
         <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap gap-3">
-            <Button render={<Link href="/trends">View matched trends</Link>} nativeButton={false} />
-            {company.status === "complete" && (
-              <Button variant="outline" onClick={handleGenerateStrategy} disabled={generatingStrategy}>
-                {generatingStrategy ? "Generating strategy…" : "Generate strategy"}
-              </Button>
-            )}
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={handleGenerateStrategy} disabled={generatingStrategy}>
+              {generatingStrategy ? "Generating strategy…" : "Generate strategy"}
+            </Button>
+            <Link
+              href={`/integrations/${company.id}`}
+              className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+            >
+              Manage social connections →
+            </Link>
           </div>
           {strategyError && <p className="text-sm text-destructive">{strategyError}</p>}
         </div>
       )}
 
-      {company.status === "complete" && <CompetitorList companyId={company.id} />}
-
-      {company.status === "complete" && <PlatformConnections companyId={company.id} />}
-
-      {company.status === "complete" && <TrendReports companyId={company.id} />}
-
-      {company.status === "complete" && <KnowledgePanel companyId={company.id} />}
-
       {company.status === "complete" && <ContentHistory companyId={company.id} />}
+
+      {company.status === "complete" && (
+        <details className="group rounded-lg border border-border">
+          <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-muted-foreground hover:text-foreground">
+            Other modules — competitor research, trend reports, knowledge base (in development,
+            not part of the daily Content Studio workflow)
+          </summary>
+          <div className="flex flex-col gap-6 border-t border-border p-4">
+            <CompetitorList companyId={company.id} />
+            <TrendReports companyId={company.id} />
+            <KnowledgePanel companyId={company.id} />
+          </div>
+        </details>
+      )}
     </div>
   );
 }

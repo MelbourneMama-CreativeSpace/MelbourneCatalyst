@@ -15,6 +15,8 @@ async def test_extract_falls_back_to_empty_profile_without_api_key(monkeypatch):
     assert extracted_ok is False
     assert profile.name is None
     assert profile.niche_keywords == []
+    assert profile.products_and_services == []
+    assert profile.products_and_services == []
 
 
 async def test_extract_parses_tool_use_result(monkeypatch):
@@ -31,6 +33,7 @@ async def test_extract_parses_tool_use_result(monkeypatch):
             "unique_value_prop": "AI-native from day one",
             "niche_keywords": ["marketing automation", "AI content", "campaign analytics"],
             "summary": "One-paragraph overview here.",
+            "products_and_services": ["Campaign analytics dashboard", "Managed onboarding"],
         },
     )
 
@@ -50,6 +53,7 @@ async def test_extract_parses_tool_use_result(monkeypatch):
     assert profile.industry == "B2B SaaS"
     assert profile.niche_keywords == ["marketing automation", "AI content", "campaign analytics"]
     assert profile.summary == "One-paragraph overview here."
+    assert profile.products_and_services == ["Campaign analytics dashboard", "Managed onboarding"]
 
 
 async def test_extract_falls_back_on_api_failure(monkeypatch):
@@ -69,3 +73,4 @@ async def test_extract_falls_back_on_api_failure(monkeypatch):
     assert extracted_ok is False
     assert profile.name is None
     assert profile.niche_keywords == []
+    assert profile.products_and_services == []

@@ -33,6 +33,10 @@ class GeneratedContentItem:
     related_trend_title: str | None = None
     audience_interest: str | None = None
     seasonal_event: str | None = None
+    # The actual finished, publishable copy — what someone pastes and
+    # posts, not a brief of what it should say. See content_planner.py's
+    # tool description for the prompt-level distinction from `description`.
+    draft_copy: str | None = None
 
 
 @dataclass(slots=True)

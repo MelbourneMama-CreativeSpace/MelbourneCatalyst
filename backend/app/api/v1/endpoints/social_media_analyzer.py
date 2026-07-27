@@ -1,25 +1,36 @@
-"""Social Media Analyzer routes: Platform Integration Agent's OAuth
-"connect your account" flow (authorize → platform-side consent →
-callback), connection listing/disconnect, and a metrics endpoint that's
-schema-complete but returns nothing yet (no metrics-fetching logic exists
-this round — see `app/agents/social_media_analyzer/__init__.py`).
+"""Social Media Analyzer routes: Platform Integration Agent's "connect
+your account" flow, brokered through Composio rather than this app doing
+raw OAuth itself.
+
+Flow: `GET /connections/{platform}/authorize` starts a Composio
+connection and redirects the browser to Composio's own hosted authorize
+URL, which in turn sends the user to the real platform's consent screen.
+Once done, Composio redirects the browser straight to the `callback_url`
+we gave it (this app's `/integrations/{company_id}` frontend page) — our
+backend has no callback route of its own to hit anymore, since Composio
+is the registered OAuth redirect target on each platform's app, not us.
+`GET /connections` lazily refreshes any connection still mid-flow so the
+status is current by the time the user lands back on that page.
+
+Metrics endpoint is schema-complete but returns nothing yet — no
+metrics-fetching logic exists this round (see
+`app/agents/social_media_analyzer/__init__.py`).
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.social_media_analyzer.oauth_flow import (
-    OAuthNotConfiguredError,
-    build_authorize_url,
-    exchange_code_for_token,
+    ComposioNotConfiguredError,
+    disconnect_connection,
+    get_connection_status,
+    initiate_connection,
 )
 from app.agents.social_media_analyzer.oauth_providers import PLATFORM_CONFIGS
 from app.config import settings
@@ -30,10 +41,12 @@ from app.models.social_media import (
     PlatformConnectionOut,
     PlatformMetricSnapshotListResponse,
 )
-from app.security.oauth_state import OAuthStateError
-from app.security.token_encryption import TokenEncryptionNotConfiguredError, encrypt_token
 
 router = APIRouter()
+
+# Connections in one of these statuses haven't reached a settled state
+# yet — worth checking Composio for a fresher status before returning them.
+_UNSETTLED_STATUSES = {"pending"}
 
 
 async def _get_company_or_404(session: AsyncSession, company_id: uuid.UUID) -> Company:
@@ -41,6 +54,24 @@ async def _get_company_or_404(session: AsyncSession, company_id: uuid.UUID) -> C
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
     return company
+
+
+async def _refresh_unsettled(session: AsyncSession, rows: list[PlatformConnection]) -> None:
+    changed_rows = []
+    for row in rows:
+        if row.status not in _UNSETTLED_STATUSES or not row.composio_connected_account_id:
+            continue
+        fresh_status = await get_connection_status(row.composio_connected_account_id)
+        if fresh_status != row.status:
+            row.status = fresh_status
+            changed_rows.append(row)
+    if changed_rows:
+        await session.commit()
+        # updated_at has onupdate=func.now() — its real post-commit value
+        # is unknown to these in-memory objects until refreshed, same fix
+        # as content_management.py's update_campaign_lifecycle.
+        for row in changed_rows:
+            await session.refresh(row)
 
 
 @router.get("/connections", response_model=PlatformConnectionListResponse)
@@ -58,6 +89,7 @@ async def list_connections(
             select(PlatformConnection).where(PlatformConnection.company_id == company_id)
         )
     ).scalars().all()
+    await _refresh_unsettled(session, list(rows))
     by_platform = {row.platform: row for row in rows}
 
     items = [
@@ -71,56 +103,19 @@ async def list_connections(
 
 @router.get("/connections/{platform}/authorize")
 async def authorize(
-    platform: str,
-    company_id: uuid.UUID = Query(...),
-    session: AsyncSession = Depends(get_session),
+    platform: str, company_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> RedirectResponse:
     await _get_company_or_404(session, company_id)
-    try:
-        authorize_url = build_authorize_url(platform, company_id)
-    except ValueError:
+    if platform not in PLATFORM_CONFIGS:
         raise HTTPException(status_code=404, detail=f"Unknown platform: {platform!r}")
-    except OAuthNotConfiguredError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    except OAuthStateError:
-        # sign_state() failing means TOKEN_ENCRYPTION_KEY isn't set — same
-        # "this environment isn't set up for OAuth yet" story as an
-        # unconfigured platform app, just a different missing setting.
-        raise HTTPException(
-            status_code=409,
-            detail="TOKEN_ENCRYPTION_KEY is not configured — cannot start an OAuth flow",
-        )
-    return RedirectResponse(authorize_url, status_code=302)
 
-
-@router.get("/connections/{platform}/callback")
-async def callback(
-    platform: str,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-    session: AsyncSession = Depends(get_session),
-) -> RedirectResponse:
-    # The platform itself redirects here — a denied-consent or
-    # platform-side error must not 500, it should land the user back on
-    # the app with a visible (if unhelpful-until-investigated) signal.
-    if error:
-        return RedirectResponse(
-            f"{settings.FRONTEND_BASE_URL}/companies?connect_error={error}", status_code=302
-        )
-    if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing code or state")
-
+    callback_url = f"{settings.FRONTEND_BASE_URL}/integrations/{company_id}"
     try:
-        token_result, state_payload = await exchange_code_for_token(platform, code, state)
-    except OAuthStateError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except OAuthNotConfiguredError as exc:
+        composio_connected_account_id, redirect_url = await initiate_connection(
+            platform, company_id, callback_url
+        )
+    except ComposioNotConfiguredError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=502, detail=f"Token exchange failed: {exc}")
-
-    company_id = uuid.UUID(state_payload["company_id"])
 
     connection = (
         await session.execute(
@@ -133,30 +128,12 @@ async def callback(
         connection = PlatformConnection(id=uuid.uuid4(), company_id=company_id, platform=platform)
         session.add(connection)
 
-    try:
-        connection.access_token_encrypted = encrypt_token(token_result.access_token)
-        connection.refresh_token_encrypted = (
-            encrypt_token(token_result.refresh_token) if token_result.refresh_token else None
-        )
-    except TokenEncryptionNotConfiguredError:
-        raise HTTPException(
-            status_code=409,
-            detail="TOKEN_ENCRYPTION_KEY is not configured — cannot store the connection",
-        )
-    connection.token_expires_at = (
-        datetime.now(timezone.utc) + timedelta(seconds=token_result.expires_in)
-        if token_result.expires_in
-        else None
-    )
-    connection.external_account_id = token_result.external_account_id
-    connection.external_account_name = token_result.external_account_name
-    connection.scopes = token_result.granted_scopes
-    connection.status = "connected"
+    connection.composio_connected_account_id = composio_connected_account_id
+    connection.status = "pending"
     connection.status_error = None
-    connection.connected_at = datetime.now(timezone.utc)
     await session.commit()
 
-    return RedirectResponse(f"{settings.FRONTEND_BASE_URL}/companies/{company_id}", status_code=302)
+    return RedirectResponse(redirect_url, status_code=302)
 
 
 @router.delete("/connections/{connection_id}", response_model=PlatformConnectionOut)
@@ -167,9 +144,13 @@ async def disconnect(
     if connection is None:
         raise HTTPException(status_code=404, detail="Connection not found")
 
-    connection.access_token_encrypted = None
-    connection.refresh_token_encrypted = None
-    connection.token_expires_at = None
+    if connection.composio_connected_account_id:
+        await disconnect_connection(connection.composio_connected_account_id)
+
+    connection.composio_connected_account_id = None
+    connection.external_account_id = None
+    connection.external_account_name = None
+    connection.scopes = None
     connection.status = "disconnected"
     connection.status_error = None
     connection.connected_at = None

@@ -74,6 +74,8 @@ export interface TrendReport {
   key_themes: string[] | null;
   notable_trends_summary: string | null;
   content_opportunities: string | null;
+  campaign_alignment_notes: string | null;
+  competitor_relevance_notes: string | null;
   created_at: string;
 }
 
@@ -107,6 +109,7 @@ export interface Company {
   unique_value_prop: string | null;
   niche_keywords: string[] | null;
   summary: string | null;
+  products_and_services: string[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -138,6 +141,8 @@ export interface Strategy {
   campaign_direction: string | null;
   growth_recommendations: string | null;
   business_suggestions: string | null;
+  approval_status: ApprovalStatus;
+  approved_by: string | null;
   created_at: string;
 }
 
@@ -162,6 +167,7 @@ export interface ContentItem {
   id: string;
   title: string;
   description: string;
+  draft_copy: string | null;
   content_type: ContentType;
   platform: Platform;
   theme: string | null;
@@ -170,6 +176,7 @@ export interface ContentItem {
   audience_interest: string | null;
   seasonal_event: string | null;
   approval_status: ApprovalStatus;
+  approved_by: string | null;
 }
 
 export interface ContentPlan {
@@ -308,7 +315,10 @@ export type SocialPlatform =
   | "tiktok"
   | "youtube";
 
-export type ConnectionStatus = "connected" | "disconnected" | "error" | "expired";
+// "pending" covers the moment between clicking Connect and Composio
+// confirming the platform-side consent finished — the connections list
+// refreshes it automatically once settled.
+export type ConnectionStatus = "connected" | "pending" | "disconnected" | "error" | "expired";
 
 export interface PlatformConnection {
   // null for a not-yet-connected platform — the list endpoint always
@@ -328,6 +338,18 @@ export interface PlatformConnection {
 
 export interface PlatformConnectionListResponse {
   items: PlatformConnection[];
+}
+
+export interface PlatformMetricSnapshot {
+  id: string;
+  platform_connection_id: string;
+  captured_at: string;
+  follower_count: number | null;
+  engagement_rate: number | null;
+}
+
+export interface PlatformMetricSnapshotListResponse {
+  items: PlatformMetricSnapshot[];
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +475,12 @@ export function getTrendsByIds(ids: string[]): Promise<TrendListResponse> {
   return apiFetch<TrendListResponse>(`/trend-analyzer/?${query.toString()}`);
 }
 
+export function listRecommendedTrends(limit?: number): Promise<TrendListResponse> {
+  return apiFetch<TrendListResponse>(
+    `/trend-analyzer/recommended${toQueryString({ limit })}`,
+  );
+}
+
 export function getSourceStatus(): Promise<SourceStatus[]> {
   return apiFetch<SourceStatus[]>("/trend-analyzer/sources");
 }
@@ -505,6 +533,17 @@ export function listStrategies(companyId?: string): Promise<StrategyListResponse
   );
 }
 
+export function updateStrategyApproval(
+  strategyId: string,
+  approvalStatus: ApprovalStatus,
+  approvedBy?: string,
+): Promise<Strategy> {
+  return apiFetch<Strategy>(`/content-management/strategies/${strategyId}/approval`, {
+    method: "PATCH",
+    body: JSON.stringify({ approval_status: approvalStatus, approved_by: approvedBy }),
+  });
+}
+
 export function createContentPlan(
   companyId: string,
   strategyId?: string,
@@ -528,14 +567,21 @@ export function listContentPlans(companyId?: string): Promise<ContentPlanListRes
 
 export function updateContentItem(
   itemId: string,
-  updates: { approvalStatus?: ApprovalStatus; suggestedDate?: string },
+  updates: { approvalStatus?: ApprovalStatus; approvedBy?: string; suggestedDate?: string },
 ): Promise<ContentItem> {
   return apiFetch<ContentItem>(`/content-management/content-items/${itemId}`, {
     method: "PATCH",
     body: JSON.stringify({
       approval_status: updates.approvalStatus,
+      approved_by: updates.approvedBy,
       suggested_date: updates.suggestedDate,
     }),
+  });
+}
+
+export function regenerateContentItemDraft(itemId: string): Promise<ContentItem> {
+  return apiFetch<ContentItem>(`/content-management/content-items/${itemId}/regenerate-draft`, {
+    method: "POST",
   });
 }
 
@@ -648,6 +694,14 @@ export function disconnectPlatform(connectionId: string): Promise<PlatformConnec
   return apiFetch<PlatformConnection>(`/social-media-analyzer/connections/${connectionId}`, {
     method: "DELETE",
   });
+}
+
+export function getConnectionMetrics(
+  connectionId: string,
+): Promise<PlatformMetricSnapshotListResponse> {
+  return apiFetch<PlatformMetricSnapshotListResponse>(
+    `/social-media-analyzer/connections/${connectionId}/metrics`,
+  );
 }
 
 // Trend Outputs

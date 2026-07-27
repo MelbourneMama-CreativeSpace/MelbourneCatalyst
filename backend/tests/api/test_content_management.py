@@ -41,6 +41,7 @@ async def client(monkeypatch, test_session_factory):
                     content_plan_id=content_plan_id,
                     title="Fake content item",
                     description="Fake description.",
+                    draft_copy="Fake ready-to-publish caption.",
                     content_type="post",
                     platform="linkedin",
                     suggested_date=date.today(),
@@ -51,6 +52,16 @@ async def client(monkeypatch, test_session_factory):
                 )
             )
             await session.commit()
+
+    async def _fake_regenerate_item_draft_copy(item_id):
+        async with test_session_factory() as session:
+            item = await session.get(ContentItem, item_id)
+            if item is None:
+                return None, False
+            item.draft_copy = "Regenerated ready-to-publish caption."
+            await session.commit()
+            await session.refresh(item)
+            return item, True
 
     async def _fake_run_campaign_generation(campaign_id, company_id, content_plan_id, strategy_id):
         async with test_session_factory() as session:
@@ -83,6 +94,11 @@ async def client(monkeypatch, test_session_factory):
         content_management_module,
         "run_content_plan_generation",
         _fake_run_content_plan_generation,
+    )
+    monkeypatch.setattr(
+        content_management_module,
+        "regenerate_item_draft_copy",
+        _fake_regenerate_item_draft_copy,
     )
     monkeypatch.setattr(
         content_management_module, "run_campaign_generation", _fake_run_campaign_generation
@@ -184,6 +200,81 @@ async def test_list_strategies_filters_by_company_id(client, test_session_factor
     assert body["items"][0]["company_id"] == str(company_a)
 
 
+async def test_new_strategies_default_to_pending_approval(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+
+    response = await client.post("/strategies", json={"company_id": str(company_id)})
+
+    assert response.json()["approval_status"] == "pending"
+
+
+async def test_update_strategy_approval_sets_approved(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+    strategy_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Strategy(id=strategy_id, company_id=company_id, status="complete"))
+        await session.commit()
+
+    response = await client.patch(
+        f"/strategies/{strategy_id}/approval", json={"approval_status": "approved"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["approval_status"] == "approved"
+
+
+async def test_update_strategy_approval_records_approved_by(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+    strategy_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Strategy(id=strategy_id, company_id=company_id, status="complete"))
+        await session.commit()
+
+    response = await client.patch(
+        f"/strategies/{strategy_id}/approval",
+        json={"approval_status": "approved", "approved_by": "Priya"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["approved_by"] == "Priya"
+
+
+async def test_update_strategy_approval_sets_rejected(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+    strategy_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Strategy(id=strategy_id, company_id=company_id, status="complete"))
+        await session.commit()
+
+    response = await client.patch(
+        f"/strategies/{strategy_id}/approval", json={"approval_status": "rejected"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["approval_status"] == "rejected"
+
+
+async def test_update_strategy_approval_404s_for_unknown_id(client):
+    response = await client.patch(
+        f"/strategies/{uuid.uuid4()}/approval", json={"approval_status": "approved"}
+    )
+    assert response.status_code == 404
+
+
+async def test_update_strategy_approval_rejects_invalid_value(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory)
+    strategy_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Strategy(id=strategy_id, company_id=company_id, status="complete"))
+        await session.commit()
+
+    response = await client.patch(
+        f"/strategies/{strategy_id}/approval", json={"approval_status": "maybe"}
+    )
+
+    assert response.status_code == 422
+
+
 # --- Content plans ---------------------------------------------------------
 
 
@@ -197,6 +288,7 @@ async def test_create_content_plan_returns_completed_plan_with_items(client, tes
     assert body["status"] == "complete"
     assert len(body["items"]) == 1
     assert body["items"][0]["title"] == "Fake content item"
+    assert body["items"][0]["draft_copy"] == "Fake ready-to-publish caption."
 
 
 async def test_create_content_plan_passes_days_through(client, test_session_factory):
@@ -397,6 +489,70 @@ async def test_update_content_item_rejects_invalid_approval_status(client, test_
     response = await client.patch(f"/content-items/{item_id}", json={"approval_status": "maybe"})
 
     assert response.status_code == 422
+
+
+async def test_update_content_item_records_approved_by(client, test_session_factory):
+    item_id, _ = await _seed_content_item(test_session_factory)
+
+    response = await client.patch(
+        f"/content-items/{item_id}",
+        json={"approval_status": "approved", "approved_by": "Priya"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["approved_by"] == "Priya"
+
+
+async def test_update_content_item_reschedule_alone_does_not_set_approved_by(
+    client, test_session_factory
+):
+    item_id, _ = await _seed_content_item(test_session_factory)
+
+    response = await client.patch(
+        f"/content-items/{item_id}",
+        json={"suggested_date": "2026-12-25", "approved_by": "Priya"},
+    )
+
+    assert response.status_code == 200
+    # approved_by is attribution for an approval action — a pure reschedule
+    # with no approval_status in the payload shouldn't set it.
+    assert response.json()["approved_by"] is None
+
+
+async def test_regenerate_content_item_draft_updates_draft_copy(client, test_session_factory):
+    item_id, _ = await _seed_content_item(test_session_factory, draft_copy="Stale draft.")
+
+    response = await client.post(f"/content-items/{item_id}/regenerate-draft")
+
+    assert response.status_code == 200
+    assert response.json()["draft_copy"] == "Regenerated ready-to-publish caption."
+
+
+async def test_regenerate_content_item_draft_404s_for_unknown_id(client):
+    response = await client.post(f"/content-items/{uuid.uuid4()}/regenerate-draft")
+
+    assert response.status_code == 404
+
+
+async def test_regenerate_content_item_draft_502s_on_generation_failure(
+    client, test_session_factory, monkeypatch
+):
+    item_id, _ = await _seed_content_item(test_session_factory, draft_copy="Original draft.")
+
+    async def _failing_regenerate(item_id):
+        from app.db.models import ContentItem as _ContentItem
+
+        async with test_session_factory() as session:
+            item = await session.get(_ContentItem, item_id)
+            return item, False
+
+    monkeypatch.setattr(
+        content_management_module, "regenerate_item_draft_copy", _failing_regenerate
+    )
+
+    response = await client.post(f"/content-items/{item_id}/regenerate-draft")
+
+    assert response.status_code == 502
 
 
 async def test_new_content_items_default_to_pending_approval(client, test_session_factory):

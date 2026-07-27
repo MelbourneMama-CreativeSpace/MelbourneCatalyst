@@ -84,3 +84,5 @@ class GeneratedTrendReport:
     key_themes: list[str] = field(default_factory=list)
     notable_trends_summary: str | None = None
     content_opportunities: str | None = None
+    campaign_alignment_notes: str | None = None
+    competitor_relevance_notes: str | None = None

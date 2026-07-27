@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.agents.content_management import content_plan_graph as graph_module
 from app.agents.content_management.schemas import GeneratedContentItem, GeneratedContentPlan
-from app.db.models import Company, ContentItem, ContentPlan, Strategy, Trend
+from app.db.models import Company, CompanyTrendRelevance, ContentItem, ContentPlan, Strategy, Trend
 
 
 async def _stub_generate_content_plan(context: str, days: int):
@@ -26,6 +26,7 @@ async def _stub_generate_content_plan(context: str, days: int):
                     related_trend_title="AI marketing tools trending",
                     audience_interest="tech-forward marketers",
                     seasonal_event="Christmas (2026-12-25)",
+                    draft_copy="Slide 1: AI marketing tools are moving fast. Here's what to know →",
                 ),
                 GeneratedContentItem(
                     title="No trend tie-in post",
@@ -85,6 +86,11 @@ async def test_run_content_plan_generation_persists_items_with_resolved_trend_id
     assert by_title["No trend tie-in post"].source_trend_id is None
     assert by_title["AI marketing carousel"].audience_interest == "tech-forward marketers"
     assert by_title["AI marketing carousel"].seasonal_event == "Christmas (2026-12-25)"
+    assert (
+        by_title["AI marketing carousel"].draft_copy
+        == "Slide 1: AI marketing tools are moving fast. Here's what to know →"
+    )
+    assert by_title["No trend tie-in post"].draft_copy is None
     assert by_title["No trend tie-in post"].audience_interest is None
     # Every freshly generated item starts in the approval workflow's
     # default state, regardless of what Claude returned.
@@ -212,6 +218,96 @@ async def test_run_content_plan_generation_includes_niche_keywords_context(
     assert "creative workshops" in captured_context["value"]
 
 
+async def test_run_content_plan_generation_prefers_per_company_trend_relevance(
+    monkeypatch, test_session_factory
+):
+    """With more than one company onboarded, the legacy global
+    Trend.relevance_score reflects whichever company was scored last — not
+    necessarily this one. When this company has its own scored rows in
+    CompanyTrendRelevance, those must win over the legacy column."""
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    captured_context = {}
+
+    async def _capturing_generate(context: str, days: int):
+        captured_context["value"] = context
+        return GeneratedContentPlan(), True
+
+    monkeypatch.setattr(graph_module, "generate_content_plan", _capturing_generate)
+
+    company_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    trend_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete"))
+        session.add(ContentPlan(id=plan_id, company_id=company_id, status="pending"))
+        session.add(
+            Trend(
+                id=trend_id,
+                source="rss",
+                title="Trend scored differently per company",
+                url="https://example.com/trend",
+                # The legacy global score belongs to some other company —
+                # deliberately different from this company's own score below,
+                # so the test can tell which one actually made it into context.
+                relevance_score=0.10,
+                raw_metadata={},
+                discovered_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            CompanyTrendRelevance(
+                id=uuid.uuid4(), company_id=company_id, trend_id=trend_id, relevance_score=0.95
+            )
+        )
+        await session.commit()
+
+    await graph_module.run_content_plan_generation(plan_id, company_id, None)
+
+    assert "relevance: 0.95" in captured_context["value"]
+    assert "relevance: 0.10" not in captured_context["value"]
+
+
+async def test_run_content_plan_generation_falls_back_to_legacy_relevance_when_uncored_for_company(
+    monkeypatch, test_session_factory
+):
+    """A company with no rows in CompanyTrendRelevance yet (e.g. onboarded
+    after the last collection run) must still see trends, via the legacy
+    global score, rather than getting none at all."""
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    captured_context = {}
+
+    async def _capturing_generate(context: str, days: int):
+        captured_context["value"] = context
+        return GeneratedContentPlan(), True
+
+    monkeypatch.setattr(graph_module, "generate_content_plan", _capturing_generate)
+
+    company_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete"))
+        session.add(ContentPlan(id=plan_id, company_id=company_id, status="pending"))
+        session.add(
+            Trend(
+                id=uuid.uuid4(),
+                source="rss",
+                title="Only has a legacy score",
+                url="https://example.com/legacy-only",
+                relevance_score=0.6,
+                raw_metadata={},
+                discovered_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    await graph_module.run_content_plan_generation(plan_id, company_id, None)
+
+    assert "Only has a legacy score" in captured_context["value"]
+    assert "relevance: 0.60" in captured_context["value"]
+
+
 async def test_run_content_plan_generation_marks_failed_on_generation_failure(
     monkeypatch, test_session_factory
 ):
@@ -236,3 +332,90 @@ async def test_run_content_plan_generation_marks_failed_on_generation_failure(
     assert plan.status == "failed"
     assert plan.status_error is not None
     assert items == []
+
+
+async def test_regenerate_item_draft_copy_updates_the_item(monkeypatch, test_session_factory):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    async def _stub_regenerate(context: str, title: str, description: str, content_type: str, platform: str):
+        return "A brand new caption ready to post.", True
+
+    monkeypatch.setattr(graph_module, "regenerate_draft_copy", _stub_regenerate)
+
+    company_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete", name="Acme"))
+        session.add(ContentPlan(id=plan_id, company_id=company_id, status="complete"))
+        session.add(
+            ContentItem(
+                id=item_id,
+                content_plan_id=plan_id,
+                title="Old title",
+                description="Old brief",
+                content_type="post",
+                platform="instagram",
+                suggested_date=date.today(),
+                draft_copy="Stale draft.",
+                approval_status="pending",
+            )
+        )
+        await session.commit()
+
+    item, ok = await graph_module.regenerate_item_draft_copy(item_id)
+
+    assert ok is True
+    assert item.draft_copy == "A brand new caption ready to post."
+
+    async with test_session_factory() as session:
+        persisted = await session.get(ContentItem, item_id)
+    assert persisted.draft_copy == "A brand new caption ready to post."
+
+
+async def test_regenerate_item_draft_copy_returns_none_for_unknown_item(monkeypatch, test_session_factory):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    item, ok = await graph_module.regenerate_item_draft_copy(uuid.uuid4())
+
+    assert item is None
+    assert ok is False
+
+
+async def test_regenerate_item_draft_copy_leaves_item_unchanged_on_failure(
+    monkeypatch, test_session_factory
+):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    async def _stub_regenerate_failing(
+        context: str, title: str, description: str, content_type: str, platform: str
+    ):
+        return None, False
+
+    monkeypatch.setattr(graph_module, "regenerate_draft_copy", _stub_regenerate_failing)
+
+    company_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete", name="Acme"))
+        session.add(ContentPlan(id=plan_id, company_id=company_id, status="complete"))
+        session.add(
+            ContentItem(
+                id=item_id,
+                content_plan_id=plan_id,
+                title="Title",
+                description="Brief",
+                content_type="post",
+                platform="instagram",
+                suggested_date=date.today(),
+                draft_copy="Original draft, should survive a failed regeneration.",
+                approval_status="pending",
+            )
+        )
+        await session.commit()
+
+    item, ok = await graph_module.regenerate_item_draft_copy(item_id)
+
+    assert ok is False
+    assert item.draft_copy == "Original draft, should survive a failed regeneration."

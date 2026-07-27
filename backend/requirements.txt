@@ -37,5 +37,8 @@ pypdf==6.14.2
 python-docx==1.2.0
 python-multipart==0.0.32
 
-# Social Media Analyzer — Fernet symmetric encryption for OAuth tokens at rest
-cryptography==44.0.2
+# Social Media Analyzer — Composio brokers OAuth + custodies tokens; using
+# the low-level REST resource client (not the `composio` package) avoids
+# pulling in its `openai`/`pysher` deps and a forced pydantic bump this
+# app's other pinned dependencies don't need.
+composio-client==1.42.0
