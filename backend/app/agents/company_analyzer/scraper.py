@@ -45,6 +45,20 @@ _PROBE_PATHS = [
     "/company",
 ]
 
+# Path fragments that mark a scraped page as product/pricing content
+# rather than generic "website" content — lets KB search/audit tools
+# filter product pages out from general site copy. Public (not
+# `_`-prefixed) so both the onboarding graph and the scheduled KB
+# re-index job classify pages identically.
+_PRODUCT_PAGE_PATH_MARKERS = ("product", "pricing", "shop", "store")
+
+
+def classify_source_type(url: str) -> str:
+    path = urlparse(url).path.lower()
+    if any(marker in path for marker in _PRODUCT_PAGE_PATH_MARKERS):
+        return "product_page"
+    return "website"
+
 
 def normalize_url(url: str) -> str:
     """Add https:// if the user pasted a bare domain, strip to scheme+host.

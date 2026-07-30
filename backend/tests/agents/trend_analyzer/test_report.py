@@ -27,6 +27,8 @@ async def test_generate_trend_report_parses_tool_use_result(monkeypatch):
             "key_themes": ["AI automation", "short-form video"],
             "notable_trends_summary": "Several viral posts about AI copywriting tools.",
             "content_opportunities": "Post a behind-the-scenes AI workflow video.",
+            "campaign_alignment_notes": "Echoes the tone of your Spring Launch campaign.",
+            "competitor_relevance_notes": "Competitor X hasn't touched this angle yet.",
         },
     )
 
@@ -45,6 +47,37 @@ async def test_generate_trend_report_parses_tool_use_result(monkeypatch):
     assert generated.summary.startswith("AI-native")
     assert generated.key_themes == ["AI automation", "short-form video"]
     assert generated.content_opportunities == "Post a behind-the-scenes AI workflow video."
+    assert generated.campaign_alignment_notes == "Echoes the tone of your Spring Launch campaign."
+    assert generated.competitor_relevance_notes == "Competitor X hasn't touched this angle yet."
+
+
+async def test_generate_trend_report_empty_correlation_notes_become_none(monkeypatch):
+    monkeypatch.setattr(report.settings, "ANTHROPIC_API_KEY", "test-key")
+
+    tool_use = SimpleNamespace(
+        type="tool_use",
+        input={
+            "summary": "Quiet week.",
+            "key_themes": ["evergreen"],
+            "campaign_alignment_notes": "",
+            "competitor_relevance_notes": "",
+        },
+    )
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            return SimpleNamespace(content=[tool_use])
+
+    class _FakeClient:
+        messages = _FakeMessages()
+
+    monkeypatch.setattr(report, "_client", lambda: _FakeClient())
+
+    generated, ok = await report.generate_trend_report("context")
+
+    assert ok is True
+    assert generated.campaign_alignment_notes is None
+    assert generated.competitor_relevance_notes is None
 
 
 async def test_generate_trend_report_falls_back_on_api_failure(monkeypatch):

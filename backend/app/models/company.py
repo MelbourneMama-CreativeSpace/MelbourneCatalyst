@@ -23,6 +23,7 @@ class CompanyOut(BaseModel):
     unique_value_prop: str | None
     niche_keywords: list[str] | None
     summary: str | None
+    products_and_services: list[str] | None
     created_at: datetime
     updated_at: datetime
 

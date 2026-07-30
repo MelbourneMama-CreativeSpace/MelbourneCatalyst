@@ -20,8 +20,9 @@ from app.models.company import (
     CompanyListResponse,
     CompanyOut,
 )
+from app.security.auth import get_current_user
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.post("/", response_model=CompanyCreatedResponse, status_code=202)

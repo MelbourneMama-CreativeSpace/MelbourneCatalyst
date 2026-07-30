@@ -60,6 +60,11 @@ _TOOL = {
                 "type": "string",
                 "description": "One-paragraph overview of the company",
             },
+            "products_and_services": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Distinct products or services this company offers, as short names/labels (e.g. 'Weekly pottery workshops', 'Studio membership') — not full descriptions",
+            },
         },
         "required": ["niche_keywords"],
     },
@@ -119,5 +124,6 @@ async def extract_company_profile(website_content: str) -> tuple[CompanyProfile,
         unique_value_prop=data.get("unique_value_prop"),
         niche_keywords=list(data.get("niche_keywords") or []),
         summary=data.get("summary"),
+        products_and_services=list(data.get("products_and_services") or []),
     )
     return profile, True

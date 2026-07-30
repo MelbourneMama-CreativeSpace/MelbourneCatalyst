@@ -1,144 +1,121 @@
-"""Generic OAuth2 authorization-code flow, parameterized per platform via
-`oauth_providers.PLATFORM_CONFIGS` — the same two functions handle all 5
-platforms rather than five near-duplicate implementations.
+"""Thin async wrapper around Composio's connected-accounts flow —
+Composio brokers the actual OAuth2 exchange and custodies tokens; this
+app only ever holds a reference id (`composio_connected_account_id`).
 
-No session/cookie system exists in this app (auth is deferred — see
-KNOWN_ISSUES.md), so the `state` param carries everything the callback
-needs, signed via `app.security.oauth_state` so it can't be forged.
+`composio-client`'s methods are synchronous; every call here runs via
+`asyncio.to_thread` so it doesn't block the event loop, same reasoning
+as any sync third-party SDK used from an async FastAPI handler.
+
+Registering a platform's own OAuth app (client id/secret) happens once,
+by hand, in Composio's dashboard — not through this SDK, which (as of
+`composio-client` 1.42.0) doesn't accept raw client credentials
+programmatically for a custom auth config. See `oauth_providers.py` and
+`.env.example` for what each `COMPOSIO_<PLATFORM>_AUTH_CONFIG_ID`
+setting expects.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import secrets
-import urllib.parse
+import asyncio
 import uuid
-from dataclasses import dataclass
 
-import httpx
+from composio_client import Composio
 
 from app.agents.social_media_analyzer.oauth_providers import (
-    PLATFORM_CONFIGS,
-    get_client_credentials,
+    get_auth_config_id,
     get_platform_config,
     is_platform_configured,
 )
 from app.config import settings
-from app.security.oauth_state import OAuthStateError, sign_state, verify_state
+
+# Composio's own connection-status vocabulary, mapped to this app's
+# simpler status column. INITIALIZING/INITIATED both mean "the user
+# hasn't finished platform-side consent yet."
+_STATUS_MAP: dict[str, str] = {
+    "ACTIVE": "connected",
+    "INITIALIZING": "pending",
+    "INITIATED": "pending",
+    "FAILED": "error",
+    "INACTIVE": "error",
+    "REVOKED": "error",
+    "EXPIRED": "expired",
+}
 
 
-class OAuthNotConfiguredError(Exception):
-    """Raised when a platform's Client ID/Secret aren't set in settings."""
-
-
-@dataclass(slots=True)
-class TokenResult:
-    access_token: str
-    refresh_token: str | None
-    expires_in: int | None  # seconds, per the token response
-    granted_scopes: str | None
-    # Resolving the connected account's own id/display name needs a
-    # platform-specific follow-up call (e.g. Meta's /me, Google's
-    # userinfo endpoint) — deliberately not implemented this round, same
-    # "schema exists, fetching logic doesn't" scope as the metrics
-    # snapshot table. Left None; the connection still persists correctly
-    # without it, just without a friendly display name yet.
-    external_account_id: str | None = None
-    external_account_name: str | None = None
+class ComposioNotConfiguredError(Exception):
+    """Raised when COMPOSIO_API_KEY or a platform's auth config id isn't set."""
 
 
 def _require_known_platform(platform: str) -> None:
-    if platform not in PLATFORM_CONFIGS:
-        raise ValueError(f"Unknown platform: {platform!r}")
+    get_platform_config(platform)  # raises ValueError for an unknown platform
 
 
-def _callback_url(platform: str) -> str:
-    return f"{settings.APP_BASE_URL}/api/v1/social-media-analyzer/connections/{platform}/callback"
+def _client() -> Composio:
+    return Composio(api_key=settings.COMPOSIO_API_KEY)
 
 
-def _make_pkce_pair() -> tuple[str, str]:
-    verifier = base64.urlsafe_b64encode(secrets.token_bytes(40)).decode().rstrip("=")
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-    return verifier, challenge
+def map_status(composio_status: str) -> str:
+    return _STATUS_MAP.get(composio_status, "error")
 
 
-def build_authorize_url(platform: str, company_id: uuid.UUID) -> str:
-    """Build the platform's real OAuth authorize URL with a signed state
-    param. Raises `OAuthNotConfiguredError` if that platform's Client
-    ID/Secret aren't configured."""
+async def initiate_connection(
+    platform: str, company_id: uuid.UUID, callback_url: str
+) -> tuple[str, str]:
+    """Starts a Composio-brokered connection for `company_id` (Composio's
+    per-tenant `user_id`) against `platform`'s toolkit. Returns
+    `(composio_connected_account_id, redirect_url)` — send the browser to
+    `redirect_url`. Raises `ComposioNotConfiguredError` if
+    `COMPOSIO_API_KEY` or this platform's auth config id isn't set."""
     _require_known_platform(platform)
     if not is_platform_configured(platform):
-        raise OAuthNotConfiguredError(
-            f"{platform} OAuth is not configured — set its client ID/secret in .env"
+        raise ComposioNotConfiguredError(
+            f"{platform} is not configured — set COMPOSIO_API_KEY and "
+            f"its Composio auth config id in .env"
         )
 
     config = get_platform_config(platform)
-    client_id, _ = get_client_credentials(platform)
+    auth_config_id = get_auth_config_id(platform)
+    client = _client()
 
-    state_payload: dict[str, str] = {
-        "company_id": str(company_id),
-        "platform": platform,
-        "nonce": secrets.token_urlsafe(16),
-    }
+    def _create():
+        return client.connected_accounts.create(
+            auth_config={"id": auth_config_id},
+            connection={"user_id": str(company_id), "callback_url": callback_url},
+        )
 
-    params = {
-        "client_id": client_id,
-        "redirect_uri": _callback_url(platform),
-        "response_type": "code",
-        "scope": " ".join(config.scopes),
-    }
-
-    if config.pkce:
-        verifier, challenge = _make_pkce_pair()
-        state_payload["pkce_code_verifier"] = verifier
-        params["code_challenge"] = challenge
-        params["code_challenge_method"] = "S256"
-
-    params["state"] = sign_state(state_payload)
-
-    return f"{config.authorize_url}?{urllib.parse.urlencode(params)}"
+    response = await asyncio.to_thread(_create)
+    if not response.redirect_url:
+        raise ComposioNotConfiguredError(
+            f"Composio did not return a redirect URL for {platform} — check that its "
+            f"auth config ({config.toolkit_slug}) is set up correctly in the Composio dashboard"
+        )
+    return response.id, response.redirect_url
 
 
-async def exchange_code_for_token(platform: str, code: str, state: str) -> tuple[TokenResult, dict]:
-    """Verify `state`, exchange `code` for tokens against the platform's
-    token endpoint. Returns `(TokenResult, state_payload)` so the caller
-    gets `company_id` back out of the verified state. Raises
-    `OAuthStateError` (invalid/expired/tampered state),
-    `OAuthNotConfiguredError`, or `httpx.HTTPStatusError` (token exchange
-    itself failed)."""
-    _require_known_platform(platform)
-    if not is_platform_configured(platform):
-        raise OAuthNotConfiguredError(f"{platform} OAuth is not configured")
+async def get_connection_status(composio_connected_account_id: str) -> str:
+    """Current status of a previously-initiated connection, mapped to
+    this app's status vocabulary. Never raises for a not-found id —
+    treated as an error state, since the row referencing it is stale."""
+    client = _client()
+    try:
+        response = await asyncio.to_thread(
+            client.connected_accounts.retrieve, composio_connected_account_id
+        )
+    except Exception:
+        return "error"
+    return map_status(response.status)
 
-    state_payload = verify_state(state)
-    if state_payload.get("platform") != platform:
-        raise OAuthStateError("State token platform does not match callback platform")
 
-    config = get_platform_config(platform)
-    client_id, client_secret = get_client_credentials(platform)
-
-    data = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": _callback_url(platform),
-        "client_id": client_id,
-        "client_secret": client_secret,
-    }
-    if config.pkce:
-        data["code_verifier"] = state_payload.get("pkce_code_verifier", "")
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(config.token_url, data=data)
-        response.raise_for_status()
-        payload = response.json()
-
-    return (
-        TokenResult(
-            access_token=payload["access_token"],
-            refresh_token=payload.get("refresh_token"),
-            expires_in=payload.get("expires_in"),
-            granted_scopes=payload.get("scope"),
-        ),
-        state_payload,
-    )
+async def disconnect_connection(composio_connected_account_id: str) -> None:
+    """Deletes the connection on Composio's side and revokes the token
+    with the platform. Swallows a not-found error — the local row is
+    being cleared either way."""
+    client = _client()
+    try:
+        await asyncio.to_thread(
+            client.connected_accounts.delete,
+            composio_connected_account_id,
+            revoke_on_delete=True,
+        )
+    except Exception:
+        pass

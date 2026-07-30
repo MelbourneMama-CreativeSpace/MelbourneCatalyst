@@ -77,6 +77,8 @@ class TrendReportOut(BaseModel):
     key_themes: list[str] | None
     notable_trends_summary: str | None
     content_opportunities: str | None
+    campaign_alignment_notes: str | None
+    competitor_relevance_notes: str | None
     created_at: datetime
 
 
@@ -88,3 +90,14 @@ class TrendReportListResponse(BaseModel):
 class TrendReportCreateRequest(BaseModel):
     company_id: uuid.UUID
     period_days: int | None = None
+
+
+class OpportunityOut(BaseModel):
+    title: str
+    reasoning: str
+    source: str
+    priority: str
+
+
+class OpportunityListResponse(BaseModel):
+    items: list[OpportunityOut]

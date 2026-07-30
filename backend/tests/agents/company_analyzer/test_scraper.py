@@ -7,7 +7,7 @@ import pytest
 import respx
 
 from app.agents.company_analyzer import scraper
-from app.agents.company_analyzer.scraper import normalize_url, discover_and_scrape
+from app.agents.company_analyzer.scraper import classify_source_type, normalize_url, discover_and_scrape
 from app.security import UnsafeUrlError
 
 _SAMPLE_HTML = """
@@ -40,6 +40,19 @@ def test_normalize_url_adds_scheme_and_strips_path():
     assert normalize_url("example.com") == "https://example.com"
     assert normalize_url("https://example.com/foo/bar") == "https://example.com"
     assert normalize_url("http://example.com") == "http://example.com"
+
+
+def test_classify_source_type_tags_product_and_pricing_paths():
+    assert classify_source_type("https://example.com/products") == "product_page"
+    assert classify_source_type("https://example.com/pricing") == "product_page"
+    assert classify_source_type("https://example.com/shop/widget") == "product_page"
+    assert classify_source_type("https://example.com/store") == "product_page"
+
+
+def test_classify_source_type_tags_other_paths_as_website():
+    assert classify_source_type("https://example.com/about") == "website"
+    assert classify_source_type("https://example.com/") == "website"
+    assert classify_source_type("https://example.com/team") == "website"
 
 
 @respx.mock

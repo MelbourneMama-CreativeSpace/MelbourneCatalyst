@@ -1,18 +1,21 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, type DragEvent } from "react";
+import { useEffect, useState, type DragEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   createCampaign,
+  regenerateContentItemDraft,
   updateContentItem,
   type ApprovalStatus,
   type ContentItem,
   type ContentPlan,
 } from "@/lib/api";
+
+const APPROVER_NAME_STORAGE_KEY = "mmcs_approver_name";
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -85,6 +88,24 @@ export function ContentPlanView({
   const [itemError, setItemError] = useState<string | null>(null);
   const [generatingCampaign, setGeneratingCampaign] = useState(false);
   const [campaignError, setCampaignError] = useState<string | null>(null);
+  const [approverName, setApproverName] = useState("");
+  const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+
+  // Not a real auth system — just enough attribution for a small internal
+  // team to see who approved what, remembered across visits so nobody has
+  // to retype it for every item.
+  useEffect(() => {
+    // One-time read of a browser-only API on mount, not a live
+    // subscription — localStorage has no change-event to subscribe to
+    // here, and the value only otherwise changes via the input below.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setApproverName(localStorage.getItem(APPROVER_NAME_STORAGE_KEY) ?? "");
+  }, []);
+
+  function handleApproverNameChange(value: string) {
+    setApproverName(value);
+    localStorage.setItem(APPROVER_NAME_STORAGE_KEY, value);
+  }
 
   const statusVariant = contentPlan.status === "complete" ? "default" : "outline";
   const weeks = buildWeeks(items);
@@ -100,10 +121,26 @@ export function ContentPlanView({
   ) {
     setItemError(null);
     try {
-      const updated = await updateContentItem(itemId, updates);
+      const updated = await updateContentItem(itemId, {
+        ...updates,
+        approvedBy: updates.approvalStatus ? approverName || undefined : undefined,
+      });
       setItems((prev) => prev.map((item) => (item.id === itemId ? updated : item)));
     } catch (err) {
       setItemError(err instanceof Error ? err.message : "Failed to update content item.");
+    }
+  }
+
+  async function handleRegenerateDraft(itemId: string) {
+    setItemError(null);
+    setRegeneratingId(itemId);
+    try {
+      const updated = await regenerateContentItemDraft(itemId);
+      setItems((prev) => prev.map((item) => (item.id === itemId ? updated : item)));
+    } catch (err) {
+      setItemError(err instanceof Error ? err.message : "Failed to regenerate draft.");
+    } finally {
+      setRegeneratingId(null);
     }
   }
 
@@ -137,11 +174,22 @@ export function ContentPlanView({
         <Badge variant={statusVariant}>{contentPlan.status}</Badge>
       </div>
 
+      <label className="flex max-w-xs flex-col gap-1 text-xs text-muted-foreground">
+        Your name (recorded when you approve or reject an item)
+        <input
+          type="text"
+          value={approverName}
+          onChange={(e) => handleApproverNameChange(e.target.value)}
+          placeholder="e.g. Priya"
+          className="rounded-md border border-input bg-transparent px-2.5 py-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+        />
+      </label>
+
       {contentPlan.status === "failed" && (
         <Card>
           <CardContent className="pt-6">
             <p className="text-sm text-destructive">
-              Content plan generation failed
+              Caption drafting failed
               {contentPlan.status_error ? `: ${contentPlan.status_error}` : "."}
             </p>
           </CardContent>
@@ -154,7 +202,7 @@ export function ContentPlanView({
             <p className="text-sm text-muted-foreground">
               {contentPlan.status === "complete"
                 ? "No content items were generated."
-                : "Generating content plan…"}
+                : "Drafting captions for this window…"}
             </p>
           </CardContent>
         </Card>
@@ -216,8 +264,8 @@ export function ContentPlanView({
               ))}
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
-              Drag an item to a different day to reschedule it. Click an item to preview and
-              approve or reject it.
+              Drag an item to a different day to reschedule it. Click an item to review its
+              drafted caption, copy it, or approve/reject it.
             </p>
           </CardContent>
         </Card>
@@ -231,8 +279,10 @@ export function ContentPlanView({
           trendTitle={
             selectedItem.source_trend_id ? trendTitlesById[selectedItem.source_trend_id] : undefined
           }
+          regenerating={regeneratingId === selectedItem.id}
           onApprove={() => persistItemUpdate(selectedItem.id, { approvalStatus: "approved" })}
           onReject={() => persistItemUpdate(selectedItem.id, { approvalStatus: "rejected" })}
+          onRegenerate={() => handleRegenerateDraft(selectedItem.id)}
           onClose={() => setSelectedId(null)}
         />
       )}
@@ -254,16 +304,29 @@ export function ContentPlanView({
 function ContentItemDetail({
   item,
   trendTitle,
+  regenerating,
   onApprove,
   onReject,
+  onRegenerate,
   onClose,
 }: {
   item: ContentItem;
   trendTitle?: string;
+  regenerating: boolean;
   onApprove: () => void;
   onReject: () => void;
+  onRegenerate: () => void;
   onClose: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    if (!item.draft_copy) return;
+    await navigator.clipboard.writeText(item.draft_copy);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
   return (
     <Card>
       <CardContent className="flex flex-col gap-3 pt-6">
@@ -287,13 +350,48 @@ function ContentItemDetail({
           </Badge>
         </div>
 
-        <p className="text-sm leading-relaxed">{item.description}</p>
+        <div className="rounded-md border border-border bg-muted/40 p-3">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">
+              Ready-to-publish draft
+            </span>
+            {item.draft_copy && (
+              <div className="flex gap-1">
+                <Button variant="ghost" size="sm" onClick={handleCopy}>
+                  {copied ? "Copied" : "Copy"}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={onRegenerate} disabled={regenerating}>
+                  {regenerating ? "Regenerating…" : "Regenerate"}
+                </Button>
+              </div>
+            )}
+          </div>
+          {item.draft_copy ? (
+            <p className="text-sm leading-relaxed whitespace-pre-line">{item.draft_copy}</p>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm text-muted-foreground">
+                No draft yet — this item was planned before draft copy generation shipped.
+              </p>
+              <Button variant="outline" size="sm" onClick={onRegenerate} disabled={regenerating}>
+                {regenerating ? "Generating…" : "Generate draft"}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        <p className="text-xs text-muted-foreground">Brief: {item.description}</p>
 
         {item.audience_interest && (
           <p className="text-xs text-muted-foreground">Audience: {item.audience_interest}</p>
         )}
         {trendTitle && (
           <p className="text-xs text-muted-foreground">Inspired by trend: {trendTitle}</p>
+        )}
+        {item.approved_by && (
+          <p className="text-xs text-muted-foreground">
+            {item.approval_status === "rejected" ? "Rejected" : "Approved"} by {item.approved_by}
+          </p>
         )}
 
         <div className="flex flex-wrap gap-3">

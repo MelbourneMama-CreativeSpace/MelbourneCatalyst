@@ -15,7 +15,7 @@
 - [x] Set up backend (Python FastAPI)
 - [ ] Configure CI/CD pipeline
 - [x] Set up Docker containers (frontend, backend — no database container; Supabase is hosted/remote)
-- [x] Configure environment variables & secrets management (`.env.example` covers Trend Analyzer config; still no secrets manager for production)
+- [x] Configure environment variables & secrets management (`backend/.env.example` + `frontend/.env.example` cover Trend Analyzer config and Supabase Auth; still no secrets manager for production)
 
 ### Database & Storage
 - [x] Set up PostgreSQL database (Supabase, connected via `DATABASE_URL`)
@@ -25,9 +25,9 @@
 - [x] Implement database connection pooling (SQLAlchemy async engine, default pool)
 
 ### Authentication & Authorization
-- [ ] Implement user authentication (JWT / OAuth)
-- [ ] Set up role-based access control (RBAC)
-- [ ] Create user registration & login flows
+- [x] Implement user authentication (Supabase Auth — session JWTs verified on every backend request via `app/security/auth.py`, either HS256 shared-secret or ES256/RS256 via the project's public JWKS endpoint depending on how the Supabase project signs tokens)
+- [ ] Set up role-based access control (RBAC) — every signed-in user currently has equal access to every company; see `KNOWN_ISSUES.md`'s "No per-company ownership" item
+- [x] Create user registration & login flows (`/login` — sign in + sign up via `@supabase/ssr`, `src/proxy.ts` redirects unauthenticated visitors there and authenticated visitors away from it)
 - [ ] Implement API key management for agents
 
 ### Shared Infrastructure
@@ -70,7 +70,7 @@
 - [x] Build business model identification (extracted field on Company profile)
 - [x] Create target audience profiling (extracted field)
 - [x] Implement brand voice analysis (extracted field)
-- [ ] Build products & services cataloging (not extracted as a distinct field yet; captured in scraped content + summary — dedicated extraction deferred)
+- [x] Build products & services cataloging (`products_and_services` — extracted by the same Claude call that produces `niche_keywords`, shown as its own section on the company page)
 - [x] Create market positioning assessment (extracted `unique_value_prop` + `summary` on the profile)
 - [x] Build company onboarding wizard UI (`/onboarding` — URL-only for the MVP; full multi-step wizard deferred)
 - [x] Create business analysis dashboard (`/companies/[id]` — extracted profile view with live status polling)
@@ -87,11 +87,11 @@
 - [x] Create competitor comparison reports (the comparison generation is the report)
 
 ### Knowledge Manager
-- [ ] Implement automated knowledge indexing
-- [ ] Build incremental update pipeline
+- [x] Implement automated knowledge indexing (a new APScheduler job — `run_scheduled_reindex`, `KB_REINDEX_INTERVAL_HOURS` default 24 — re-scrapes every `complete` company's own website on an interval, same pattern as the Trend Analyzer's recurring collection job. Scoped to website/product-page content, the source with a stable per-company identity; blog feeds/uploads/manual entries stay user-triggered since there's no persisted per-company feed list to iterate over)
+- [x] Build incremental update pipeline (`ingest_raw_document_if_changed` — a sha256 content-hash comparison against the previously-stored `Document.raw_metadata`, skipping the embed call and delete+reinsert entirely when a page hasn't changed since the last re-index; verified live against a real site: the second run of `reindex_company()` against `example.com` correctly reported `pages_changed: 0`)
 - [x] Create knowledge freshness scoring (`GET /api/v1/knowledge-base/freshness` — pure computation over `documents.created_at`, no Claude call needed; document count + last-ingested + staleness days, shown on the company page)
-- [ ] Implement cross-reference linking (needs a well-defined linking model between documents/entities — not attempted)
-- [ ] Build knowledge graph visualization (needs a graph UI this project doesn't have — not attempted)
+- [ ] Implement cross-reference linking (still needs a well-defined linking model between documents/entities before building anything — a product decision, not a missing-code gap; see `KNOWN_ISSUES.md`)
+- [ ] Build knowledge graph visualization (blocked on cross-reference linking above — no edges to visualize without a linking model — and needs a graph UI this project doesn't have)
 - [x] Create knowledge audit reports (`KnowledgeAuditReport` — Claude-generated coverage summary, identified gaps, recommendations over a sample of the company's documents; `/knowledge-audit/[id]`)
 
 ---
@@ -102,7 +102,7 @@
 - [x] Integrate Google Trends API (via `pytrends-modern`'s `related_queries()`, no key required — verified live, real data flowing)
 - [x] Build Reddit trending topics scraper (public JSON endpoints, no auth)
 - [x] Implement YouTube trending analysis (YouTube Data API v3, needs `YOUTUBE_API_KEY`)
-- [ ] Integrate LinkedIn trending topics (no public trends API exists outside approved Marketing Partners — not attempted, would require scraping)
+- [ ] Integrate LinkedIn trending topics (no public trends API exists outside approved Marketing Partners; deliberately not attempted since the only path is scraping a login-walled, anti-bot-hardened site — a ToS/legal risk this project has avoided everywhere else, not a "hard but doable" gap)
 - [x] Build X (Twitter) trends collector (X API v2 recent search; needs a paid `TWITTER_BEARER_TOKEN` — free tier can't search)
 - [x] Implement TikTok trends analysis (TikTok Research API; needs `TIKTOK_CLIENT_KEY`/`SECRET` from an academic/institutional grant — most teams can't get access)
 - [x] Add Instagram trends collector (Graph API hashtag search; needs `INSTAGRAM_ACCESS_TOKEN` + a Business/Creator account behind a Meta app) — not in the original checklist, added alongside X/TikTok
@@ -113,11 +113,11 @@
 
 ### Trend Matching
 - [x] Build niche relevance scoring algorithm (`score_relevance` node — cosine similarity between trend title and company niche_keywords embeddings)
-- [ ] Implement campaign history comparison (needs Phase 5 campaign history; deferred)
+- [x] Implement campaign history comparison (`campaign_alignment_notes` on `TrendReport` — the report's context now includes the company's recent campaign objectives, and Claude notes whether the period's trends echo a past campaign or open a genuinely new angle)
 - [x] Create customer interest matching (via niche_keywords; more sophisticated persona matching deferred)
-- [ ] Build competitor activity correlation (needs Competitor Research Agent from Phase 3; deferred)
+- [x] Build competitor activity correlation (`competitor_relevance_notes` on `TrendReport` — same mechanism, using recent competitor profiles as context instead of campaigns)
 - [x] Implement trend priority ranking (`min_relevance` filter + relevance-badge sort in dashboard)
-- [ ] Create trend recommendation engine (currently a filter; proactive recommendations deferred)
+- [x] Create trend recommendation engine (`GET /api/v1/trend-analyzer/recommended` — formalizes the manual `min_relevance` filter into an opinionated, deterministic shortlist: relevance above a threshold *and* discovered recently, so a trend that was relevant months ago doesn't linger. A "Recommended" toggle on `/trends` surfaces it)
 - [x] Build trend matching dashboard UI (relevance badge on `TrendCard`, `min_relevance` filter in `/trends`)
 
 ### Performance Discovery
@@ -129,11 +129,11 @@
 - [ ] Create historical performance reports
 
 ### Trend Outputs
-- [ ] Build daily trending topics feed (the `/trends` dashboard already covers this on-demand; a scheduled digest is deferred)
+- [x] Build daily trending topics feed (`run_scheduled_daily_reports` — a new APScheduler job, `TREND_DAILY_REPORT_INTERVAL_HOURS` default 24, auto-generates a `period_days=1` `TrendReport` for every complete company. Same "pre-generated and waiting" delivery model as the Phase 2/3 KB re-index job — no email/webhook needed, the existing trend-reports list on the company page is the delivery surface)
 - [x] Create weekly market report generator (`TrendReport` — one Claude generation over the top-N relevance-scored trends from the last `period_days`, default 7; `POST /api/v1/trend-analyzer/reports`)
 - [x] Implement industry insights summarizer (`summary` + `notable_trends_summary` fields on the same `TrendReport` generation)
 - [x] Build content opportunity recommender (`content_opportunities` field on the same `TrendReport` generation)
-- [ ] Create trend alerts & notifications (needs a delivery channel — email/webhook — that doesn't exist; not attempted)
+- [ ] Create trend alerts & notifications (still needs a delivery channel — email/webhook — that doesn't exist and would need external service credentials; not attempted, genuinely distinct from the daily feed above since that one's "delivery" is just the existing UI)
 
 ---
 
@@ -145,11 +145,11 @@
 - [x] Create growth recommendation engine
 - [x] Implement business suggestion generator
 - [x] Build strategy dashboard UI
-- [ ] Create strategy approval workflow
+- [x] Create strategy approval workflow (`approval_status` — pending/approved/rejected — on each `Strategy`, `PATCH /strategies/{id}/approval`, Approve/Reject controls + badge on the strategy page, same pattern as `ContentItem`)
 
 ### Content Planner Agent
 - [x] Build content calendar engine
-- [x] Create daily post generator (every generated `ContentItem` is a single day's post — the calendar engine already produces day-granularity items)
+- [x] Create daily post generator (every generated `ContentItem` is a single day's post, now with a `draft_copy` field — finished, platform-appropriate ready-to-publish caption text, not just a title/brief — plus a "regenerate this item" action to redraft a single post without regenerating the whole calendar)
 - [x] Implement weekly schedule builder (content plan generation now accepts an optional `days` window — 7/14/30 presets in the UI — instead of a fixed 14-day plan)
 - [x] Build monthly campaign planner (same `days` override, 30-day preset)
 - [x] Create audience-interest-based planning (`audience_interest` field on each generated item — Claude ties ideas to the company's target audience/niche keywords)
@@ -189,14 +189,14 @@
 ## Phase 6: Social Media Analyzer
 
 ### Platform Integration Agent
-- [ ] Implement Facebook/Meta API integration (OAuth connection flow is live — see below; no data-fetching against the API yet)
+- [ ] Implement Facebook/Meta API integration (connection flow is live — see below; no data-fetching against the API yet)
 - [ ] Implement Instagram API integration (same — connection only)
 - [ ] Implement LinkedIn API integration (same — connection only)
 - [ ] Implement X (Twitter) API integration (same — connection only)
 - [ ] Implement TikTok API integration (same — connection only)
 - [ ] Implement YouTube API integration (same — connection only)
-- [x] Build platform connection management UI (`PlatformConnections` on the company page — 6 platforms, Connect/Disconnect)
-- [x] Create OAuth flow for each platform (generic OAuth2 authorization-code flow, PKCE for X, signed state, encrypted token storage — scaffolded and gracefully "not configured" until a real app is registered on each platform's developer console; never tested against a real app in this environment)
+- [x] Build platform connection management UI (dedicated `/integrations/[companyId]` page, `IntegrationsView` — 6 platforms, Connect/Disconnect, live status, expandable per-connection analytics section)
+- [x] Create OAuth flow for each platform (brokered through Composio rather than this app doing raw OAuth — `connected_accounts.initiate/retrieve/delete` via `composio-client`, per-company token isolation via Composio's `user_id`, Composio custodies tokens so this app never stores them. Gracefully "not configured" until `COMPOSIO_API_KEY` + a per-platform Composio auth config id are set — the auth config itself, with that platform's real registered OAuth app client id/secret, is created once via Composio's dashboard, not through this app's code or `.env`. Never tested against a real Composio account in this environment.)
 - [ ] Implement data sync scheduling (needs a real per-platform data-fetching writer first, deliberately not built this round — see Performance Tracking below)
 
 ### Performance Tracking Agent
@@ -228,7 +228,7 @@ environment can't yet produce.
 - [ ] Implement cross-platform performance ranking
 - [ ] Build optimal posting time calculator
 - [ ] Create audience behavior analyzer
-- [ ] Implement platform-specific trend detector
+- [ ] Implement platform-specific trend detector (not redundant with Phase 4's trend collection — "channel" here means trends on the company's own connected social presence, which needs a real connected account; not attempted)
 - [ ] Build opportunity forecaster
 - [ ] Create unified channel intelligence dashboard
 
@@ -286,4 +286,4 @@ environment can't yet produce.
 
 ---
 
-> **Last Updated:** July 2026 (Phase 2 Knowledge Base completion round)
+> **Last Updated:** July 2026 (Supabase Auth round — login page + whole-app protection)

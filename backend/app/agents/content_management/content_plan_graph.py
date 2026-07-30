@@ -15,11 +15,25 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.content_management.content_planner import generate_content_plan
+from app.agents.content_management.content_planner import (
+    generate_content_plan,
+    regenerate_draft_copy,
+)
 from app.agents.content_management.schemas import GeneratedContentPlan
+from app.agents.knowledge_base.schemas import SearchHit
+from app.agents.knowledge_base.search import similarity_search
 from app.config import settings
-from app.db.models import Company, ContentItem, ContentPlan, Strategy, Trend
+from app.db.models import (
+    Company,
+    CompanyTrendRelevance,
+    ContentItem,
+    ContentItemRevision,
+    ContentPlan,
+    Strategy,
+    Trend,
+)
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -37,7 +51,12 @@ class ContentPlanGraphState(TypedDict):
     status_error: str | None
 
 
-def _format_context(company: Company, strategy: Strategy | None, trends: list[Trend]) -> str:
+def format_context(
+    company: Company,
+    strategy: Strategy | None,
+    trends: list[tuple[Trend, float]],
+    kb_references: list[SearchHit] | None = None,
+) -> str:
     lines = [
         "# Company Profile",
         f"Name: {company.name or 'Unknown'}",
@@ -58,10 +77,28 @@ def _format_context(company: Company, strategy: Strategy | None, trends: list[Tr
 
     lines.append("\n# Currently Relevant Trends")
     if trends:
-        lines.extend(f"- {trend.title} (relevance: {trend.relevance_score:.2f})" for trend in trends)
+        lines.extend(f"- {trend.title} (relevance: {score:.2f})" for trend, score in trends)
     else:
         lines.append("None available.")
+
+    if kb_references:
+        lines.append(
+            "\n# Reference material — match this brand's real tone and style, "
+            "not just its topic"
+        )
+        lines.extend(f"- {hit.content[:600]}" for hit in kb_references)
+
     return "\n".join(lines)
+
+
+async def fetch_kb_references(
+    session: AsyncSession, company_id: uuid.UUID, query: str, *, k: int = 3
+) -> list[SearchHit]:
+    """Best-effort — semantic search is Postgres-only and degrades to an
+    empty list on SQLite/missing embeddings (see `similarity_search`'s own
+    docstring), so generation still works without reference material
+    rather than failing the whole plan over it."""
+    return await similarity_search(session, query, company_id=company_id, k=k)
 
 
 async def _gather_context_node(state: ContentPlanGraphState) -> dict:
@@ -75,18 +112,51 @@ async def _gather_context_node(state: ContentPlanGraphState) -> dict:
         if state["strategy_id"] is not None:
             strategy = await session.get(Strategy, state["strategy_id"])
 
-        trends = (
+        # Prefer this company's own relevance scores (CompanyTrendRelevance)
+        # — falls back to the legacy global Trend.relevance_score when this
+        # company has no scored trends yet (e.g. onboarded after the last
+        # collection run, or embeddings were never configured). See
+        # CompanyTrendRelevance's docstring in db/models.py: a single global
+        # score per trend stopped being reliable once more than one company
+        # is onboarded, which is exactly the case this falls back for.
+        per_company_rows = (
             await session.execute(
-                select(Trend)
-                .where(Trend.relevance_score.is_not(None))
-                .order_by(Trend.relevance_score.desc())
+                select(Trend, CompanyTrendRelevance.relevance_score)
+                .join(CompanyTrendRelevance, CompanyTrendRelevance.trend_id == Trend.id)
+                .where(CompanyTrendRelevance.company_id == state["company_id"])
+                .order_by(CompanyTrendRelevance.relevance_score.desc())
                 .limit(settings.CONTENT_PLAN_MAX_TRENDS)
             )
-        ).scalars().all()
+        ).all()
+
+        if per_company_rows:
+            trends_with_scores: list[tuple[Trend, float]] = [(row[0], row[1]) for row in per_company_rows]
+        else:
+            legacy_trends = (
+                await session.execute(
+                    select(Trend)
+                    .where(Trend.relevance_score.is_not(None))
+                    .order_by(Trend.relevance_score.desc())
+                    .limit(settings.CONTENT_PLAN_MAX_TRENDS)
+                )
+            ).scalars().all()
+            trends_with_scores = [(trend, trend.relevance_score) for trend in legacy_trends]
+
+        # General style-reference query (not topic-specific, since a whole
+        # plan spans many themes) — company summary/industry is a reasonable
+        # proxy for "what does this brand's own real content sound like."
+        reference_query = " ".join(
+            filter(None, [company.summary, company.industry, company.name])
+        ) or (company.name or "")
+        kb_references = (
+            await fetch_kb_references(session, state["company_id"], reference_query)
+            if reference_query
+            else []
+        )
 
     return {
-        "context": _format_context(company, strategy, list(trends)),
-        "trend_ids_by_title": {trend.title: trend.id for trend in trends},
+        "context": format_context(company, strategy, trends_with_scores, kb_references),
+        "trend_ids_by_title": {trend.title: trend.id for trend, _ in trends_with_scores},
     }
 
 
@@ -139,6 +209,8 @@ async def _persist_node(state: ContentPlanGraphState) -> dict:
                     ),
                     audience_interest=item.audience_interest,
                     seasonal_event=item.seasonal_event,
+                    draft_copy=item.draft_copy,
+                    hashtags=item.hashtags,
                     approval_status="pending",
                 )
                 for item in generated.items
@@ -201,3 +273,51 @@ async def run_content_plan_generation(
                     await session.commit()
         except Exception:
             logger.exception("Failed to mark content plan %s as failed", content_plan_id)
+
+
+async def regenerate_item_draft_copy(item_id: uuid.UUID) -> tuple[ContentItem | None, bool]:
+    """Rewrite one existing ContentItem's `draft_copy` in place — the UI's
+    "regenerate" action. Not a graph (no multi-step state to track for a
+    single Claude call over an existing row) — a plain async function is
+    simpler and matches the size of the job. Returns `(item, True)` on
+    success, `(item, False)` if generation failed (item is left
+    unchanged), or `(None, False)` if the item doesn't exist."""
+    async with async_session_factory() as session:
+        item = await session.get(ContentItem, item_id)
+        if item is None:
+            return None, False
+
+        content_plan = await session.get(ContentPlan, item.content_plan_id)
+        company = await session.get(Company, content_plan.company_id) if content_plan else None
+        strategy = (
+            await session.get(Strategy, content_plan.strategy_id)
+            if content_plan and content_plan.strategy_id
+            else None
+        )
+        if company is None:
+            logger.error("Company for content item %s vanished", item_id)
+            return item, False
+
+        context = format_context(company, strategy, [])
+        draft_copy, ok = await regenerate_draft_copy(
+            context, item.title, item.description, item.content_type, item.platform
+        )
+        if not ok:
+            return item, False
+
+        # Snapshot the pre-regeneration draft, same as a manual edit does —
+        # a Claude regeneration shouldn't be able to lose a draft any more
+        # silently than a hand-edit can.
+        if item.draft_copy is not None:
+            session.add(
+                ContentItemRevision(
+                    id=uuid.uuid4(),
+                    content_item_id=item.id,
+                    draft_copy=item.draft_copy,
+                    edited_by="AI regeneration",
+                )
+            )
+        item.draft_copy = draft_copy
+        await session.commit()
+        await session.refresh(item)
+        return item, True

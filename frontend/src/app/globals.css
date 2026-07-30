@@ -6,7 +6,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-inter);
   --font-mono: var(--font-geist-mono);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -44,38 +44,45 @@
 }
 
 :root {
+  /* LoomVerse AI brand palette (see Loomverse_Brand_Kit_Final.pdf):
+     Deep Navy #071A33, Signal Teal #00A6A6, Aqua #48D7CE, Graphite
+     #101827, Cloud #F7FAFC, Slate #627083 — converted to oklch. Card/
+     sidebar/border tones are derived lighter steps in the same navy hue
+     (~256°) rather than the literal Deep Navy hex, since Deep Navy and
+     Graphite sit at almost the same oklch lightness (~0.21) and would
+     give no visible separation between background and elevated surfaces. */
   --radius: 0.625rem;
-  --background: oklch(0.1 0.015 260);
-  --foreground: oklch(0.95 0.01 260);
-  --card: oklch(0.14 0.02 260);
-  --card-foreground: oklch(0.95 0.01 260);
-  --popover: oklch(0.14 0.02 260);
-  --popover-foreground: oklch(0.95 0.01 260);
-  --primary: oklch(0.7 0.2 275);
-  --primary-foreground: oklch(0.98 0.005 260);
-  --secondary: oklch(0.2 0.03 260);
-  --secondary-foreground: oklch(0.9 0.01 260);
-  --muted: oklch(0.18 0.02 260);
-  --muted-foreground: oklch(0.6 0.02 260);
-  --accent: oklch(0.2 0.04 260);
-  --accent-foreground: oklch(0.95 0.01 260);
+  --background: oklch(0.2093 0.0323 262.41); /* Graphite */
+  --foreground: oklch(0.9834 0.0042 236.5); /* Cloud */
+  --card: oklch(0.27 0.045 256);
+  --card-foreground: oklch(0.9834 0.0042 236.5);
+  --popover: oklch(0.27 0.045 256);
+  --popover-foreground: oklch(0.9834 0.0042 236.5);
+  --primary: oklch(0.6566 0.1121 194.77); /* Signal Teal */
+  --primary-foreground: oklch(0.19 0.05 256);
+  --secondary: oklch(0.24 0.035 256);
+  --secondary-foreground: oklch(0.9834 0.0042 236.5);
+  --muted: oklch(0.235 0.025 258);
+  --muted-foreground: oklch(0.5405 0.0343 256.09); /* Slate */
+  --accent: oklch(0.8019 0.1205 188.99); /* Aqua */
+  --accent-foreground: oklch(0.19 0.05 256);
   --destructive: oklch(0.55 0.2 25);
-  --border: oklch(0.25 0.03 260);
-  --input: oklch(0.25 0.03 260);
-  --ring: oklch(0.7 0.2 275);
-  --chart-1: oklch(0.7 0.2 275);
-  --chart-2: oklch(0.65 0.18 160);
-  --chart-3: oklch(0.6 0.2 30);
-  --chart-4: oklch(0.65 0.15 80);
-  --chart-5: oklch(0.7 0.15 330);
-  --sidebar: oklch(0.12 0.015 260);
-  --sidebar-foreground: oklch(0.95 0.01 260);
-  --sidebar-primary: oklch(0.7 0.2 275);
-  --sidebar-primary-foreground: oklch(0.98 0.005 260);
-  --sidebar-accent: oklch(0.2 0.04 260);
-  --sidebar-accent-foreground: oklch(0.95 0.01 260);
-  --sidebar-border: oklch(0.25 0.03 260);
-  --sidebar-ring: oklch(0.7 0.2 275);
+  --border: oklch(0.33 0.03 256);
+  --input: oklch(0.33 0.03 256);
+  --ring: oklch(0.6566 0.1121 194.77); /* Signal Teal */
+  --chart-1: oklch(0.6566 0.1121 194.77); /* Signal Teal */
+  --chart-2: oklch(0.8019 0.1205 188.99); /* Aqua */
+  --chart-3: oklch(0.5405 0.0343 256.09); /* Slate */
+  --chart-4: oklch(0.45 0.05 256); /* navy-light tint */
+  --chart-5: oklch(0.65 0.15 50); /* warm tint, kept for differentiation */
+  --sidebar: oklch(0.27 0.045 256);
+  --sidebar-foreground: oklch(0.9834 0.0042 236.5);
+  --sidebar-primary: oklch(0.6566 0.1121 194.77);
+  --sidebar-primary-foreground: oklch(0.19 0.05 256);
+  --sidebar-accent: oklch(0.31 0.04 256);
+  --sidebar-accent-foreground: oklch(0.9834 0.0042 236.5);
+  --sidebar-border: oklch(0.33 0.03 256);
+  --sidebar-ring: oklch(0.6566 0.1121 194.77);
 }
 
 /* ===== Custom Animations ===== */
@@ -183,21 +190,21 @@
 
 /* ===== Gradient Text ===== */
 .gradient-text {
-  background: linear-gradient(135deg, #a855f7, #6366f1, #3b82f6, #06b6d4);
+  background: linear-gradient(135deg, #00a6a6, #48d7ce);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
 .gradient-text-warm {
-  background: linear-gradient(135deg, #f97316, #ef4444, #ec4899);
+  background: linear-gradient(135deg, #48d7ce, #00a6a6);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
 .gradient-text-cool {
-  background: linear-gradient(135deg, #06b6d4, #3b82f6, #8b5cf6);
+  background: linear-gradient(135deg, #071a33, #00a6a6, #48d7ce);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -225,7 +232,7 @@
 
 .hover-lift:hover {
   transform: translateY(-8px);
-  box-shadow: 0 20px 60px rgba(139, 92, 246, 0.15);
+  box-shadow: 0 20px 60px rgba(0, 166, 166, 0.15);
 }
 
 .hover-glow {
@@ -233,7 +240,7 @@
 }
 
 .hover-glow:hover {
-  box-shadow: 0 0 30px rgba(139, 92, 246, 0.2), 0 0 60px rgba(99, 102, 241, 0.1);
+  box-shadow: 0 0 30px rgba(0, 166, 166, 0.2), 0 0 60px rgba(72, 215, 206, 0.1);
 }
 
 /* ===== Custom Scrollbar ===== */
@@ -242,16 +249,16 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: oklch(0.12 0.015 260);
+  background: oklch(0.2093 0.0323 262.41);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: oklch(0.3 0.04 260);
+  background: oklch(0.33 0.03 256);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.4 0.06 260);
+  background: oklch(0.4 0.05 256);
 }
 
 /* ===== Background Patterns ===== */

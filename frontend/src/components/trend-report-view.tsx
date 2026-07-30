@@ -79,6 +79,8 @@ export function TrendReportView({ initialReport }: { initialReport: TrendReport 
 
       <ReportField label="Notable trends" value={report.notable_trends_summary} />
       <ReportField label="Content opportunities" value={report.content_opportunities} />
+      <ReportField label="Campaign alignment" value={report.campaign_alignment_notes} />
+      <ReportField label="Competitor relevance" value={report.competitor_relevance_notes} />
     </div>
   );
 }

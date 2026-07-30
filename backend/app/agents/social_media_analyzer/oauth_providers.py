@@ -1,95 +1,113 @@
-"""Per-platform OAuth2 configuration — one dict entry per platform, so
-adding a 6th platform later is a new entry, not new code paths.
+"""Per-platform Composio configuration — one dict entry per platform, so
+adding a 7th platform later is a new entry, not new code paths.
 
-Authorize/token URLs and scopes are drawn from each platform's public
-OAuth2 documentation as of this writing (Meta Graph API, X API v2 OAuth
-2.0, LinkedIn OAuth 2.0, TikTok Login Kit, Google OAuth 2.0). These are
-correct against the documented API shape but — like the rest of this
-round — unverified against a real registered app, since none exists in
-this environment.
+Each platform maps to a Composio toolkit slug (confirmed against the real
+`composio-client` package and composio.dev's toolkit catalog, not guessed)
+and the `Settings` attribute holding that platform's Composio "auth config"
+id — an id Composio issues after you create a `use_custom_auth` config in
+its dashboard using that platform's own registered OAuth app credentials.
+This app never sees those raw client id/secret values; it only holds the
+resulting auth config id.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.config import settings
 
 
 @dataclass(frozen=True, slots=True)
-class PlatformOAuthConfig:
-    authorize_url: str
-    token_url: str
-    scopes: list[str] = field(default_factory=list)
-    client_id_setting: str = ""
-    client_secret_setting: str = ""
-    # X's OAuth 2.0 requires PKCE (code_challenge/code_verifier) even for
-    # confidential clients; the others don't.
-    pkce: bool = False
+class PlatformComposioConfig:
+    toolkit_slug: str
+    auth_config_id_setting: str
+    # Composio tool slug for this platform's "create a post" action (e.g.
+    # "LINKEDIN_CREATE_LINKEDIN_POST"). Deliberately a *setting*, not a
+    # hardcoded value here — unlike toolkit_slug (confirmed against the
+    # real composio-client package), the exact per-action slug can't be
+    # verified without a live Composio account and its tool catalog for
+    # this toolkit. Guessing it would risk a silently-wrong integration
+    # once real credentials exist; look it up in Composio's dashboard/
+    # catalog once you have an account, same as the auth config id.
+    post_tool_slug_setting: str
+    # Same deal as post_tool_slug_setting, for whichever "get account/
+    # post metrics" action this toolkit exposes (e.g. profile insights,
+    # follower count) — left blank for the same reason.
+    metrics_tool_slug_setting: str
 
 
-PLATFORM_CONFIGS: dict[str, PlatformOAuthConfig] = {
-    "instagram": PlatformOAuthConfig(
-        authorize_url="https://www.facebook.com/v21.0/dialog/oauth",
-        token_url="https://graph.facebook.com/v21.0/oauth/access_token",
-        scopes=["instagram_basic", "instagram_manage_insights", "pages_show_list"],
-        client_id_setting="META_APP_CLIENT_ID",
-        client_secret_setting="META_APP_CLIENT_SECRET",
+PLATFORM_CONFIGS: dict[str, PlatformComposioConfig] = {
+    "instagram": PlatformComposioConfig(
+        toolkit_slug="instagram",
+        auth_config_id_setting="COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID",
+        post_tool_slug_setting="COMPOSIO_INSTAGRAM_POST_TOOL_SLUG",
+        metrics_tool_slug_setting="COMPOSIO_INSTAGRAM_METRICS_TOOL_SLUG",
     ),
-    "facebook": PlatformOAuthConfig(
-        authorize_url="https://www.facebook.com/v21.0/dialog/oauth",
-        token_url="https://graph.facebook.com/v21.0/oauth/access_token",
-        scopes=["pages_show_list", "pages_read_engagement"],
-        client_id_setting="META_APP_CLIENT_ID",
-        client_secret_setting="META_APP_CLIENT_SECRET",
+    "facebook": PlatformComposioConfig(
+        toolkit_slug="facebook",
+        auth_config_id_setting="COMPOSIO_FACEBOOK_AUTH_CONFIG_ID",
+        post_tool_slug_setting="COMPOSIO_FACEBOOK_POST_TOOL_SLUG",
+        metrics_tool_slug_setting="COMPOSIO_FACEBOOK_METRICS_TOOL_SLUG",
     ),
-    "twitter": PlatformOAuthConfig(
-        authorize_url="https://twitter.com/i/oauth2/authorize",
-        token_url="https://api.twitter.com/2/oauth2/token",
-        scopes=["tweet.read", "users.read", "offline.access"],
-        client_id_setting="TWITTER_OAUTH_CLIENT_ID",
-        client_secret_setting="TWITTER_OAUTH_CLIENT_SECRET",
-        pkce=True,
+    "twitter": PlatformComposioConfig(
+        toolkit_slug="twitter",
+        auth_config_id_setting="COMPOSIO_TWITTER_AUTH_CONFIG_ID",
+        post_tool_slug_setting="COMPOSIO_TWITTER_POST_TOOL_SLUG",
+        metrics_tool_slug_setting="COMPOSIO_TWITTER_METRICS_TOOL_SLUG",
     ),
-    "linkedin": PlatformOAuthConfig(
-        authorize_url="https://www.linkedin.com/oauth/v2/authorization",
-        token_url="https://www.linkedin.com/oauth/v2/accessToken",
-        scopes=["r_organization_social", "rw_organization_admin"],
-        client_id_setting="LINKEDIN_CLIENT_ID",
-        client_secret_setting="LINKEDIN_CLIENT_SECRET",
+    "linkedin": PlatformComposioConfig(
+        toolkit_slug="linkedin",
+        auth_config_id_setting="COMPOSIO_LINKEDIN_AUTH_CONFIG_ID",
+        post_tool_slug_setting="COMPOSIO_LINKEDIN_POST_TOOL_SLUG",
+        metrics_tool_slug_setting="COMPOSIO_LINKEDIN_METRICS_TOOL_SLUG",
     ),
-    "tiktok": PlatformOAuthConfig(
-        authorize_url="https://www.tiktok.com/v2/auth/authorize",
-        token_url="https://open.tiktokapis.com/v2/oauth/token/",
-        scopes=["user.info.basic", "video.list"],
-        client_id_setting="TIKTOK_OAUTH_CLIENT_KEY",
-        client_secret_setting="TIKTOK_OAUTH_CLIENT_SECRET",
+    "tiktok": PlatformComposioConfig(
+        toolkit_slug="tiktok",
+        auth_config_id_setting="COMPOSIO_TIKTOK_AUTH_CONFIG_ID",
+        post_tool_slug_setting="COMPOSIO_TIKTOK_POST_TOOL_SLUG",
+        metrics_tool_slug_setting="COMPOSIO_TIKTOK_METRICS_TOOL_SLUG",
     ),
-    "youtube": PlatformOAuthConfig(
-        authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
-        token_url="https://oauth2.googleapis.com/token",
-        scopes=["https://www.googleapis.com/auth/youtube.readonly"],
-        client_id_setting="GOOGLE_OAUTH_CLIENT_ID",
-        client_secret_setting="GOOGLE_OAUTH_CLIENT_SECRET",
+    "youtube": PlatformComposioConfig(
+        toolkit_slug="youtube",
+        auth_config_id_setting="COMPOSIO_YOUTUBE_AUTH_CONFIG_ID",
+        post_tool_slug_setting="COMPOSIO_YOUTUBE_POST_TOOL_SLUG",
+        metrics_tool_slug_setting="COMPOSIO_YOUTUBE_METRICS_TOOL_SLUG",
     ),
 }
 
 
-def get_platform_config(platform: str) -> PlatformOAuthConfig:
+def get_platform_config(platform: str) -> PlatformComposioConfig:
     try:
         return PLATFORM_CONFIGS[platform]
     except KeyError:
         raise ValueError(f"Unknown platform: {platform!r}") from None
 
 
-def get_client_credentials(platform: str) -> tuple[str, str]:
-    """Returns (client_id, client_secret) — either may be empty if unset."""
+def get_auth_config_id(platform: str) -> str:
+    """Empty string if this platform's auth config hasn't been set up yet."""
     config = get_platform_config(platform)
-    client_id = getattr(settings, config.client_id_setting)
-    client_secret = getattr(settings, config.client_secret_setting)
-    return client_id, client_secret
+    return getattr(settings, config.auth_config_id_setting)
+
+
+def get_post_tool_slug(platform: str) -> str:
+    """Empty string if this platform's post tool slug hasn't been set."""
+    config = get_platform_config(platform)
+    return getattr(settings, config.post_tool_slug_setting)
 
 
 def is_platform_configured(platform: str) -> bool:
-    client_id, client_secret = get_client_credentials(platform)
-    return bool(client_id and client_secret)
+    return bool(settings.COMPOSIO_API_KEY) and bool(get_auth_config_id(platform))
+
+
+def is_publishing_configured(platform: str) -> bool:
+    return is_platform_configured(platform) and bool(get_post_tool_slug(platform))
+
+
+def get_metrics_tool_slug(platform: str) -> str:
+    """Empty string if this platform's metrics tool slug hasn't been set."""
+    config = get_platform_config(platform)
+    return getattr(settings, config.metrics_tool_slug_setting)
+
+
+def is_metrics_configured(platform: str) -> bool:
+    return is_platform_configured(platform) and bool(get_metrics_tool_slug(platform))

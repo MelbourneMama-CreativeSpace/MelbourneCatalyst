@@ -41,12 +41,14 @@ interface TrendFiltersProps {
   currentSource?: string;
   currentCategory?: string;
   currentMinRelevance?: string;
+  currentRecommended?: boolean;
 }
 
 export function TrendFilters({
   currentSource,
   currentCategory,
   currentMinRelevance,
+  currentRecommended,
 }: TrendFiltersProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -62,13 +64,35 @@ export function TrendFilters({
     router.push(`/trends${queryString ? `?${queryString}` : ""}`);
   }
 
+  function toggleRecommended() {
+    // Recommended is its own view, not another filter dimension — the
+    // backend endpoint ignores source/category/min_relevance entirely —
+    // so switching it on clears the other filters rather than combining
+    // with them.
+    router.push(currentRecommended ? "/trends" : "/trends?recommended=1");
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-3">
+      <button
+        type="button"
+        onClick={toggleRecommended}
+        aria-pressed={currentRecommended}
+        className={`h-8 rounded-lg border px-3 text-sm font-medium transition-colors ${
+          currentRecommended
+            ? "border-primary bg-primary/10 text-primary"
+            : "border-input bg-transparent text-muted-foreground hover:text-foreground"
+        }`}
+      >
+        Recommended
+      </button>
+
       <select
         className={selectClassName}
         value={currentSource ?? ""}
         onChange={(event) => updateParam("source", event.target.value)}
         aria-label="Filter by source"
+        disabled={currentRecommended}
       >
         {SOURCES.map((source) => (
           <option key={source.value} value={source.value}>
@@ -82,6 +106,7 @@ export function TrendFilters({
         value={currentCategory ?? ""}
         onChange={(event) => updateParam("category", event.target.value)}
         aria-label="Filter by category"
+        disabled={currentRecommended}
       >
         <option value="">All categories</option>
         {CATEGORIES.map((category) => (
@@ -96,6 +121,7 @@ export function TrendFilters({
         value={currentMinRelevance ?? ""}
         onChange={(event) => updateParam("min_relevance", event.target.value)}
         aria-label="Filter by minimum relevance"
+        disabled={currentRecommended}
       >
         {RELEVANCE_THRESHOLDS.map((option) => (
           <option key={option.value} value={option.value}>

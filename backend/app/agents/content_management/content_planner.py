@@ -14,6 +14,7 @@ from datetime import date, timedelta
 
 from anthropic import AsyncAnthropic
 
+from app.agents.content_management.prompts import HUMANIZED_CONTENT_SYSTEM_PROMPT
 from app.agents.content_management.schemas import GeneratedContentItem, GeneratedContentPlan
 from app.config import settings
 
@@ -22,8 +23,8 @@ logger = logging.getLogger(__name__)
 _MODEL = "claude-sonnet-5"
 _MAX_CONTEXT_CHARS = 100_000
 
-_CONTENT_TYPES = ["post", "video", "article", "carousel", "story"]
-_PLATFORMS = ["instagram", "linkedin", "twitter", "tiktok", "youtube", "blog", "facebook"]
+_CONTENT_TYPES = ["post", "video", "article", "carousel", "story", "newsletter", "podcast"]
+_PLATFORMS = ["instagram", "linkedin", "twitter", "tiktok", "youtube", "blog", "facebook", "threads"]
 
 # Fixed-date (non-movable) commercial/awareness dates worth planning content
 # around. Deliberately excludes movable-date events (Easter, Mother's/
@@ -42,7 +43,7 @@ _SEASONAL_EVENTS: dict[tuple[int, int], str] = {
 }
 
 
-def _seasonal_candidates(start: date, days: int) -> list[str]:
+def seasonal_candidates(start: date, days: int) -> list[str]:
     """Fixed-date seasonal/awareness events falling within [start, start+days)."""
     candidates = []
     for offset in range(days):
@@ -67,10 +68,33 @@ _TOOL = {
                         "title": {"type": "string"},
                         "description": {
                             "type": "string",
-                            "description": "What the content actually says/shows — specific enough to brief a writer",
+                            "description": "A one-line brief of what the content shows/covers — for the calendar view, not the post itself",
+                        },
+                        "draft_copy": {
+                            "type": "string",
+                            "description": (
+                                "The actual finished, ready-to-publish copy for this post — not a "
+                                "brief or an outline. Write it the way it should actually appear: "
+                                "full caption text in the platform's real voice and length "
+                                "conventions (e.g. a punchy hook + body + call-to-action for "
+                                "Instagram/TikTok, a professional framing for LinkedIn, concise for "
+                                "X/Twitter), including hashtags where that platform's audience "
+                                "expects them. Someone should be able to copy this verbatim and post "
+                                "it, not rewrite it first."
+                            ),
                         },
                         "content_type": {"type": "string", "enum": _CONTENT_TYPES},
                         "platform": {"type": "string", "enum": _PLATFORMS},
+                        "hashtags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Structured hashtags for this post, without the '#' prefix "
+                                "(e.g. \"smallbusiness\" not \"#smallbusiness\") — separate from "
+                                "any hashtags already inline in draft_copy's prose. Empty array "
+                                "if the platform/format doesn't use hashtags."
+                            ),
+                        },
                         "theme": {
                             "type": "string",
                             "description": "Short theme/campaign tag this idea belongs to",
@@ -103,11 +127,77 @@ _TOOL = {
                             ),
                         },
                     },
-                    "required": ["title", "description", "content_type", "platform", "days_from_now"],
+                    "required": [
+                        "title",
+                        "description",
+                        "draft_copy",
+                        "content_type",
+                        "platform",
+                        "days_from_now",
+                    ],
                 },
             }
         },
         "required": ["items"],
+    },
+}
+
+
+_REGEN_TOOL = {
+    "name": "regenerate_draft_copy",
+    "description": "Rewrite the ready-to-publish draft copy for a single content calendar item.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "draft_copy": {
+                "type": "string",
+                "description": (
+                    "The actual finished, ready-to-publish copy for this post — not a brief "
+                    "or an outline. Full caption text in the platform's real voice and length "
+                    "conventions, including hashtags where that platform's audience expects "
+                    "them. Someone should be able to copy this verbatim and post it."
+                ),
+            }
+        },
+        "required": ["draft_copy"],
+    },
+}
+
+
+_MANUAL_ITEM_TOOL = {
+    "name": "generate_content_item_from_input",
+    "description": "Generate a single social media post from a user-provided topic or idea.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short internal title for this post."},
+            "description": {
+                "type": "string",
+                "description": "A one-line brief of what the content shows/covers — for the calendar view, not the post itself",
+            },
+            "draft_copy": {
+                "type": "string",
+                "description": (
+                    "The actual finished, ready-to-publish copy for this post — not a brief "
+                    "or an outline. Full caption text in the platform's real voice and length "
+                    "conventions, including hashtags where that platform's audience expects "
+                    "them. Someone should be able to copy this verbatim and post it."
+                ),
+            },
+            "hashtags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Structured hashtags for this post, without the '#' prefix. Empty array "
+                    "if the platform/format doesn't use hashtags."
+                ),
+            },
+            "theme": {
+                "type": "string",
+                "description": "Short theme/campaign tag this idea belongs to, empty string if none",
+            },
+        },
+        "required": ["title", "description", "draft_copy"],
     },
 }
 
@@ -126,11 +216,11 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
         return GeneratedContentPlan(), False
 
     today = date.today()
-    seasonal_candidates = _seasonal_candidates(today, days)
+    seasonal_candidate_list = seasonal_candidates(today, days)
     seasonal_context = (
         "\n\n# Seasonal/awareness dates in this window (tie ideas to these only if genuinely relevant)\n"
-        + "\n".join(f"- {c}" for c in seasonal_candidates)
-        if seasonal_candidates
+        + "\n".join(f"- {c}" for c in seasonal_candidate_list)
+        if seasonal_candidate_list
         else ""
     )
 
@@ -138,7 +228,12 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
     try:
         response = await _client().messages.create(
             model=_MODEL,
-            max_tokens=4096,
+            # Each item now carries full publishable copy, not just a
+            # one-line brief — a 30-day plan's worth of real captions needs
+            # meaningfully more room than the old title/description-only
+            # shape did.
+            max_tokens=8192,
+            system=HUMANIZED_CONTENT_SYSTEM_PROMPT,
             tools=[_TOOL],
             tool_choice={"type": "tool", "name": "generate_content_plan"},
             messages=[
@@ -146,7 +241,9 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
                     "role": "user",
                     "content": (
                         f"Generate a {days}-day content calendar using the "
-                        "`generate_content_plan` tool from this context:\n\n"
+                        "`generate_content_plan` tool from this context. For every item, "
+                        "`draft_copy` must be finished, ready-to-publish post text — not a "
+                        "summary or an outline:\n\n"
                         f"{trimmed}"
                     ),
                 }
@@ -173,6 +270,12 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
                     related_trend_title=raw.get("related_trend_title") or None,
                     audience_interest=raw.get("audience_interest") or None,
                     seasonal_event=raw.get("seasonal_event") or None,
+                    hashtags=raw.get("hashtags") or None,
+                    # A required field — if the model omits it, skip this
+                    # item entirely (via the except below) rather than
+                    # silently persisting a slot with no draft, which would
+                    # just reintroduce the "spec, not a draft" gap.
+                    draft_copy=raw["draft_copy"],
                 )
             )
         except (KeyError, TypeError, ValueError):
@@ -180,3 +283,99 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
             # skip it rather than losing the whole plan to one bad entry.
             continue
     return GeneratedContentPlan(items=items), True
+
+
+async def regenerate_draft_copy(
+    context: str, title: str, description: str, content_type: str, platform: str
+) -> tuple[str | None, bool]:
+    """Rewrite just the `draft_copy` for one existing calendar item — the
+    UI's "regenerate" action when a draft needs another pass, rather than
+    a full plan regeneration. Never raises — returns `(None, False)` on
+    any failure."""
+    if not settings.ANTHROPIC_API_KEY:
+        logger.warning("ANTHROPIC_API_KEY not configured; skipping draft copy regeneration")
+        return None, False
+
+    trimmed = context[:_MAX_CONTEXT_CHARS]
+    try:
+        response = await _client().messages.create(
+            model=_MODEL,
+            max_tokens=1024,
+            system=HUMANIZED_CONTENT_SYSTEM_PROMPT,
+            tools=[_REGEN_TOOL],
+            tool_choice={"type": "tool", "name": "regenerate_draft_copy"},
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Write ready-to-publish {platform} {content_type} copy for the "
+                        f'calendar item titled "{title}" — brief: {description}. Use the '
+                        "`regenerate_draft_copy` tool. Company/strategy context:\n\n"
+                        f"{trimmed}"
+                    ),
+                }
+            ],
+        )
+        tool_use = next(block for block in response.content if block.type == "tool_use")
+        draft_copy = tool_use.input.get("draft_copy")
+    except Exception:
+        logger.exception("Claude draft copy regeneration failed")
+        return None, False
+
+    if not draft_copy:
+        return None, False
+    return draft_copy, True
+
+
+async def generate_content_item_from_input(
+    context: str, user_input: str, platform: str, content_type: str
+) -> tuple[GeneratedContentItem | None, bool]:
+    """Generate a single content item from a user-supplied topic/idea,
+    rather than Claude choosing the whole calendar's worth of ideas
+    itself. Same graceful-degradation contract as every other generator
+    here: never raises, returns `(None, False)` on any failure."""
+    if not settings.ANTHROPIC_API_KEY:
+        logger.warning("ANTHROPIC_API_KEY not configured; skipping manual content generation")
+        return None, False
+
+    trimmed = context[:_MAX_CONTEXT_CHARS]
+    try:
+        response = await _client().messages.create(
+            model=_MODEL,
+            max_tokens=1024,
+            system=HUMANIZED_CONTENT_SYSTEM_PROMPT,
+            tools=[_MANUAL_ITEM_TOOL],
+            tool_choice={"type": "tool", "name": "generate_content_item_from_input"},
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Write a ready-to-publish {platform} {content_type} post about: "
+                        f'"{user_input}". Use the `generate_content_item_from_input` tool. '
+                        f"Company/strategy context:\n\n{trimmed}"
+                    ),
+                }
+            ],
+        )
+        tool_use = next(block for block in response.content if block.type == "tool_use")
+        data = tool_use.input
+    except Exception:
+        logger.exception("Claude manual content generation failed")
+        return None, False
+
+    if not data.get("draft_copy") or not data.get("title"):
+        return None, False
+
+    return (
+        GeneratedContentItem(
+            title=data["title"],
+            description=data.get("description") or user_input,
+            content_type=content_type,
+            platform=platform,
+            suggested_date=date.today(),
+            theme=data.get("theme") or None,
+            hashtags=data.get("hashtags") or None,
+            draft_copy=data["draft_copy"],
+        ),
+        True,
+    )
