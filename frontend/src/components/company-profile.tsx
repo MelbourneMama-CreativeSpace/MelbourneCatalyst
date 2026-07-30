@@ -10,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CompetitorList } from "@/components/competitor-list";
 import { ContentHistory } from "@/components/content-history";
 import { KnowledgePanel } from "@/components/knowledge-panel";
+import { ManualDraftForm } from "@/components/manual-draft-form";
+import { OpportunitiesCard } from "@/components/opportunities-card";
 import { TrendReports } from "@/components/trend-reports";
 import { createStrategy, getCompany, type Company } from "@/lib/api";
 
@@ -177,10 +179,18 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
             >
               Manage social connections →
             </Link>
+            <Link
+              href={`/media/${company.id}`}
+              className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+            >
+              Media library →
+            </Link>
           </div>
           {strategyError && <p className="text-sm text-destructive">{strategyError}</p>}
         </div>
       )}
+
+      {company.status === "complete" && <ManualDraftForm companyId={company.id} />}
 
       {company.status === "complete" && <ContentHistory companyId={company.id} />}
 
@@ -193,6 +203,7 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
           <div className="flex flex-col gap-6 border-t border-border p-4">
             <CompetitorList companyId={company.id} />
             <TrendReports companyId={company.id} />
+            <OpportunitiesCard companyId={company.id} />
             <KnowledgePanel companyId={company.id} />
           </div>
         </details>

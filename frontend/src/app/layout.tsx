@@ -4,16 +4,21 @@ import "./globals.css";
 
 const inter = Inter({
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
   variable: "--font-inter",
 });
 
 export const metadata: Metadata = {
-  title: "MMCS Content Studio",
+  title: "LoomVerse AI",
   description:
-    "MMCS's internal tool for drafting weekly client content — strategy, content calendar with ready-to-publish captions, campaigns, and collaboration ideas.",
-  keywords: ["content studio", "content calendar", "content drafting", "MMCS"],
+    "LoomVerse AI's Content Studio — drafting weekly client content: strategy, a content calendar with ready-to-publish captions, campaigns, and collaboration ideas.",
+  keywords: ["LoomVerse AI", "content studio", "content calendar", "content drafting"],
+  icons: { icon: "/loomverse-mark.png" },
 };
 
+// Deliberately minimal — no auth-aware chrome here. The landing page (`/`)
+// and `/login` are public, so a global sign-out control doesn't belong at
+// this level; the dashboard shell (`(dashboard)/layout.tsx`) owns that.
 export default function RootLayout({
   children,
 }: Readonly<{

@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # Application
-    APP_NAME: str = "MMCS Social Network"
+    APP_NAME: str = "LoomVerse AI"
     DEBUG: bool = True
     VERSION: str = "0.1.0"
     API_V1_PREFIX: str = "/api/v1"
@@ -15,6 +15,29 @@ class Settings(BaseSettings):
     # Database (Supabase Postgres, asyncpg driver — e.g.
     # postgresql+asyncpg://postgres:<password>@<project>.supabase.co:5432/postgres)
     DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/mmcs"
+
+    # Auth — Supabase Auth. The frontend talks to Supabase directly for
+    # sign-in/sign-up; this backend only ever verifies the resulting JWT
+    # on incoming requests. Supabase projects sign session tokens with
+    # either a shared HS256 secret (SUPABASE_JWT_SECRET — Settings → API
+    # → JWT Settings → "Legacy JWT Secret") or, on projects that have
+    # opted into asymmetric signing keys, ES256 — verified against the
+    # project's public JWKS endpoint instead, which only needs
+    # SUPABASE_URL (no secret at all). See app/security/auth.py, which
+    # checks each token's own `alg` header and verifies accordingly
+    # rather than assuming one or the other.
+    SUPABASE_URL: str = ""
+    SUPABASE_JWT_SECRET: str = ""
+    # Media & Asset Library — Supabase Storage. This is a DIFFERENT key
+    # from the auth secret above: a server-side service-role key that
+    # bypasses RLS, needed to upload/delete on the app's behalf. Never
+    # exposed to the frontend. The bucket itself must be created once by
+    # hand in Supabase's dashboard — this app doesn't auto-create it,
+    # same "you register it once, we only hold the reference" pattern as
+    # Composio's auth configs below.
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_STORAGE_BUCKET: str = "media-library"
+    MEDIA_UPLOAD_MAX_BYTES: int = 20_000_000
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -100,6 +123,33 @@ class Settings(BaseSettings):
     COMPOSIO_TIKTOK_AUTH_CONFIG_ID: str = ""
     COMPOSIO_YOUTUBE_AUTH_CONFIG_ID: str = ""
 
+    # Social Media Analyzer — Publishing. Each is the Composio *tool slug*
+    # for that platform's "create a post" action (e.g.
+    # "LINKEDIN_CREATE_LINKEDIN_POST") — look it up in Composio's tool
+    # catalog for that toolkit once you have a real account; this app
+    # doesn't guess it, since an exact action slug can't be verified
+    # without live API access. Leave blank until you've confirmed it.
+    COMPOSIO_INSTAGRAM_POST_TOOL_SLUG: str = ""
+    COMPOSIO_FACEBOOK_POST_TOOL_SLUG: str = ""
+    COMPOSIO_TWITTER_POST_TOOL_SLUG: str = ""
+    COMPOSIO_LINKEDIN_POST_TOOL_SLUG: str = ""
+    COMPOSIO_TIKTOK_POST_TOOL_SLUG: str = ""
+    COMPOSIO_YOUTUBE_POST_TOOL_SLUG: str = ""
+    # How often the scheduler checks for due scheduled posts.
+    PUBLISH_SCHEDULER_INTERVAL_MINUTES: int = 5
+
+    # Same "you look it up in Composio's catalog, we don't guess it"
+    # deal as the post tool slugs above, for whichever "get account/post
+    # metrics" action each toolkit exposes.
+    COMPOSIO_INSTAGRAM_METRICS_TOOL_SLUG: str = ""
+    COMPOSIO_FACEBOOK_METRICS_TOOL_SLUG: str = ""
+    COMPOSIO_TWITTER_METRICS_TOOL_SLUG: str = ""
+    COMPOSIO_LINKEDIN_METRICS_TOOL_SLUG: str = ""
+    COMPOSIO_TIKTOK_METRICS_TOOL_SLUG: str = ""
+    COMPOSIO_YOUTUBE_METRICS_TOOL_SLUG: str = ""
+    # How often the scheduler syncs metrics for every connected platform.
+    METRICS_SYNC_INTERVAL_MINUTES: int = 360
+
     # Trend Analyzer — Trend Outputs (weekly report / insights / content
     # opportunities / campaign-history comparison / competitor-activity
     # correlation)
@@ -113,6 +163,10 @@ class Settings(BaseSettings):
     TREND_RECOMMENDATION_MIN_RELEVANCE: float = 0.75
     TREND_RECOMMENDATION_MAX_AGE_DAYS: int = 7
     TREND_RECOMMENDATION_LIMIT: int = 10
+
+    # Trend Analyzer — Content Opportunity Discovery
+    OPPORTUNITY_MAX_TRENDS: int = 10
+    OPPORTUNITY_SEASONAL_WINDOW_DAYS: int = 30
 
     # Trend Analyzer — scheduled daily trend report (period_days=1 report
     # auto-generated per complete company, same job pattern as kb_reindex)
@@ -131,6 +185,13 @@ class Settings(BaseSettings):
     # often than trending topics, so this is much less aggressive than
     # TREND_COLLECTION_INTERVAL_HOURS above.
     KB_REINDEX_INTERVAL_HOURS: int = 24
+
+    # Intelligent Chat — tool-using conversational agent over the app's own
+    # data. Non-streaming: a bounded iteration cap keeps a worst-case turn
+    # (CHAT_MAX_ITERATIONS tool round-trips + one final forced-answer call)
+    # comfortably within a normal HTTP request timeout.
+    CHAT_MAX_ITERATIONS: int = 6
+    CHAT_MAX_TOKENS: int = 4096
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]

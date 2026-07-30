@@ -15,7 +15,7 @@
 - [x] Set up backend (Python FastAPI)
 - [ ] Configure CI/CD pipeline
 - [x] Set up Docker containers (frontend, backend — no database container; Supabase is hosted/remote)
-- [x] Configure environment variables & secrets management (`.env.example` covers Trend Analyzer config; still no secrets manager for production)
+- [x] Configure environment variables & secrets management (`backend/.env.example` + `frontend/.env.example` cover Trend Analyzer config and Supabase Auth; still no secrets manager for production)
 
 ### Database & Storage
 - [x] Set up PostgreSQL database (Supabase, connected via `DATABASE_URL`)
@@ -25,9 +25,9 @@
 - [x] Implement database connection pooling (SQLAlchemy async engine, default pool)
 
 ### Authentication & Authorization
-- [ ] Implement user authentication (JWT / OAuth)
-- [ ] Set up role-based access control (RBAC)
-- [ ] Create user registration & login flows
+- [x] Implement user authentication (Supabase Auth — session JWTs verified on every backend request via `app/security/auth.py`, either HS256 shared-secret or ES256/RS256 via the project's public JWKS endpoint depending on how the Supabase project signs tokens)
+- [ ] Set up role-based access control (RBAC) — every signed-in user currently has equal access to every company; see `KNOWN_ISSUES.md`'s "No per-company ownership" item
+- [x] Create user registration & login flows (`/login` — sign in + sign up via `@supabase/ssr`, `src/proxy.ts` redirects unauthenticated visitors there and authenticated visitors away from it)
 - [ ] Implement API key management for agents
 
 ### Shared Infrastructure
@@ -286,4 +286,4 @@ environment can't yet produce.
 
 ---
 
-> **Last Updated:** July 2026 (Phase 4 Trend Analyzer completion round)
+> **Last Updated:** July 2026 (Supabase Auth round — login page + whole-app protection)

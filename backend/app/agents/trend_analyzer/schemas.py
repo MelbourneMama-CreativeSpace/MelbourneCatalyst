@@ -86,3 +86,16 @@ class GeneratedTrendReport:
     content_opportunities: str | None = None
     campaign_alignment_notes: str | None = None
     competitor_relevance_notes: str | None = None
+
+
+@dataclass(slots=True)
+class GeneratedOpportunity:
+    """One ranked, concrete opportunity from `generate_content_opportunities`
+    — distinct from `GeneratedTrendReport.content_opportunities` (a free-text
+    paragraph folded into the weekly report): this is a structured, ranked
+    list with a stated reason per item, for a dedicated opportunities view."""
+
+    title: str
+    reasoning: str
+    source: str  # "trend" | "seasonal" | "performance" | "evergreen"
+    priority: str  # "high" | "medium" | "low"

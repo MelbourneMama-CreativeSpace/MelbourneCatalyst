@@ -20,6 +20,7 @@ metrics-fetching logic exists this round (see
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -32,17 +33,38 @@ from app.agents.social_media_analyzer.oauth_flow import (
     get_connection_status,
     initiate_connection,
 )
+from app.agents.social_media_analyzer.insights import generate_performance_insights
+from app.agents.social_media_analyzer.metrics import MetricsNotConfiguredError, fetch_platform_metrics
 from app.agents.social_media_analyzer.oauth_providers import PLATFORM_CONFIGS
+from app.agents.social_media_analyzer.publish import publish_post
 from app.config import settings
-from app.db.models import Company, PlatformConnection, PlatformMetricSnapshot
+from app.db.models import (
+    Company,
+    ContentItem,
+    ContentPlan,
+    PlatformConnection,
+    PlatformMetricSnapshot,
+    PublishAttempt,
+)
 from app.db.session import get_session
 from app.models.social_media import (
+    PerformanceInsightsOut,
     PlatformConnectionListResponse,
     PlatformConnectionOut,
     PlatformMetricSnapshotListResponse,
+    PlatformMetricSnapshotOut,
+    PublishAttemptListResponse,
+    PublishAttemptOut,
+    PublishRequest,
+    PublishResultOut,
 )
+from app.security.auth import get_current_user
 
-router = APIRouter()
+# `get_current_user` accepts the session via an `access_token` query
+# param as a fallback to the Authorization header — needed here
+# specifically because /connections/{platform}/authorize is a plain
+# `<a href>` browser navigation, which can't carry a custom header.
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Connections in one of these statuses haven't reached a settled state
 # yet — worth checking Composio for a fresher status before returning them.
@@ -180,3 +202,249 @@ async def get_metrics(
         )
     ).scalars().all()
     return PlatformMetricSnapshotListResponse(items=list(rows))
+
+
+@router.post("/connections/{connection_id}/sync-metrics", response_model=PlatformMetricSnapshotOut)
+async def sync_metrics(
+    connection_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> PlatformMetricSnapshotOut:
+    """Manually triggers a metrics fetch for one connection — the same
+    call the scheduled job (`run_scheduled_metrics_sync`) makes
+    automatically every `METRICS_SYNC_INTERVAL_MINUTES`."""
+    connection = await session.get(PlatformConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if connection.status != "connected" or connection.composio_connected_account_id is None:
+        raise HTTPException(status_code=409, detail="This platform isn't connected yet.")
+
+    try:
+        snapshot = await fetch_platform_metrics(
+            connection.id, connection.platform, connection.composio_connected_account_id
+        )
+    except MetricsNotConfiguredError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:512])
+
+    session.add(snapshot)
+    await session.commit()
+    await session.refresh(snapshot)
+    return PlatformMetricSnapshotOut.model_validate(snapshot)
+
+
+async def _publish_and_log(
+    session: AsyncSession, item: ContentItem, connection: PlatformConnection
+) -> PublishResultOut:
+    """Shared by an immediate publish and a retry of a failed attempt —
+    always logs a new `PublishAttempt` row (never mutates an existing
+    one, consistent with `PublishAttempt`'s "log entry per attempt"
+    design) and returns the real error on failure rather than raising a
+    5xx, since a real Composio/platform-side failure (rate limit, expired
+    token, a genuinely wrong post_tool_slug) is exactly the detail the
+    caller needs to show the user."""
+    try:
+        execution_id = await publish_post(
+            connection.platform, connection.composio_connected_account_id, item.draft_copy or ""
+        )
+    except Exception as exc:
+        error_message = str(exc)[:512]
+        session.add(
+            PublishAttempt(
+                id=uuid.uuid4(),
+                content_item_id=item.id,
+                platform_connection_id=connection.id,
+                status="failed",
+                status_error=error_message,
+            )
+        )
+        await session.commit()
+        return PublishResultOut(
+            content_item_id=item.id, status="failed", status_error=error_message
+        )
+
+    item.published_at = datetime.now(timezone.utc)
+    session.add(
+        PublishAttempt(
+            id=uuid.uuid4(),
+            content_item_id=item.id,
+            platform_connection_id=connection.id,
+            status="success",
+            composio_execution_id=execution_id,
+        )
+    )
+    await session.commit()
+    return PublishResultOut(
+        content_item_id=item.id, status="success", published_at=item.published_at
+    )
+
+
+@router.post("/connections/{connection_id}/publish", response_model=PublishResultOut)
+async def publish_now(
+    connection_id: uuid.UUID,
+    payload: PublishRequest,
+    session: AsyncSession = Depends(get_session),
+) -> PublishResultOut:
+    """Publish one ContentItem to one connected platform immediately — the
+    Draft Workspace's "Publish now" action."""
+    connection = await session.get(PlatformConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if connection.status != "connected" or connection.composio_connected_account_id is None:
+        raise HTTPException(status_code=409, detail="This platform isn't connected yet.")
+
+    item = await session.get(ContentItem, payload.content_item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Content item not found")
+    if item.platform != connection.platform:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This item is for {item.platform}, not {connection.platform}.",
+        )
+    if item.published_at is not None:
+        raise HTTPException(status_code=409, detail="This item has already been published.")
+
+    return await _publish_and_log(session, item, connection)
+
+
+@router.get("/publish-attempts", response_model=PublishAttemptListResponse)
+async def list_publish_attempts(
+    company_id: uuid.UUID | None = None,
+    status: str | None = None,
+    platform: str | None = None,
+    limit: int = 100,
+    session: AsyncSession = Depends(get_session),
+) -> PublishAttemptListResponse:
+    """The Social Publishing Monitor — a history of this app's own publish
+    attempts (not live platform engagement data, see
+    `PlatformMetricSnapshot`/the metrics endpoints for that). Needs no
+    Composio credentials to be useful: it's monitoring what this app
+    itself already did, successfully or not."""
+    stmt = (
+        select(PublishAttempt, PlatformConnection, ContentItem, Company)
+        .join(PlatformConnection, PublishAttempt.platform_connection_id == PlatformConnection.id)
+        .join(ContentItem, PublishAttempt.content_item_id == ContentItem.id)
+        .join(Company, PlatformConnection.company_id == Company.id)
+        .order_by(PublishAttempt.attempted_at.desc())
+        .limit(limit)
+    )
+    if company_id is not None:
+        stmt = stmt.where(PlatformConnection.company_id == company_id)
+    if status is not None:
+        stmt = stmt.where(PublishAttempt.status == status)
+    if platform is not None:
+        stmt = stmt.where(PlatformConnection.platform == platform)
+
+    rows = (await session.execute(stmt)).all()
+    items = [
+        PublishAttemptOut(
+            id=attempt.id,
+            content_item_id=item.id,
+            content_item_title=item.title,
+            platform_connection_id=connection.id,
+            platform=connection.platform,
+            company_id=company.id,
+            company_name=company.name,
+            status=attempt.status,
+            status_error=attempt.status_error,
+            composio_execution_id=attempt.composio_execution_id,
+            attempted_at=attempt.attempted_at,
+        )
+        for attempt, connection, item, company in rows
+    ]
+    return PublishAttemptListResponse(items=items)
+
+
+@router.post("/publish-attempts/{attempt_id}/retry", response_model=PublishResultOut)
+async def retry_publish_attempt(
+    attempt_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> PublishResultOut:
+    attempt = await session.get(PublishAttempt, attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Publish attempt not found")
+    if attempt.status != "failed":
+        raise HTTPException(status_code=409, detail="Only a failed attempt can be retried")
+
+    item = await session.get(ContentItem, attempt.content_item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Content item not found")
+    if item.published_at is not None:
+        raise HTTPException(status_code=409, detail="This item has already been published.")
+
+    connection = await session.get(PlatformConnection, attempt.platform_connection_id)
+    if (
+        connection is None
+        or connection.status != "connected"
+        or connection.composio_connected_account_id is None
+    ):
+        raise HTTPException(status_code=409, detail="This platform isn't connected yet.")
+
+    return await _publish_and_log(session, item, connection)
+
+
+@router.post("/insights", response_model=PerformanceInsightsOut)
+async def get_performance_insights(
+    company_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> PerformanceInsightsOut:
+    """One Claude call over the company's own real stored data — recent
+    metric snapshots (see `metrics.py`) and recently published content.
+    Never fabricates: explicitly asks Claude to say plainly when there
+    isn't enough data yet, which is the honest answer until #18's metrics
+    sync actually has real snapshots to work with."""
+    company = await _get_company_or_404(session, company_id)
+
+    snapshot_rows = (
+        await session.execute(
+            select(PlatformMetricSnapshot, PlatformConnection.platform)
+            .join(
+                PlatformConnection,
+                PlatformMetricSnapshot.platform_connection_id == PlatformConnection.id,
+            )
+            .where(PlatformConnection.company_id == company_id)
+            .order_by(PlatformMetricSnapshot.captured_at.desc())
+            .limit(20)
+        )
+    ).all()
+
+    published_items = (
+        (
+            await session.execute(
+                select(ContentItem)
+                .join(ContentPlan, ContentItem.content_plan_id == ContentPlan.id)
+                .where(
+                    ContentPlan.company_id == company_id, ContentItem.published_at.is_not(None)
+                )
+                .order_by(ContentItem.published_at.desc())
+                .limit(20)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    lines = [f"Company: {company.name or company.url}", ""]
+    if snapshot_rows:
+        lines.append("Recent metric snapshots:")
+        for snapshot, platform in snapshot_rows:
+            parts = [platform]
+            if snapshot.follower_count is not None:
+                parts.append(f"{snapshot.follower_count} followers")
+            if snapshot.engagement_rate is not None:
+                parts.append(f"{snapshot.engagement_rate * 100:.1f}% engagement")
+            lines.append(f"- {' — '.join(parts)} (captured {snapshot.captured_at.isoformat()})")
+    else:
+        lines.append("No metric snapshots exist yet for this company.")
+    lines.append("")
+    if published_items:
+        lines.append("Recently published content:")
+        for item in published_items:
+            lines.append(f"- [{item.platform}] {item.title} (published {item.published_at.isoformat()})")
+    else:
+        lines.append("No published content exists yet for this company.")
+
+    insights, ok = await generate_performance_insights("\n".join(lines))
+    if not ok:
+        raise HTTPException(
+            status_code=502,
+            detail="Insights generation failed (check ANTHROPIC_API_KEY / Claude API availability).",
+        )
+    return PerformanceInsightsOut(insights=insights)

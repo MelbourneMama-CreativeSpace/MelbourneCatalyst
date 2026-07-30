@@ -7,9 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   disconnectPlatform,
+  generatePerformanceInsights,
   getConnectionMetrics,
   getPlatformAuthorizeUrl,
   listConnections,
+  syncConnectionMetrics,
   type ConnectionStatus,
   type PlatformConnection,
   type PlatformMetricSnapshot,
@@ -87,6 +89,8 @@ export function IntegrationsView({
         </Card>
       )}
 
+      <InsightsCard companyId={companyId} />
+
       {loading && <p className="text-sm text-muted-foreground">Loading connections…</p>}
 
       {!loading && (
@@ -112,6 +116,50 @@ export function IntegrationsView({
   );
 }
 
+function InsightsCard({ companyId }: { companyId: string }) {
+  const [insights, setInsights] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleGenerate() {
+    setGenerating(true);
+    setError(null);
+    try {
+      const res = await generatePerformanceInsights(companyId);
+      setInsights(res.insights);
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message.includes("502")
+          ? "Couldn't generate insights — check ANTHROPIC_API_KEY / Claude API availability."
+          : "Couldn't generate insights — try again.",
+      );
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-3 pt-6">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium">Performance insights</p>
+          <Button size="sm" variant="outline" disabled={generating} onClick={handleGenerate}>
+            {generating ? "Analyzing…" : insights ? "Regenerate" : "Generate insights"}
+          </Button>
+        </div>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        {insights && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{insights}</p>}
+        {!insights && !error && (
+          <p className="text-sm text-muted-foreground">
+            One Claude pass over this company&apos;s real stored metrics and published content — it
+            says plainly when there isn&apos;t enough data yet rather than guessing.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function PlatformCard({
   companyId,
   connection,
@@ -128,6 +176,16 @@ function PlatformCard({
   onDisconnect: () => void;
 }) {
   const isConnected = connection.status === "connected";
+  const [connecting, setConnecting] = useState(false);
+
+  async function handleConnect() {
+    setConnecting(true);
+    // Not a fetch call — this is a real browser navigation so the
+    // platform's own consent screen can render. The session token has to
+    // ride along as a query param since plain navigation can't carry a
+    // custom Authorization header.
+    window.location.href = await getPlatformAuthorizeUrl(connection.platform, companyId);
+  }
 
   return (
     <Card>
@@ -153,12 +211,8 @@ function PlatformCard({
                 {disconnecting ? "Disconnecting…" : "Disconnect"}
               </Button>
             ) : (
-              <Button
-                size="sm"
-                render={<a href={getPlatformAuthorizeUrl(connection.platform, companyId)} />}
-                nativeButton={false}
-              >
-                Connect
+              <Button size="sm" disabled={connecting} onClick={handleConnect}>
+                {connecting ? "Redirecting…" : "Connect"}
               </Button>
             )}
           </div>
@@ -181,22 +235,81 @@ function PlatformCard({
   );
 }
 
+function FollowerSparkline({ snapshots }: { snapshots: PlatformMetricSnapshot[] }) {
+  // snapshots arrive newest-first; a sparkline reads left-to-right oldest-first.
+  const points = snapshots
+    .filter((s): s is PlatformMetricSnapshot & { follower_count: number } => s.follower_count !== null)
+    .slice()
+    .reverse();
+  if (points.length < 2) return null;
+
+  const width = 240;
+  const height = 40;
+  const values = points.map((p) => p.follower_count);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const coords = values
+    .map((v, i) => {
+      const x = (i / (values.length - 1)) * width;
+      const y = height - ((v - min) / range) * (height - 4) - 2;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-10 w-full text-primary" preserveAspectRatio="none">
+      <polyline points={coords} fill="none" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
 function ConnectionMetrics({ connectionId }: { connectionId: string }) {
   const [snapshots, setSnapshots] = useState<PlatformMetricSnapshot[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  function load() {
+    getConnectionMetrics(connectionId)
+      .then(({ items }) => setSnapshots(items))
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load metrics."));
+  }
 
   useEffect(() => {
     // No reset-on-change needed here: this component only ever mounts with
     // a single connectionId for its whole lifetime — the parent
     // conditionally renders it (expanded && ...), so a different
     // connection means a fresh mount, not a prop change on this one.
-    getConnectionMetrics(connectionId)
-      .then(({ items }) => setSnapshots(items))
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load metrics."));
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId]);
+
+  async function handleSync() {
+    setSyncing(true);
+    setError(null);
+    try {
+      await syncConnectionMetrics(connectionId);
+      load();
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message.includes("409")
+          ? "Metrics aren't configured yet for this platform — set the Composio metrics tool slug."
+          : "Couldn't sync metrics — try again.",
+      );
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   return (
     <div className="rounded-md border border-border bg-muted/40 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground">Metrics</p>
+        <Button size="xs" variant="ghost" onClick={handleSync} disabled={syncing}>
+          {syncing ? "Syncing…" : "Sync now"}
+        </Button>
+      </div>
+
       {error && <p className="text-sm text-destructive">{error}</p>}
       {!error && snapshots === null && <p className="text-sm text-muted-foreground">Loading…</p>}
       {!error && snapshots !== null && snapshots.length === 0 && (
@@ -206,18 +319,21 @@ function ConnectionMetrics({ connectionId }: { connectionId: string }) {
         </p>
       )}
       {!error && snapshots !== null && snapshots.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          {snapshots.map((snapshot) => (
-            <div key={snapshot.id} className="flex justify-between text-sm">
-              <span className="text-muted-foreground">{formatDateTime(snapshot.captured_at)}</span>
-              <span>
-                {snapshot.follower_count !== null ? `${snapshot.follower_count} followers` : "—"}
-                {snapshot.engagement_rate !== null
-                  ? ` · ${(snapshot.engagement_rate * 100).toFixed(1)}% engagement`
-                  : ""}
-              </span>
-            </div>
-          ))}
+        <div className="flex flex-col gap-2">
+          <FollowerSparkline snapshots={snapshots} />
+          <div className="flex flex-col gap-1.5">
+            {snapshots.map((snapshot) => (
+              <div key={snapshot.id} className="flex justify-between text-sm">
+                <span className="text-muted-foreground">{formatDateTime(snapshot.captured_at)}</span>
+                <span>
+                  {snapshot.follower_count !== null ? `${snapshot.follower_count} followers` : "—"}
+                  {snapshot.engagement_rate !== null
+                    ? ` · ${(snapshot.engagement_rate * 100).toFixed(1)}% engagement`
+                    : ""}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

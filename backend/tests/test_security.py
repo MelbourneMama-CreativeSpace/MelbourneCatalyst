@@ -66,3 +66,19 @@ def test_rejects_when_any_resolved_address_is_private(monkeypatch):
     _mock_resolve(monkeypatch, {"mixed.example.com": ["93.184.216.34", "127.0.0.1"]})
     with pytest.raises(UnsafeUrlError, match="private/internal"):
         validate_public_url("https://mixed.example.com/")
+
+
+def test_allows_nat64_synthesized_address_alongside_real_ip(monkeypatch):
+    # Caught live: a real, public, IPv4-only site resolved (in an
+    # environment with DNS64) to both its real IPv4 address and a
+    # synthesized IPv6 address in the NAT64 well-known prefix
+    # (64:ff9b::/96, RFC 6052) — a legitimate, globally-routable address,
+    # not an internal one. `ipaddress.IPv6Address.is_reserved` is `True`
+    # for this prefix (it's in IANA's special-purpose registry) even
+    # though it's globally reachable, so a naive `is_reserved` check
+    # wrongly rejected the whole hostname. `is_global` correctly allows it.
+    _mock_resolve(
+        monkeypatch,
+        {"nat64.example.com": ["93.184.216.34", "64:ff9b::5db8:d822"]},
+    )
+    validate_public_url("https://nat64.example.com/")  # should not raise

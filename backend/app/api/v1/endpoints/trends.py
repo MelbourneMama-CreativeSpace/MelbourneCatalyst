@@ -5,20 +5,25 @@ collection status, and trigger a manual collection run.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.content_management.content_planner import seasonal_candidates
 from app.agents.trend_analyzer.graph import get_last_run_summary, run_collection
+from app.agents.trend_analyzer.opportunities import generate_content_opportunities
+from app.agents.trend_analyzer.recommendation import get_recommended_trends
 from app.agents.trend_analyzer.report_graph import run_trend_report_generation
 from app.config import settings
-from app.db.models import Company, Trend, TrendReport
+from app.db.models import Company, CompanyTrendRelevance, PlatformConnection, PlatformMetricSnapshot, Trend, TrendReport
 from app.db.session import get_session
 from app.models.trend import (
     CollectionRunResult,
     CollectionSourceResult,
+    OpportunityListResponse,
+    OpportunityOut,
     SourceStatusOut,
     TrendListResponse,
     TrendOut,
@@ -26,8 +31,9 @@ from app.models.trend import (
     TrendReportListResponse,
     TrendReportOut,
 )
+from app.security.auth import get_current_user
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 async def _get_ready_company_or_error(session: AsyncSession, company_id: uuid.UUID) -> Company:
@@ -190,26 +196,96 @@ async def list_recommended_trends(
     trend that was relevant six months ago but has since gone stale
     doesn't linger at the top. No Claude call — pure filter + sort over
     already-scored trends, same `relevance_score` the collection graph
-    computes."""
+    computes. Shared with the dashboard summary endpoint via
+    `get_recommended_trends` so both read the same shortlist logic."""
     effective_limit = limit or settings.TREND_RECOMMENDATION_LIMIT
-    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.TREND_RECOMMENDATION_MAX_AGE_DAYS)
-
-    stmt = (
-        select(Trend)
-        .where(
-            Trend.relevance_score >= settings.TREND_RECOMMENDATION_MIN_RELEVANCE,
-            Trend.discovered_at >= cutoff,
-        )
-        .order_by(Trend.relevance_score.desc())
-        .limit(effective_limit)
-    )
-    rows = (await session.execute(stmt)).scalars().all()
+    rows = await get_recommended_trends(session, limit)
 
     return TrendListResponse(
         items=[TrendOut.model_validate(row) for row in rows],
         total=len(rows),
         limit=effective_limit,
         offset=0,
+    )
+
+
+@router.post("/opportunities", response_model=OpportunityListResponse)
+async def get_content_opportunities(
+    company_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> OpportunityListResponse:
+    """Content Opportunity Discovery — one Claude call over this company's
+    OWN real data: its relevance-scored trends (CompanyTrendRelevance, the
+    multi-tenant-correct table — same join `content_plan_graph.py`'s
+    `_gather_context_node` already uses), upcoming seasonal dates, and (once
+    any exist) its own recent performance snapshots. Registered before the
+    `/{trend_id}` catch-all below, same defensive ordering convention as
+    `/reports` above it."""
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    trend_rows = (
+        await session.execute(
+            select(Trend, CompanyTrendRelevance.relevance_score)
+            .join(CompanyTrendRelevance, CompanyTrendRelevance.trend_id == Trend.id)
+            .where(CompanyTrendRelevance.company_id == company_id)
+            .order_by(CompanyTrendRelevance.relevance_score.desc())
+            .limit(settings.OPPORTUNITY_MAX_TRENDS)
+        )
+    ).all()
+
+    seasonal = seasonal_candidates(date.today(), settings.OPPORTUNITY_SEASONAL_WINDOW_DAYS)
+
+    snapshot_rows = (
+        await session.execute(
+            select(PlatformMetricSnapshot, PlatformConnection.platform)
+            .join(
+                PlatformConnection,
+                PlatformMetricSnapshot.platform_connection_id == PlatformConnection.id,
+            )
+            .where(PlatformConnection.company_id == company_id)
+            .order_by(PlatformMetricSnapshot.captured_at.desc())
+            .limit(10)
+        )
+    ).all()
+
+    lines = [f"Company: {company.name or company.url}", ""]
+    if trend_rows:
+        lines.append("This company's relevant trends (highest relevance first):")
+        for trend, score in trend_rows:
+            lines.append(f"- {trend.title} (relevance: {score:.2f})")
+    else:
+        lines.append("No scored trends exist yet for this company.")
+    lines.append("")
+    if seasonal:
+        lines.append(f"Upcoming seasonal/awareness dates (next {settings.OPPORTUNITY_SEASONAL_WINDOW_DAYS} days):")
+        lines.extend(f"- {c}" for c in seasonal)
+    else:
+        lines.append("No seasonal/awareness dates fall in the upcoming window.")
+    lines.append("")
+    if snapshot_rows:
+        lines.append("This company's own recent performance data:")
+        for snapshot, platform in snapshot_rows:
+            parts = [platform]
+            if snapshot.follower_count is not None:
+                parts.append(f"{snapshot.follower_count} followers")
+            if snapshot.engagement_rate is not None:
+                parts.append(f"{snapshot.engagement_rate * 100:.1f}% engagement")
+            lines.append(f"- {' — '.join(parts)}")
+    else:
+        lines.append("No performance data exists yet for this company.")
+
+    opportunities, ok = await generate_content_opportunities("\n".join(lines))
+    if not ok:
+        raise HTTPException(
+            status_code=502,
+            detail="Opportunity generation failed (check ANTHROPIC_API_KEY / Claude API availability).",
+        )
+    return OpportunityListResponse(
+        items=[
+            OpportunityOut(title=o.title, reasoning=o.reasoning, source=o.source, priority=o.priority)
+            for o in opportunities
+        ]
     )
 
 

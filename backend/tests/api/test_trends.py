@@ -24,6 +24,7 @@ from httpx import ASGITransport, AsyncClient
 from app.api.v1.endpoints import trends as trends_module
 from app.db.models import Company, Trend, TrendReport
 from app.db.session import get_session
+from app.security.auth import CurrentUser, get_current_user
 
 
 @pytest_asyncio.fixture
@@ -40,6 +41,27 @@ async def client(monkeypatch, test_session_factory):
         trends_module, "run_trend_report_generation", _fake_run_trend_report_generation
     )
 
+    async def _fake_generate_content_opportunities(context):
+        from app.agents.trend_analyzer.schemas import GeneratedOpportunity
+
+        if "trigger-failure" in context:
+            return [], False
+        return (
+            [
+                GeneratedOpportunity(
+                    title="Fake opportunity",
+                    reasoning="Fake reasoning.",
+                    source="trend",
+                    priority="high",
+                )
+            ],
+            True,
+        )
+
+    monkeypatch.setattr(
+        trends_module, "generate_content_opportunities", _fake_generate_content_opportunities
+    )
+
     app = FastAPI()
     app.include_router(trends_module.router)
 
@@ -48,6 +70,9 @@ async def client(monkeypatch, test_session_factory):
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id="test-user-id", email="test@example.com"
+    )
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
@@ -324,3 +349,53 @@ async def test_recommended_trends_respects_custom_limit(client, test_session_fac
     body = response.json()
     assert len(body["items"]) == 2
     assert body["limit"] == 2
+
+
+# --- Content opportunities -------------------------------------------------
+
+
+async def test_opportunities_returns_generated_list(client, test_session_factory):
+    from app.db.models import CompanyTrendRelevance
+
+    company_id = await _seed_company(test_session_factory)
+    trend_id = await _seed_trend(test_session_factory)
+    async with test_session_factory() as session:
+        session.add(
+            CompanyTrendRelevance(
+                id=uuid.uuid4(), company_id=company_id, trend_id=trend_id, relevance_score=0.9
+            )
+        )
+        await session.commit()
+
+    response = await client.post("/opportunities", params={"company_id": str(company_id)})
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["title"] == "Fake opportunity"
+    assert items[0]["source"] == "trend"
+    assert items[0]["priority"] == "high"
+
+
+async def test_opportunities_404s_for_unknown_company(client):
+    response = await client.post("/opportunities", params={"company_id": str(uuid.uuid4())})
+    assert response.status_code == 404
+
+
+async def test_opportunities_falls_back_gracefully_with_no_trends_or_seasonal_data(
+    client, test_session_factory
+):
+    company_id = await _seed_company(test_session_factory)
+
+    response = await client.post("/opportunities", params={"company_id": str(company_id)})
+
+    # No CompanyTrendRelevance rows and (probably) no seasonal dates in
+    # window — still succeeds, just with thinner context.
+    assert response.status_code == 200
+
+
+async def test_opportunities_502s_on_generation_failure(client, test_session_factory):
+    company_id = await _seed_company(test_session_factory, name="trigger-failure")
+
+    response = await client.post("/opportunities", params={"company_id": str(company_id)})
+    assert response.status_code == 502

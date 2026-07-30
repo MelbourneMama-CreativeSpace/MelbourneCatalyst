@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
@@ -29,9 +30,9 @@ const modules = [
     description:
       "Pick a client, draft this week's captions, and get a strategy, content plan, campaign, and collaboration ideas ready to use — not a spec, a real ready-to-publish draft.",
     icon: MessageSquare,
-    gradient: "from-emerald-500 to-teal-500",
-    bgGlow: "bg-emerald-500/10",
-    borderColor: "border-emerald-500/20",
+    gradient: "from-[#00A6A6] to-[#48D7CE]",
+    bgGlow: "bg-primary/10",
+    borderColor: "border-primary/20",
     delay: "delay-100",
     href: "/companies",
   },
@@ -40,9 +41,9 @@ const modules = [
     description:
       "Onboard a new company from its website — builds the profile Content Studio drafts from.",
     icon: Search,
-    gradient: "from-violet-500 to-purple-600",
-    bgGlow: "bg-violet-500/10",
-    borderColor: "border-violet-500/20",
+    gradient: "from-[#071A33] to-[#00A6A6]",
+    bgGlow: "bg-accent/10",
+    borderColor: "border-accent/20",
     delay: "delay-200",
     href: "/onboarding",
   },
@@ -100,17 +101,14 @@ export default function Home() {
     <div className="min-h-screen bg-background relative overflow-hidden">
       {/* Background Effects */}
       <div className="fixed inset-0 bg-grid opacity-40 pointer-events-none" />
-      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-violet-500/8 rounded-full blur-[120px] pointer-events-none" />
-      <div className="fixed bottom-0 right-0 w-[600px] h-[400px] bg-blue-500/6 rounded-full blur-[100px] pointer-events-none" />
+      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-primary/8 rounded-full blur-[120px] pointer-events-none" />
+      <div className="fixed bottom-0 right-0 w-[600px] h-[400px] bg-accent/6 rounded-full blur-[100px] pointer-events-none" />
 
       {/* Navigation */}
       <nav className="relative z-50 border-b border-border/50 glass">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-white" />
-            </div>
-            <span className="text-xl font-bold gradient-text">MMCS</span>
+            <Image src="/loomverse-logo.png" alt="LoomVerse AI" width={150} height={36} priority />
           </div>
           <div className="hidden md:flex items-center gap-8">
             <a
@@ -135,7 +133,7 @@ export default function Home() {
               render={<Link href="/companies" />}
               nativeButton={false}
               size="sm"
-              className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white border-0"
+              className="bg-gradient-to-r from-primary to-accent hover:opacity-90 text-primary-foreground border-0"
             >
               Open Content Studio
             </Button>
@@ -148,8 +146,8 @@ export default function Home() {
         <div className="max-w-7xl mx-auto text-center">
           {/* Badge */}
           <div className="animate-slide-up inline-flex items-center gap-2 px-4 py-2 rounded-full glass mb-8 text-sm">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-muted-foreground">MMCS internal tool — Content Studio</span>
+            <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+            <span className="text-muted-foreground">LoomVerse AI — Content Studio</span>
           </div>
 
           {/* Heading */}
@@ -171,7 +169,7 @@ export default function Home() {
               render={<Link href="/companies" />}
               nativeButton={false}
               size="lg"
-              className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white border-0 px-8 py-6 text-lg rounded-xl shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40 transition-all"
+              className="bg-gradient-to-r from-primary to-accent hover:opacity-90 text-primary-foreground border-0 px-8 py-6 text-lg rounded-xl shadow-lg shadow-primary/20 hover:shadow-primary/40 transition-all"
             >
               Open Content Studio
               <ArrowRight className="ml-2 w-5 h-5" />
@@ -233,7 +231,7 @@ export default function Home() {
 
                   <CardContent className="relative z-10">
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                       <span>Active & Ready</span>
                     </div>
                   </CardContent>
@@ -289,8 +287,8 @@ export default function Home() {
                   className="animate-slide-up group p-6 rounded-2xl glass hover-lift cursor-pointer"
                   style={{ animationDelay: `${(index + 1) * 100}ms` }}
                 >
-                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500/20 to-blue-500/20 flex items-center justify-center mb-4 group-hover:from-violet-500/30 group-hover:to-blue-500/30 transition-colors">
-                    <IconComponent className="w-5 h-5 text-violet-400" />
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center mb-4 group-hover:from-primary/30 group-hover:to-accent/30 transition-colors">
+                    <IconComponent className="w-5 h-5 text-primary" />
                   </div>
                   <h3 className="text-lg font-semibold mb-2">
                     {feature.title}
@@ -310,9 +308,9 @@ export default function Home() {
         <div className="max-w-4xl mx-auto">
           <div className="relative overflow-hidden rounded-3xl glass-strong p-12 text-center">
             {/* Background decoration */}
-            <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-violet-500/5 to-blue-500/5 pointer-events-none" />
-            <div className="absolute -top-20 -right-20 w-60 h-60 bg-violet-500/10 rounded-full blur-[80px] pointer-events-none animate-float" />
-            <div className="absolute -bottom-20 -left-20 w-60 h-60 bg-blue-500/10 rounded-full blur-[80px] pointer-events-none animate-float-delayed" />
+            <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-primary/5 to-accent/5 pointer-events-none" />
+            <div className="absolute -top-20 -right-20 w-60 h-60 bg-primary/10 rounded-full blur-[80px] pointer-events-none animate-float" />
+            <div className="absolute -bottom-20 -left-20 w-60 h-60 bg-accent/10 rounded-full blur-[80px] pointer-events-none animate-float-delayed" />
 
             <div className="relative z-10">
               <h2 className="text-3xl sm:text-4xl font-bold mb-4">
@@ -327,7 +325,7 @@ export default function Home() {
                   render={<Link href="/companies" />}
                   nativeButton={false}
                   size="lg"
-                  className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white border-0 px-8 py-6 text-lg rounded-xl shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40 transition-all"
+                  className="bg-gradient-to-r from-primary to-accent hover:opacity-90 text-primary-foreground border-0 px-8 py-6 text-lg rounded-xl shadow-lg shadow-primary/20 hover:shadow-primary/40 transition-all"
                 >
                   Open Content Studio
                   <Sparkles className="ml-2 w-5 h-5" />
@@ -351,11 +349,9 @@ export default function Home() {
       <footer className="relative z-10 border-t border-border/50 py-12 px-6">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-md bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center">
-              <Sparkles className="w-3.5 h-3.5 text-white" />
-            </div>
+            <Image src="/loomverse-mark.png" alt="LoomVerse AI" width={24} height={24} />
             <span className="font-semibold gradient-text">
-              MMCS Content Studio
+              LoomVerse AI — Content Studio
             </span>
           </div>
           <p className="text-sm text-muted-foreground">

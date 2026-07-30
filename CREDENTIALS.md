@@ -14,10 +14,52 @@ starting point). Frontend needs one variable in `frontend/.env.local`.
 
 | Tier | What it unlocks | App usable without it? |
 |---|---|---|
+| 0. Auth | Login + every API request (whole app is gated behind sign-in now) | No — the frontend redirects everyone to `/login`, and every backend endpoint except `/` and `/health` returns 401/503 |
 | 1. Core | Every AI agent + persistent storage + semantic search | No — agents silently no-op, KB search returns nothing |
 | 2. Trend sources | More trend-discovery coverage (Reddit, YouTube, X, Instagram, TikTok) | Yes — Google Trends + RSS work with zero credentials |
 | 3. Platform OAuth | "Connect your account" buttons for Phase 6 (Facebook, Instagram, X, LinkedIn, TikTok, YouTube) | Yes — but see the caveat under Tier 3, this doesn't yet pull real analytics either way |
 | 4. Not used | Declared in config but no code path reads them | N/A |
+
+---
+
+## Tier 0 — Auth (Supabase) — required for anything to load
+
+The whole app sits behind a real login now — this is a hard
+prerequisite, not an optional enhancement like the tiers below. Both
+frontend and backend need their own piece of the same Supabase project.
+
+### Backend: `SUPABASE_URL` + `SUPABASE_JWT_SECRET`
+- **What it's for:** verifying the session JWT Supabase issues on every
+  API request. `GET /api/v1/*` is fully gated — no `Authorization: Bearer
+  <token>` (or matching `access_token` query param) means 401; if the
+  relevant setting below isn't configured for how your project signs
+  tokens, it's 503 instead. `/` and `/health` stay public.
+- **Where to get `SUPABASE_URL`:** [supabase.com](https://supabase.com)
+  → your project → Project Settings → API → "Project URL". (You can also
+  derive it from the project ref inside any Supabase-issued JWT —
+  `https://<ref>.supabase.co` — no dashboard trip needed.)
+- **`SUPABASE_JWT_SECRET` — only needed for some projects.** Supabase
+  projects sign session tokens one of two ways:
+  - **Legacy shared-secret (HS256).** If your project still uses the
+    "Legacy JWT Secret" (Project Settings → API → JWT Settings), paste it
+    here.
+  - **Asymmetric signing keys (ES256/RS256), the newer default for new
+    projects.** Tokens are verified against your project's public JWKS
+    endpoint (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`) instead —
+    no secret needed at all. Leave `SUPABASE_JWT_SECRET` blank.
+  - You don't have to know which mode your project uses in advance:
+    `app/security/auth.py` inspects each token's own `alg` header and
+    verifies it the right way automatically. If you get 503s, check
+    which mode applies and set (or clear) `SUPABASE_JWT_SECRET`
+    accordingly.
+
+### Frontend: `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- **What it's for:** the login page and every authenticated request from
+  the browser/server components. See the Frontend section below.
+- **Where to get them:** same Supabase project → Project Settings → API
+  → "Project URL" and the `anon`/`public` key (**not** `service_role` —
+  that key must never be used in a frontend or checked into anything git
+  tracks).
 
 ---
 
@@ -127,23 +169,29 @@ Safe to leave blank. Listed only so you don't waste time chasing them.
 
 ## Frontend
 
-One variable, in `frontend/.env.local`:
+Three variables, in `frontend/.env.local` (copy
+`frontend/.env.example` as a starting point):
 
 ```
 NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_SUPABASE_URL=https://<your-project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-project's-anon-public-key>
 ```
 
-Defaults to `http://localhost:8000` if unset — only needs setting when
-the frontend and backend aren't on the same host (e.g. a real
-deployment).
+`NEXT_PUBLIC_API_URL` defaults to `http://localhost:8000` if unset —
+only needs setting when the frontend and backend aren't on the same
+host (e.g. a real deployment). The two Supabase variables are required
+— without them, `src/proxy.ts` and the login page can't reach Supabase
+at all and every page load fails.
 
 ---
 
 ## Recommended order if starting from zero
 
-1. **Supabase Postgres** (`DATABASE_URL`) + run `alembic upgrade head` — nothing works without storage.
-2. **`ANTHROPIC_API_KEY`** — unlocks every AI agent at once, biggest bang for the buck.
-3. **`VOYAGE_API_KEY`** — unlocks Knowledge Base search, free tier is generous.
-4. At this point the app is fully functional for Company Analyzer, Trend Analyzer (Google Trends + RSS only), and Content Management.
+1. **Supabase Auth** (`SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET` if your project uses legacy signing) — nothing loads at all without this, it's the front door.
+2. **Supabase Postgres** (`DATABASE_URL`) + run `alembic upgrade head` — nothing works without storage.
+3. **`ANTHROPIC_API_KEY`** — unlocks every AI agent at once, biggest bang for the buck.
+4. **`VOYAGE_API_KEY`** — unlocks Knowledge Base search, free tier is generous.
+5. At this point the app is fully functional for Company Analyzer, Trend Analyzer (Google Trends + RSS only), and Content Management.
 5. Add Tier 2 trend sources incrementally as you want broader trend coverage — YouTube is the easiest.
 6. Tackle Tier 3 (Platform OAuth) only when you're ready to also pick up the Performance Tracking build-out that depends on it — Google/YouTube is typically the least-gated to register first.

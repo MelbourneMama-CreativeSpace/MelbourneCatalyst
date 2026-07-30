@@ -18,6 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from app.api.v1.endpoints import competitor_research as competitor_research_module
 from app.db.models import Company, Competitor
 from app.db.session import get_session
+from app.security.auth import CurrentUser, get_current_user
 
 
 @pytest_asyncio.fixture
@@ -48,6 +49,9 @@ async def client(monkeypatch, test_session_factory):
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id="test-user-id", email="test@example.com"
+    )
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:

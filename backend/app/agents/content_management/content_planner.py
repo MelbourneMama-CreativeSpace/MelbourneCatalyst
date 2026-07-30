@@ -14,6 +14,7 @@ from datetime import date, timedelta
 
 from anthropic import AsyncAnthropic
 
+from app.agents.content_management.prompts import HUMANIZED_CONTENT_SYSTEM_PROMPT
 from app.agents.content_management.schemas import GeneratedContentItem, GeneratedContentPlan
 from app.config import settings
 
@@ -22,8 +23,8 @@ logger = logging.getLogger(__name__)
 _MODEL = "claude-sonnet-5"
 _MAX_CONTEXT_CHARS = 100_000
 
-_CONTENT_TYPES = ["post", "video", "article", "carousel", "story"]
-_PLATFORMS = ["instagram", "linkedin", "twitter", "tiktok", "youtube", "blog", "facebook"]
+_CONTENT_TYPES = ["post", "video", "article", "carousel", "story", "newsletter", "podcast"]
+_PLATFORMS = ["instagram", "linkedin", "twitter", "tiktok", "youtube", "blog", "facebook", "threads"]
 
 # Fixed-date (non-movable) commercial/awareness dates worth planning content
 # around. Deliberately excludes movable-date events (Easter, Mother's/
@@ -42,7 +43,7 @@ _SEASONAL_EVENTS: dict[tuple[int, int], str] = {
 }
 
 
-def _seasonal_candidates(start: date, days: int) -> list[str]:
+def seasonal_candidates(start: date, days: int) -> list[str]:
     """Fixed-date seasonal/awareness events falling within [start, start+days)."""
     candidates = []
     for offset in range(days):
@@ -84,6 +85,16 @@ _TOOL = {
                         },
                         "content_type": {"type": "string", "enum": _CONTENT_TYPES},
                         "platform": {"type": "string", "enum": _PLATFORMS},
+                        "hashtags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Structured hashtags for this post, without the '#' prefix "
+                                "(e.g. \"smallbusiness\" not \"#smallbusiness\") — separate from "
+                                "any hashtags already inline in draft_copy's prose. Empty array "
+                                "if the platform/format doesn't use hashtags."
+                            ),
+                        },
                         "theme": {
                             "type": "string",
                             "description": "Short theme/campaign tag this idea belongs to",
@@ -153,6 +164,44 @@ _REGEN_TOOL = {
 }
 
 
+_MANUAL_ITEM_TOOL = {
+    "name": "generate_content_item_from_input",
+    "description": "Generate a single social media post from a user-provided topic or idea.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short internal title for this post."},
+            "description": {
+                "type": "string",
+                "description": "A one-line brief of what the content shows/covers — for the calendar view, not the post itself",
+            },
+            "draft_copy": {
+                "type": "string",
+                "description": (
+                    "The actual finished, ready-to-publish copy for this post — not a brief "
+                    "or an outline. Full caption text in the platform's real voice and length "
+                    "conventions, including hashtags where that platform's audience expects "
+                    "them. Someone should be able to copy this verbatim and post it."
+                ),
+            },
+            "hashtags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Structured hashtags for this post, without the '#' prefix. Empty array "
+                    "if the platform/format doesn't use hashtags."
+                ),
+            },
+            "theme": {
+                "type": "string",
+                "description": "Short theme/campaign tag this idea belongs to, empty string if none",
+            },
+        },
+        "required": ["title", "description", "draft_copy"],
+    },
+}
+
+
 def _client() -> AsyncAnthropic:
     return AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
@@ -167,11 +216,11 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
         return GeneratedContentPlan(), False
 
     today = date.today()
-    seasonal_candidates = _seasonal_candidates(today, days)
+    seasonal_candidate_list = seasonal_candidates(today, days)
     seasonal_context = (
         "\n\n# Seasonal/awareness dates in this window (tie ideas to these only if genuinely relevant)\n"
-        + "\n".join(f"- {c}" for c in seasonal_candidates)
-        if seasonal_candidates
+        + "\n".join(f"- {c}" for c in seasonal_candidate_list)
+        if seasonal_candidate_list
         else ""
     )
 
@@ -184,6 +233,7 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
             # meaningfully more room than the old title/description-only
             # shape did.
             max_tokens=8192,
+            system=HUMANIZED_CONTENT_SYSTEM_PROMPT,
             tools=[_TOOL],
             tool_choice={"type": "tool", "name": "generate_content_plan"},
             messages=[
@@ -220,6 +270,7 @@ async def generate_content_plan(context: str, days: int) -> tuple[GeneratedConte
                     related_trend_title=raw.get("related_trend_title") or None,
                     audience_interest=raw.get("audience_interest") or None,
                     seasonal_event=raw.get("seasonal_event") or None,
+                    hashtags=raw.get("hashtags") or None,
                     # A required field — if the model omits it, skip this
                     # item entirely (via the except below) rather than
                     # silently persisting a slot with no draft, which would
@@ -250,6 +301,7 @@ async def regenerate_draft_copy(
         response = await _client().messages.create(
             model=_MODEL,
             max_tokens=1024,
+            system=HUMANIZED_CONTENT_SYSTEM_PROMPT,
             tools=[_REGEN_TOOL],
             tool_choice={"type": "tool", "name": "regenerate_draft_copy"},
             messages=[
@@ -273,3 +325,57 @@ async def regenerate_draft_copy(
     if not draft_copy:
         return None, False
     return draft_copy, True
+
+
+async def generate_content_item_from_input(
+    context: str, user_input: str, platform: str, content_type: str
+) -> tuple[GeneratedContentItem | None, bool]:
+    """Generate a single content item from a user-supplied topic/idea,
+    rather than Claude choosing the whole calendar's worth of ideas
+    itself. Same graceful-degradation contract as every other generator
+    here: never raises, returns `(None, False)` on any failure."""
+    if not settings.ANTHROPIC_API_KEY:
+        logger.warning("ANTHROPIC_API_KEY not configured; skipping manual content generation")
+        return None, False
+
+    trimmed = context[:_MAX_CONTEXT_CHARS]
+    try:
+        response = await _client().messages.create(
+            model=_MODEL,
+            max_tokens=1024,
+            system=HUMANIZED_CONTENT_SYSTEM_PROMPT,
+            tools=[_MANUAL_ITEM_TOOL],
+            tool_choice={"type": "tool", "name": "generate_content_item_from_input"},
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Write a ready-to-publish {platform} {content_type} post about: "
+                        f'"{user_input}". Use the `generate_content_item_from_input` tool. '
+                        f"Company/strategy context:\n\n{trimmed}"
+                    ),
+                }
+            ],
+        )
+        tool_use = next(block for block in response.content if block.type == "tool_use")
+        data = tool_use.input
+    except Exception:
+        logger.exception("Claude manual content generation failed")
+        return None, False
+
+    if not data.get("draft_copy") or not data.get("title"):
+        return None, False
+
+    return (
+        GeneratedContentItem(
+            title=data["title"],
+            description=data.get("description") or user_input,
+            content_type=content_type,
+            platform=platform,
+            suggested_date=date.today(),
+            theme=data.get("theme") or None,
+            hashtags=data.get("hashtags") or None,
+            draft_copy=data["draft_copy"],
+        ),
+        True,
+    )

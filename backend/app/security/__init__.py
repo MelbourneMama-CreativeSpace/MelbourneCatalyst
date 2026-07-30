@@ -36,19 +36,19 @@ def _resolve_ips(hostname: str) -> list[ipaddress._BaseAddress]:
 
 
 def _is_public_ip(ip: ipaddress._BaseAddress) -> bool:
-    # Covers RFC1918 private ranges, loopback (127.0.0.0/8, ::1),
-    # link-local (169.254.0.0/16 — this is the cloud metadata range on
-    # AWS/GCP/Azure — and fe80::/10), multicast, and other IANA-reserved
-    # blocks. Deliberately conservative: anything not obviously public is
-    # rejected.
-    return not (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
+    # `is_global` is the stdlib's own "allocated for public networks" flag
+    # — it already excludes RFC1918/ULA private ranges, loopback,
+    # link-local (169.254.0.0/16, the cloud metadata range, and fe80::/10),
+    # and CGN shared space (100.64.0.0/10), and correctly allows legitimate
+    # globally-routable addresses like NAT64-synthesized IPv6
+    # (64:ff9b::/96) that a hand-rolled `is_private`/`is_loopback`/
+    # `is_link_local`/`is_reserved` combination incorrectly rejected (that
+    # combination used `is_reserved`, which is far broader than "unsafe for
+    # SSRF purposes" and flagged real public addresses as unsafe — caught
+    # live when a real, public, IPv4-only site resolved to a NAT64 address
+    # in this environment and got wrongly refused). Multicast isn't
+    # excluded by `is_global`, so it's checked separately.
+    return ip.is_global and not ip.is_multicast
 
 
 def validate_public_url(url: str) -> None:

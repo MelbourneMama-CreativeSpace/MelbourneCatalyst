@@ -14,6 +14,7 @@ from app.agents.knowledge_base.schemas import SearchHit
 from app.api.v1.endpoints import knowledge_base as kb_module
 from app.db.models import Company, Document, KnowledgeAuditReport
 from app.db.session import get_session
+from app.security.auth import CurrentUser, get_current_user
 
 
 @pytest_asyncio.fixture
@@ -46,6 +47,9 @@ async def client(monkeypatch, test_session_factory):
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id="test-user-id", email="test@example.com"
+    )
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:

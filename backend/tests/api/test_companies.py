@@ -18,6 +18,7 @@ from sqlalchemy import select
 from app.api.v1.endpoints import companies as companies_module
 from app.db.models import Company, Document
 from app.db.session import get_session
+from app.security.auth import CurrentUser, get_current_user
 
 
 @pytest_asyncio.fixture
@@ -35,6 +36,13 @@ async def client(monkeypatch, test_session_factory):
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    # Every route in this router now requires a valid Supabase session —
+    # tests exercise endpoint logic, not the auth gate itself (that's
+    # covered separately in tests/security/test_auth.py), so stub a
+    # signed-in user for all of them.
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id="test-user-id", email="test@example.com"
+    )
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:

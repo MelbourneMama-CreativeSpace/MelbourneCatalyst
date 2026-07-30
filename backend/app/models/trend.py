@@ -90,3 +90,14 @@ class TrendReportListResponse(BaseModel):
 class TrendReportCreateRequest(BaseModel):
     company_id: uuid.UUID
     period_days: int | None = None
+
+
+class OpportunityOut(BaseModel):
+    title: str
+    reasoning: str
+    source: str
+    priority: str
+
+
+class OpportunityListResponse(BaseModel):
+    items: list[OpportunityOut]

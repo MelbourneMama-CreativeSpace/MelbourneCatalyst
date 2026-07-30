@@ -37,6 +37,9 @@ class GeneratedContentItem:
     # posts, not a brief of what it should say. See content_planner.py's
     # tool description for the prompt-level distinction from `description`.
     draft_copy: str | None = None
+    # Structured hashtags, without '#' — separate from any hashtags Claude
+    # already wrote inline into draft_copy's prose.
+    hashtags: list[str] | None = None
 
 
 @dataclass(slots=True)

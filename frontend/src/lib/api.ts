@@ -143,6 +143,7 @@ export interface Strategy {
   business_suggestions: string | null;
   approval_status: ApprovalStatus;
   approved_by: string | null;
+  reviewer: string | null;
   created_at: string;
 }
 
@@ -151,7 +152,14 @@ export interface StrategyListResponse {
   total: number;
 }
 
-export type ContentType = "post" | "video" | "article" | "carousel" | "story";
+export type ContentType =
+  | "post"
+  | "video"
+  | "article"
+  | "carousel"
+  | "story"
+  | "newsletter"
+  | "podcast";
 export type Platform =
   | "instagram"
   | "linkedin"
@@ -159,7 +167,8 @@ export type Platform =
   | "tiktok"
   | "youtube"
   | "blog"
-  | "facebook";
+  | "facebook"
+  | "threads";
 
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -168,6 +177,8 @@ export interface ContentItem {
   title: string;
   description: string;
   draft_copy: string | null;
+  hashtags: string[] | null;
+  repurposed_from_id: string | null;
   content_type: ContentType;
   platform: Platform;
   theme: string | null;
@@ -177,6 +188,20 @@ export interface ContentItem {
   seasonal_event: string | null;
   approval_status: ApprovalStatus;
   approved_by: string | null;
+  reviewer: string | null;
+  scheduled_at: string | null;
+  published_at: string | null;
+  quality_check_passed: boolean | null;
+  quality_check_notes: string | null;
+}
+
+export interface ContentItemWithCompany extends ContentItem {
+  company_id: string;
+  company_name: string | null;
+}
+
+export interface ContentItemListResponse {
+  items: ContentItemWithCompany[];
 }
 
 export interface ContentPlan {
@@ -185,6 +210,7 @@ export interface ContentPlan {
   strategy_id: string | null;
   status: GenerationStatus;
   status_error: string | null;
+  is_manual: boolean;
   created_at: string;
   items: ContentItem[];
 }
@@ -195,6 +221,7 @@ export interface ContentPlanSummary {
   strategy_id: string | null;
   status: GenerationStatus;
   status_error: string | null;
+  is_manual: boolean;
   created_at: string;
 }
 
@@ -259,6 +286,27 @@ export interface CollaborationSummary {
 
 export interface CollaborationListResponse {
   items: CollaborationSummary[];
+  total: number;
+}
+
+// ---------------------------------------------------------------------------
+// Approval queue
+// ---------------------------------------------------------------------------
+
+export type PendingApprovalType = "strategy" | "content_item";
+
+export interface PendingApproval {
+  type: PendingApprovalType;
+  id: string;
+  company_id: string;
+  company_name: string | null;
+  title: string;
+  reviewer: string | null;
+  created_at: string;
+}
+
+export interface PendingApprovalListResponse {
+  items: PendingApproval[];
   total: number;
 }
 
@@ -421,17 +469,95 @@ export interface IngestionResult {
 }
 
 // ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+export interface DashboardSummary {
+  company_count: number;
+  companies_onboarding: number;
+  recent_companies: Company[];
+  trending_topics: Trend[];
+}
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
+export interface Conversation {
+  id: string;
+  company_id: string | null;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationListResponse {
+  items: Conversation[];
+}
+
+export interface ProposedAction {
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  description: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  tool_calls_summary: string[] | null;
+  // Non-null when this message proposes a write action (approve/reject/
+  // regenerate/create) — never auto-executed, only run once the user hits
+  // confirm via confirmAction below.
+  proposed_action: ProposedAction | null;
+  action_status: "pending" | "confirmed" | "cancelled" | null;
+  // Only meaningful on assistant messages — false means this is a
+  // graceful-degradation reply (e.g. no Claude credit), not a real answer.
+  // Absent on user messages.
+  ok: boolean | null;
+  created_at: string;
+}
+
+export interface ConversationDetail extends Conversation {
+  messages: ChatMessage[];
+}
+
+// ---------------------------------------------------------------------------
 // Fetch helper + call sites
 // ---------------------------------------------------------------------------
+
+// Every backend route requires a valid Supabase session (see
+// backend/app/security/auth.py). This file is imported from Client
+// Components (and re-exported types are used everywhere), so it can only
+// ever reference the browser Supabase client — anything touching
+// `next/headers` must live in api-server.ts instead, a separate module
+// server components import directly. Turbopack traces static *and*
+// dynamic imports into a file's client bundle regardless of runtime
+// branching, so there's no safe way to make one shared function detect
+// its environment here.
+async function getAccessToken(): Promise<string | null> {
+  const { createClient } = await import("@/lib/supabase/client");
+  const supabase = createClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  return session?.access_token ?? null;
+}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   // FormData bodies (file uploads) must NOT get a manual Content-Type —
   // the browser sets `multipart/form-data; boundary=...` itself, and
   // overriding it here would break multipart parsing on the backend.
   const isFormData = init?.body instanceof FormData;
+  const token = await getAccessToken();
+  const baseHeaders: Record<string, string> = {};
+  if (!isFormData) baseHeaders["Content-Type"] = "application/json";
+  if (token) baseHeaders["Authorization"] = `Bearer ${token}`;
+
   const response = await fetch(`${API_BASE_URL}${API_V1}${path}`, {
     ...init,
-    headers: isFormData ? init?.headers : { "Content-Type": "application/json", ...init?.headers },
+    headers: { ...baseHeaders, ...init?.headers },
     cache: "no-store",
   });
   if (!response.ok) {
@@ -440,7 +566,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function toQueryString(params: Record<string, string | number | boolean | undefined>): string {
+export function toQueryString(params: Record<string, string | number | boolean | undefined>): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) query.set(key, String(value));
@@ -489,6 +615,11 @@ export function triggerCollection(): Promise<CollectionRunResult> {
   return apiFetch<CollectionRunResult>("/trend-analyzer/collect", { method: "POST" });
 }
 
+// Dashboard
+export function getDashboardSummary(): Promise<DashboardSummary> {
+  return apiFetch<DashboardSummary>("/dashboard/summary");
+}
+
 // Companies
 export function listCompanies(): Promise<CompanyListResponse> {
   return apiFetch<CompanyListResponse>("/companies/");
@@ -516,6 +647,10 @@ export function searchKnowledgeBase(
 }
 
 // Content Management
+export function listPendingApprovals(): Promise<PendingApprovalListResponse> {
+  return apiFetch<PendingApprovalListResponse>("/content-management/approvals/pending");
+}
+
 export function createStrategy(companyId: string): Promise<Strategy> {
   return apiFetch<Strategy>("/content-management/strategies", {
     method: "POST",
@@ -537,10 +672,15 @@ export function updateStrategyApproval(
   strategyId: string,
   approvalStatus: ApprovalStatus,
   approvedBy?: string,
+  reviewer?: string,
 ): Promise<Strategy> {
   return apiFetch<Strategy>(`/content-management/strategies/${strategyId}/approval`, {
     method: "PATCH",
-    body: JSON.stringify({ approval_status: approvalStatus, approved_by: approvedBy }),
+    body: JSON.stringify({
+      approval_status: approvalStatus,
+      approved_by: approvedBy,
+      reviewer,
+    }),
   });
 }
 
@@ -559,6 +699,29 @@ export function getContentPlan(id: string): Promise<ContentPlan> {
   return apiFetch<ContentPlan>(`/content-management/content-plans/${id}`);
 }
 
+export function listContentItems(
+  params: { companyId?: string; platform?: Platform } = {},
+): Promise<ContentItemListResponse> {
+  return apiFetch<ContentItemListResponse>(
+    `/content-management/content-items${toQueryString({
+      company_id: params.companyId,
+      platform: params.platform,
+    })}`,
+  );
+}
+
+export function createManualContentItem(
+  companyId: string,
+  platform: Platform,
+  contentType: ContentType,
+  topic: string,
+): Promise<ContentItem> {
+  return apiFetch<ContentItem>(`/content-management/content-plans/${companyId}/manual-item`, {
+    method: "POST",
+    body: JSON.stringify({ platform, content_type: contentType, topic }),
+  });
+}
+
 export function listContentPlans(companyId?: string): Promise<ContentPlanListResponse> {
   return apiFetch<ContentPlanListResponse>(
     `/content-management/content-plans${toQueryString({ company_id: companyId })}`,
@@ -567,7 +730,15 @@ export function listContentPlans(companyId?: string): Promise<ContentPlanListRes
 
 export function updateContentItem(
   itemId: string,
-  updates: { approvalStatus?: ApprovalStatus; approvedBy?: string; suggestedDate?: string },
+  updates: {
+    approvalStatus?: ApprovalStatus;
+    approvedBy?: string;
+    suggestedDate?: string;
+    draftCopy?: string;
+    editedBy?: string;
+    hashtags?: string[];
+    reviewer?: string;
+  },
 ): Promise<ContentItem> {
   return apiFetch<ContentItem>(`/content-management/content-items/${itemId}`, {
     method: "PATCH",
@@ -575,7 +746,54 @@ export function updateContentItem(
       approval_status: updates.approvalStatus,
       approved_by: updates.approvedBy,
       suggested_date: updates.suggestedDate,
+      draft_copy: updates.draftCopy,
+      edited_by: updates.editedBy,
+      hashtags: updates.hashtags,
+      reviewer: updates.reviewer,
     }),
+  });
+}
+
+export interface ContentItemRevision {
+  id: string;
+  content_item_id: string;
+  draft_copy: string;
+  edited_by: string | null;
+  created_at: string;
+}
+
+export interface ContentItemComment {
+  id: string;
+  content_item_id: string;
+  author: string | null;
+  body: string;
+  created_at: string;
+}
+
+export function listContentItemRevisions(
+  itemId: string,
+): Promise<{ items: ContentItemRevision[] }> {
+  return apiFetch<{ items: ContentItemRevision[] }>(
+    `/content-management/content-items/${itemId}/revisions`,
+  );
+}
+
+export function listContentItemComments(
+  itemId: string,
+): Promise<{ items: ContentItemComment[] }> {
+  return apiFetch<{ items: ContentItemComment[] }>(
+    `/content-management/content-items/${itemId}/comments`,
+  );
+}
+
+export function createContentItemComment(
+  itemId: string,
+  body: string,
+  author?: string,
+): Promise<ContentItemComment> {
+  return apiFetch<ContentItemComment>(`/content-management/content-items/${itemId}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body, author }),
   });
 }
 
@@ -583,6 +801,52 @@ export function regenerateContentItemDraft(itemId: string): Promise<ContentItem>
   return apiFetch<ContentItem>(`/content-management/content-items/${itemId}/regenerate-draft`, {
     method: "POST",
   });
+}
+
+export function repurposeContentItem(
+  itemId: string,
+  platform: Platform,
+  contentType: ContentType,
+): Promise<ContentItem> {
+  return apiFetch<ContentItem>(`/content-management/content-items/${itemId}/repurpose`, {
+    method: "POST",
+    body: JSON.stringify({ platform, content_type: contentType }),
+  });
+}
+
+export function checkContentItemQuality(itemId: string): Promise<ContentItem> {
+  return apiFetch<ContentItem>(`/content-management/content-items/${itemId}/quality-check`, {
+    method: "POST",
+  });
+}
+
+export interface ContentItemCreativeBrief {
+  id: string;
+  content_item_id: string;
+  hook: string | null;
+  shot_list: string[];
+  visual_references: string | null;
+  editing_notes: string | null;
+  thumbnail_concept: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function generateContentItemCreativeBrief(
+  itemId: string,
+): Promise<ContentItemCreativeBrief> {
+  return apiFetch<ContentItemCreativeBrief>(
+    `/content-management/content-items/${itemId}/creative-brief`,
+    { method: "POST" },
+  );
+}
+
+export function getContentItemCreativeBrief(
+  itemId: string,
+): Promise<ContentItemCreativeBrief> {
+  return apiFetch<ContentItemCreativeBrief>(
+    `/content-management/content-items/${itemId}/creative-brief`,
+  );
 }
 
 export function createCampaign(
@@ -686,8 +950,15 @@ export function listConnections(companyId: string): Promise<PlatformConnectionLi
 // Not a fetch call — OAuth needs a real browser navigation so the
 // platform's own login/consent screen can render and eventually redirect
 // back. Callers render this as a plain <a href>, not an onClick handler.
-export function getPlatformAuthorizeUrl(platform: SocialPlatform, companyId: string): string {
-  return `${API_BASE_URL}${API_V1}/social-media-analyzer/connections/${platform}/authorize${toQueryString({ company_id: companyId })}`;
+// Async because the session has to ride along as a query param — plain
+// navigation can't carry a custom Authorization header the way fetch()
+// calls elsewhere in this file do.
+export async function getPlatformAuthorizeUrl(
+  platform: SocialPlatform,
+  companyId: string,
+): Promise<string> {
+  const token = await getAccessToken();
+  return `${API_BASE_URL}${API_V1}/social-media-analyzer/connections/${platform}/authorize${toQueryString({ company_id: companyId, access_token: token ?? undefined })}`;
 }
 
 export function disconnectPlatform(connectionId: string): Promise<PlatformConnection> {
@@ -704,12 +975,104 @@ export function getConnectionMetrics(
   );
 }
 
+export function syncConnectionMetrics(connectionId: string): Promise<PlatformMetricSnapshot> {
+  return apiFetch<PlatformMetricSnapshot>(
+    `/social-media-analyzer/connections/${connectionId}/sync-metrics`,
+    { method: "POST" },
+  );
+}
+
+export function generatePerformanceInsights(companyId: string): Promise<{ insights: string }> {
+  return apiFetch<{ insights: string }>(
+    `/social-media-analyzer/insights${toQueryString({ company_id: companyId })}`,
+    { method: "POST" },
+  );
+}
+
+export interface PublishResult {
+  content_item_id: string;
+  status: "success" | "failed";
+  status_error: string | null;
+  published_at: string | null;
+}
+
+export function publishNow(
+  connectionId: string,
+  contentItemId: string,
+): Promise<PublishResult> {
+  return apiFetch<PublishResult>(`/social-media-analyzer/connections/${connectionId}/publish`, {
+    method: "POST",
+    body: JSON.stringify({ content_item_id: contentItemId }),
+  });
+}
+
+export interface PublishAttempt {
+  id: string;
+  content_item_id: string;
+  content_item_title: string;
+  platform_connection_id: string;
+  platform: string;
+  company_id: string;
+  company_name: string | null;
+  status: "success" | "failed";
+  status_error: string | null;
+  composio_execution_id: string | null;
+  attempted_at: string;
+}
+
+export function listPublishAttempts(filters: {
+  companyId?: string;
+  status?: string;
+  platform?: string;
+} = {}): Promise<{ items: PublishAttempt[] }> {
+  return apiFetch<{ items: PublishAttempt[] }>(
+    `/social-media-analyzer/publish-attempts${toQueryString({
+      company_id: filters.companyId,
+      status: filters.status,
+      platform: filters.platform,
+    })}`,
+  );
+}
+
+export function retryPublishAttempt(attemptId: string): Promise<PublishResult> {
+  return apiFetch<PublishResult>(
+    `/social-media-analyzer/publish-attempts/${attemptId}/retry`,
+    { method: "POST" },
+  );
+}
+
+export function scheduleContentItem(
+  itemId: string,
+  scheduledAt: string | null,
+): Promise<ContentItem> {
+  return apiFetch<ContentItem>(`/content-management/content-items/${itemId}/schedule`, {
+    method: "POST",
+    body: JSON.stringify({ scheduled_at: scheduledAt }),
+  });
+}
+
 // Trend Outputs
 export function createTrendReport(companyId: string, periodDays?: number): Promise<TrendReport> {
   return apiFetch<TrendReport>("/trend-analyzer/reports", {
     method: "POST",
     body: JSON.stringify({ company_id: companyId, period_days: periodDays }),
   });
+}
+
+export interface Opportunity {
+  title: string;
+  reasoning: string;
+  source: "trend" | "seasonal" | "performance" | "evergreen";
+  priority: "high" | "medium" | "low";
+}
+
+export function generateContentOpportunities(
+  companyId: string,
+): Promise<{ items: Opportunity[] }> {
+  return apiFetch<{ items: Opportunity[] }>(
+    `/trend-analyzer/opportunities${toQueryString({ company_id: companyId })}`,
+    { method: "POST" },
+  );
 }
 
 export function getTrendReport(id: string): Promise<TrendReport> {
@@ -797,4 +1160,91 @@ export function indexBlogFeeds(companyId: string, feedUrls: string[]): Promise<I
     method: "POST",
     body: JSON.stringify({ company_id: companyId, feed_urls: feedUrls }),
   });
+}
+
+// Chat
+export function listConversations(companyId?: string): Promise<ConversationListResponse> {
+  return apiFetch<ConversationListResponse>(
+    `/chat/conversations${toQueryString({ company_id: companyId })}`,
+  );
+}
+
+export function createConversation(companyId?: string): Promise<Conversation> {
+  return apiFetch<Conversation>("/chat/conversations", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId }),
+  });
+}
+
+export function getConversation(id: string): Promise<ConversationDetail> {
+  return apiFetch<ConversationDetail>(`/chat/conversations/${id}`);
+}
+
+export function deleteConversation(id: string): Promise<Conversation> {
+  return apiFetch<Conversation>(`/chat/conversations/${id}`, { method: "DELETE" });
+}
+
+export function sendMessage(conversationId: string, content: string): Promise<ChatMessage> {
+  return apiFetch<ChatMessage>(`/chat/conversations/${conversationId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export function confirmAction(conversationId: string, messageId: string): Promise<ChatMessage> {
+  return apiFetch<ChatMessage>(
+    `/chat/conversations/${conversationId}/messages/${messageId}/confirm-action`,
+    { method: "POST" },
+  );
+}
+
+export function cancelAction(conversationId: string, messageId: string): Promise<ChatMessage> {
+  return apiFetch<ChatMessage>(
+    `/chat/conversations/${conversationId}/messages/${messageId}/cancel-action`,
+    { method: "POST" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Media & Asset Library
+// ---------------------------------------------------------------------------
+
+export interface MediaAsset {
+  id: string;
+  company_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  public_url: string | null;
+  tags: string[] | null;
+  uploaded_by: string | null;
+  created_at: string;
+}
+
+export function uploadMediaAsset(
+  companyId: string,
+  file: File,
+  options: { tags?: string; uploadedBy?: string } = {},
+): Promise<MediaAsset> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (options.tags) formData.append("tags", options.tags);
+  if (options.uploadedBy) formData.append("uploaded_by", options.uploadedBy);
+  return apiFetch<MediaAsset>(`/media-library/${companyId}/assets`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export function listMediaAssets(
+  companyId: string,
+  tag?: string,
+): Promise<{ items: MediaAsset[] }> {
+  return apiFetch<{ items: MediaAsset[] }>(
+    `/media-library/${companyId}/assets${toQueryString({ tag })}`,
+  );
+}
+
+export function deleteMediaAsset(assetId: string): Promise<MediaAsset> {
+  return apiFetch<MediaAsset>(`/media-library/assets/${assetId}`, { method: "DELETE" });
 }

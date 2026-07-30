@@ -26,8 +26,9 @@ from app.models.competitor import (
     CompetitorSuggestionsRequest,
     CompetitorSuggestionsResponse,
 )
+from app.security.auth import get_current_user
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 async def _get_company_or_404(session: AsyncSession, company_id: uuid.UUID) -> Company:

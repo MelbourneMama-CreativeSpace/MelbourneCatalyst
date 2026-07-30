@@ -9,7 +9,15 @@ from sqlalchemy import select
 
 from app.agents.content_management import content_plan_graph as graph_module
 from app.agents.content_management.schemas import GeneratedContentItem, GeneratedContentPlan
-from app.db.models import Company, CompanyTrendRelevance, ContentItem, ContentPlan, Strategy, Trend
+from app.db.models import (
+    Company,
+    CompanyTrendRelevance,
+    ContentItem,
+    ContentItemRevision,
+    ContentPlan,
+    Strategy,
+    Trend,
+)
 
 
 async def _stub_generate_content_plan(context: str, days: int):
@@ -27,6 +35,7 @@ async def _stub_generate_content_plan(context: str, days: int):
                     audience_interest="tech-forward marketers",
                     seasonal_event="Christmas (2026-12-25)",
                     draft_copy="Slide 1: AI marketing tools are moving fast. Here's what to know →",
+                    hashtags=["aimarketing", "smallbusiness"],
                 ),
                 GeneratedContentItem(
                     title="No trend tie-in post",
@@ -92,6 +101,8 @@ async def test_run_content_plan_generation_persists_items_with_resolved_trend_id
     )
     assert by_title["No trend tie-in post"].draft_copy is None
     assert by_title["No trend tie-in post"].audience_interest is None
+    assert by_title["AI marketing carousel"].hashtags == ["aimarketing", "smallbusiness"]
+    assert by_title["No trend tie-in post"].hashtags is None
     # Every freshly generated item starts in the approval workflow's
     # default state, regardless of what Claude returned.
     assert all(item.approval_status == "pending" for item in items)
@@ -371,6 +382,23 @@ async def test_regenerate_item_draft_copy_updates_the_item(monkeypatch, test_ses
     async with test_session_factory() as session:
         persisted = await session.get(ContentItem, item_id)
     assert persisted.draft_copy == "A brand new caption ready to post."
+
+    # The pre-regeneration draft is snapshotted, not silently discarded.
+    async with test_session_factory() as session:
+        revisions = (
+            (
+                await session.execute(
+                    select(ContentItemRevision).where(
+                        ContentItemRevision.content_item_id == item_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(revisions) == 1
+    assert revisions[0].draft_copy == "Stale draft."
+    assert revisions[0].edited_by == "AI regeneration"
 
 
 async def test_regenerate_item_draft_copy_returns_none_for_unknown_item(monkeypatch, test_session_factory):
