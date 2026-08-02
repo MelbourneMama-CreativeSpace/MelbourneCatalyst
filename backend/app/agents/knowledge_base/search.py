@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.knowledge_base.embeddings import embed_query
@@ -27,10 +27,19 @@ async def similarity_search(
     query: str,
     *,
     company_id: uuid.UUID | None = None,
+    restrict_to: ColumnElement[bool] | None = None,
     k: int = 5,
 ) -> list[SearchHit]:
     """Rank the top-k most similar Document chunks to `query`. Empty list on
-    unsupported backends (SQLite) or missing embedding key."""
+    unsupported backends (SQLite) or missing embedding key.
+
+    `restrict_to` is an extra predicate over `Document`, applied on top of
+    `company_id`. The API layer passes a membership check through it so an
+    unfiltered search can't reach across tenants; it's a caller-supplied
+    clause rather than a user argument here so this module (which
+    background jobs also use, with no user at all) stays independent of
+    the auth layer.
+    """
     if session.bind is None or session.bind.dialect.name != "postgresql":
         logger.warning("similarity_search called on non-Postgres backend; returning []")
         return []
@@ -43,6 +52,8 @@ async def similarity_search(
     stmt = select(Document, distance.label("distance")).where(Document.embedding.is_not(None))
     if company_id is not None:
         stmt = stmt.where(Document.company_id == company_id)
+    if restrict_to is not None:
+        stmt = stmt.where(restrict_to)
     stmt = stmt.order_by(distance).limit(k)
 
     rows = (await session.execute(stmt)).all()

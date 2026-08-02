@@ -1,6 +1,173 @@
 # Known Issues & Incomplete States
 
-## ✅ Resolved this round — the last three buildable items on the 21-item list
+## ✅ Resolved this round — per-company ownership, and the multi-tenant trend-scoring gap
+
+Closes the longest-standing 🔴 item in this file and the 🟡 that was
+explicitly waiting on it. These were the only two genuinely buildable
+items left; everything else still open is blocked on a credential, a real
+connected account, or a product decision (see the sections below, which
+are unchanged).
+
+### Per-company ownership — closes the 🔴 "any signed-in user can act on any company"
+
+Since the Supabase Auth round, every route required a real session but
+nothing tied a `Company` to the people allowed to touch it. Any signed-in
+user could read, edit, publish, connect, or disconnect any company's data.
+
+- **`company_members`** (migration `0027`) rather than a single
+  `companies.owner_id`, because this app already assumes several people
+  work one client — `approved_by`, `reviewer`, and the /approvals
+  "Assign to me" toggle all predate this round. A single owner column
+  would have needed replacing the first time a second person touched an
+  account. `user_id` holds the Supabase `sub` as plain text, not a FK:
+  `auth.users` lives in a schema this app has no business referencing,
+  and which doesn't exist at all under SQLite in tests.
+- **One chokepoint, not 159 sprinkled checks.**
+  `app/security/ownership.py::ensure_company_access` is the only place
+  that decides who may see what. It landed cheaply because this codebase
+  already funnelled every company lookup through
+  `_get_company_or_404` (5 duplicated copies) and
+  `_get_ready_company_or_error` (3 more) — those were replaced by the
+  shared helper rather than new call sites appearing everywhere.
+- **404, never 403, for a company you're not a member of.** A 403 would
+  confirm the id exists, turning an unguessable UUID into an oracle for
+  enumerating other tenants. The response is byte-identical to a genuinely
+  missing company. List endpoints and the dashboard's counts are filtered
+  by the same predicate, so `total` can't leak how many other clients
+  exist either.
+- **Claim-on-first-access for companies that predate ownership.** They
+  have no user to attribute them to, so there is nothing to backfill from
+  — the first signed-in user to open one becomes its owner, and normal
+  rules apply forever after. Documented as the one-time transition it is.
+- **Invites without Supabase's Admin API.** `POST
+  /companies/{id}/members` with an email stores an inert row; it binds to
+  a real `user_id` the first time a token carrying that address reaches
+  the company. This app never has to translate an email into a user id —
+  it just waits for the person to arrive. No service-role key, and no
+  unverifiable code path. It also sends no email, and the UI says so
+  plainly rather than implying one went out.
+- **Background jobs are deliberately left unguarded**, and the ownership
+  module's docstring says so explicitly. The five scheduler jobs and
+  `run_onboarding` legitimately sweep every company with no user at all;
+  enforcement lives at the API layer for exactly that reason. A future
+  round "tidying up" by pushing these checks down into the agent/graph
+  modules would break every background job the moment it ran.
+
+**Three holes that would have made the rest of it decorative**, each
+found by walking the routes rather than by review:
+
+1. `POST /companies` with an *existing* URL takes the re-onboard branch,
+   which wipes that company's documents and restarts its onboarding —
+   **no company id required, just the URL**. Without a check there, the
+   whole feature could be walked around by anyone who could guess a
+   client's website. Now 404s (not 403s) for a non-member, so it also
+   can't be used to test whether a given URL is already onboarded.
+2. **The chat agent was an unguarded side door.** Conversations had no
+   owner at all (`ChatConversation` explicitly documented "No `user_id`"),
+   and `/confirm-action` executed write tools against whatever id Claude
+   had put in `tool_input` — an id ultimately derived from user-typed
+   text, which is not evidence the caller may act on that row. Fixed at
+   both ends: conversations now carry `user_id` (same migration) and are
+   private to the person who had them, and every proposed action's target
+   is re-resolved to a company and re-checked immediately before
+   execution. A write tool addressing neither a company nor a content
+   item is *refused* rather than run unchecked — the intended failure mode
+   if someone adds a new write tool without extending that function.
+3. **`GET /knowledge-base/search` takes an optional `company_id`**, so
+   the unfiltered call ranked across every tenant's documents and returned
+   their content verbatim — the worst single leak in the codebase. The
+   membership predicate is now pushed into `similarity_search` itself, as
+   a caller-supplied clause so that module (which background jobs also
+   use) stays independent of the auth layer.
+
+### Multi-tenant trend scoring — closes the 🟡, now that there's something to verify it against
+
+`CompanyTrendRelevance` (migration `0014`) has scored every trend against
+every company for several rounds, but only the Content Planner ever read
+it. Strategy Consultant, Campaign Manager, Brand Collaboration, Trend
+Reports, `/trends`'s `min_relevance` filter, and `/recommended` all still
+read the legacy global `Trend.relevance_score` — a single number per
+trend, scored against whichever company happened to be most recently
+updated at collection time. Frequently the right score for the wrong
+client.
+
+The prior round declined to fix this in one pass, on the grounds that
+doing it blind risked subtle ranking regressions across every generation
+agent at once. That concern is addressed by structure rather than by
+courage: the prefer-per-company-then-fall-back-to-global read that
+already existed in `content_plan_graph.py` was extracted to
+`app/agents/trend_analyzer/relevance.py`, and **all six remaining callers
+plus the Content Planner itself now go through that one implementation**
+— so there is no second copy that can drift, and the fallback is
+preserved rather than dropped.
+
+Two details worth knowing before touching it:
+
+- **The legacy fallback is not vestigial.** A company onboarded since the
+  last collection run has no `CompanyTrendRelevance` rows at all. Without
+  the fallback those companies would silently get *no* trend context
+  rather than imperfect trend context — a worse failure, and a much
+  harder one to notice.
+- **One caller opts out of it on purpose.** The Content Opportunity
+  endpoint labels its prompt "this company's relevant trends", so
+  `fallback_to_global=False` keeps its honest empty state ("no scored
+  trends exist yet for this company") instead of passing off another
+  company's scores as this one's. `fetch_scored_trends` also returns the
+  score it actually ranked by, so no caller prints a global number next
+  to a per-company ordering.
+
+`recommendation.py` was deleted outright, superseded by `relevance.py`;
+its three importers were updated. The chat agent's `list_trending_topics`
+gained a `company_id` the dispatcher already knew how to inject, so a
+company-scoped chat now ranks by that company's relevance too.
+
+**Verified live, real and unmocked**: a consolidated script ran **32
+checks against a real uvicorn process** over real HTTP, against a real
+SQLite file DB, with **two genuinely different users** — real HS256 JWTs
+going through `app/security/auth.py`'s actual decode path, not a
+dependency override. User B was refused (404, never 403) on user A's
+company, company list, dashboard counts, connections, drafts, approvals
+queue, documents, and trend reports; the refused disconnect left the real
+`PlatformConnection` row still `connected` with its Composio id intact,
+the refused approval left the real `ContentItem` still `pending`, and the
+refused URL re-onboard left A's real `Document` row in place.
+Claim-on-first-access was confirmed by inspecting the `CompanyMember` row
+the request actually wrote; an invite was confirmed to be inert until
+binding, then to bind to a real user id in the database. And the
+multi-tenant fix was proven end-to-end: the same two trends came back in
+**opposite order** for a company-scoped versus an unscoped request, which
+is exactly what a caller still reading the global score could not produce.
+All 32 passed.
+
+Backend suite: **539/539 passing** (up from 504 — 35 new tests, none
+skipped or weakened; the 4 that broke were tests asserting old
+cross-tenant behaviour or using placeholder ids, and were updated to
+exercise the real path rather than relaxed). Frontend `npm run build`,
+`npm run lint`, and `npx tsc --noEmit` all clean.
+
+**Migration `0027` verified two ways**, since `alembic upgrade head`
+still can't run end-to-end on SQLite (migration `0001`'s Postgres-only
+`JSONB` blocks the chain, same standing caveat as every round since):
+its `upgrade()` and `downgrade()` were run against a real SQLite
+connection with a hand-built pre-0027 schema — confirming both unique
+constraints are actually *enforced*, and that two pending invites with
+`NULL user_id` still coexist (the thing that makes the invite design
+work at all) — and the same migration was compiled through SQLAlchemy's
+Postgres dialect so the DDL that would hit the real database is
+generated, not assumed.
+
+**Standing caveats, unchanged**: `ANTHROPIC_API_KEY` still has zero
+credit. The real Supabase Postgres is still unreachable via DNS from this
+dev environment, so `0027` has not been applied to it. And the live
+verification above minted its own HS256 tokens against a local throwaway
+secret — that exercises the real verification code path, but the real
+project uses asymmetric JWKS signing, so a real signed-in browser session
+end-to-end still depends on the sign-up step that's been yours to do
+since the Auth round.
+
+---
+
+## ✅ Resolved previous round — the last three buildable items on the 21-item list
 
 Closes out the "Suggested order for what's left" list from the previous
 round's `FEATURE_STATUS.md`: #9 Content Repurposing Engine (was ⚪ not
@@ -1155,19 +1322,20 @@ Google Trends `related_queries()` rewrite.
 
 ## 🔴 Remaining: deferred by your explicit choice, not blocked
 
-### No per-company ownership — any signed-in user can act on any company
-Narrower than it used to be (see "Resolved two rounds ago" above — this
-used to be "no auth at all"), but not closed: every route now requires a
-real Supabase session, but nothing yet ties a `Company` row to the user
-who should own it, so any authenticated user can still read/write/connect/
-disconnect any company's data, including the `/integrations/[companyId]`
-page's connect/disconnect flow. Closing this needs a `companies.owner_id`
-(or a join table, if a company can have multiple users) plus an
-ownership check in each endpoint alongside the existing
-`get_current_user` gate — a genuinely separate, smaller follow-up now
-that the harder "is there a real signed-in user at all" problem is
-solved. Also still the thing that would let the single-tenant Trend
-Matching limitation below become properly multi-tenant.
+### ~~No per-company ownership~~ — **closed this round**
+Every route now requires a real Supabase session *and* verifies the
+caller is a member of the company being acted on, via
+`company_members` (migration `0027`) and the single
+`app/security/ownership.py::ensure_company_access` chokepoint. See
+"Resolved this round" at the top for the design, the three holes that
+had to be closed alongside it, and the live two-user verification.
+
+**What this round does not add**: roles that actually differ.
+`CompanyMember.role` records `owner` vs `member`, but both have identical
+access — the column exists so a future round can restrict destructive
+actions (disconnecting a platform, deleting a company) without another
+migration. If you want a teammate who can draft but not publish, that's
+the next increment, and it's a small one now.
 
 ### `ANTHROPIC_API_KEY` has zero credit balance — this is the real blocker now
 No longer "hasn't been tried" — it has, this round, for real, and failed
@@ -1192,21 +1360,22 @@ successful connection is only verified via mocked tests.
 
 ## 🟡 Remaining: needs a product/design decision, not just a fix
 
-- **Single-tenant assumption in Trend Matching — partially fixed two
-  rounds ago, unchanged since.** `score_relevance` still writes a single global
-  `Trend.relevance_score` against "the most recently updated `complete`
-  Company," but a new `CompanyTrendRelevance` table (migration `0014`)
-  now additionally scores every new trend against *every* complete
-  company, and the Content Planner's trend context reads from it in
-  preference to the legacy global score. Strategy Consultant, Campaign
-  Manager, Brand Collaboration, Trend Reports, and the `/trends` +
-  `/recommended` endpoints still read the legacy single-tenant score —
-  switching all of those over in one pass wasn't attempted, since doing
-  it without a real second-client scenario to verify against risked
-  introducing subtle relevance-ranking regressions across every
-  generation agent at once. Real full fix is still multi-tenancy tied to
-  auth; this round's change makes the Content Planner correct in the
-  meantime.
+- **~~Single-tenant assumption in Trend Matching~~ — reads are fixed this
+  round; one write remains.** Every *reader* now goes through
+  `app/agents/trend_analyzer/relevance.py`, so Strategy Consultant,
+  Campaign Manager, Brand Collaboration, Trend Reports, `/trends`,
+  `/recommended`, the Content Planner, and the chat agent all rank by the
+  company's own `CompanyTrendRelevance` score (falling back to the legacy
+  global one only when that company has none yet). See "Resolved this
+  round" at the top.
+  **Still true**: `score_relevance` in `trend_analyzer/graph.py` also
+  writes a single global `Trend.relevance_score` against "the most
+  recently updated `complete` Company." Nothing reads it any more except
+  as the documented fallback, so it's no longer a correctness problem —
+  but it is now dead weight computed on every collection run, and worth
+  deleting once you're confident the fallback is never the path that
+  matters (i.e. once every onboarded company has been through at least
+  one collection run).
 - **Knowledge Base cross-reference linking has no defined linking
   model.** Deliberately not attempted this round or any prior round —
   "link documents/entities" doesn't yet specify *what* should link to
@@ -1316,13 +1485,14 @@ than the next phase in sequence. In order:
    step the Auth round deliberately left for you (see "Resolved previous
    round" above). Everything downstream of a real session is already
    live-verified against real Postgres now too; this just confirms the
-   first hop.
-2. **Per-company ownership** — closes the narrower, still-open half of
-   the auth gap: any signed-in user can currently act on any company's
-   data. Needs a `companies.owner_id` (or a join table) plus an
-   ownership check alongside the existing `get_current_user` gate in
-   each endpoint. Worth doing once you know whether this is genuinely
-   single-user-per-company or needs to support a small team per client.
+   first hop. **More consequential than it was**: the first person to
+   sign in and open each existing company now becomes its owner
+   (claim-on-first-access), so it should be you or the founder, not a
+   test account you throw away.
+2. ~~**Per-company ownership**~~ — done this round. The follow-up, if you
+   want it, is making `CompanyMember.role` actually mean something (an
+   owner who can disconnect platforms vs. a member who can only draft);
+   the column is already there.
 3. **Set up Composio for real**: create a `COMPOSIO_API_KEY`, then in
    Composio's dashboard create one `use_custom_auth` config per platform
    you want live (Instagram, Facebook, X, LinkedIn, TikTok, YouTube),
@@ -1352,12 +1522,11 @@ than the next phase in sequence. In order:
 7. **`priority_todolist.md`'s remaining stretch item**: a lightweight
    client switcher in the UI, once there's more than one client actually
    being worked day to day.
-8. **Widen the multi-tenant trend-scoring fix** beyond the Content
-   Planner (Strategy Consultant, Campaign Manager, Brand Collaboration,
-   Trend Reports, `/trends` + `/recommended`) — worth doing once a
-   second real client is onboarded and there's something to verify the
-   ranking against, rather than guessing. Likely worth bundling with #2
-   above, since both are about making the app properly multi-tenant.
+8. ~~**Widen the multi-tenant trend-scoring fix**~~ — done this round,
+   bundled with #2 as suggested. The remaining scrap is deleting
+   `score_relevance`'s now-unread global write (see the 🟡 section
+   above), which is safe to do once every onboarded company has been
+   through at least one collection run.
 9. Once the above is settled: resume the phase-completeness track
    below. All non-credential-gated agent work identified so far is now
    built — Phase 2, Phase 3, Phase 4, and Phase 5 all fully closed out,

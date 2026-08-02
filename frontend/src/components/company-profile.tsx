@@ -11,6 +11,7 @@ import { CompetitorList } from "@/components/competitor-list";
 import { ContentHistory } from "@/components/content-history";
 import { KnowledgePanel } from "@/components/knowledge-panel";
 import { ManualDraftForm } from "@/components/manual-draft-form";
+import { MembersPanel } from "@/components/members-panel";
 import { OpportunitiesCard } from "@/components/opportunities-card";
 import { TrendReports } from "@/components/trend-reports";
 import { createStrategy, getCompany, type Company } from "@/lib/api";
@@ -189,6 +190,11 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
           {strategyError && <p className="text-sm text-destructive">{strategyError}</p>}
         </div>
       )}
+
+      {/* Rendered for every status, not just "complete" — who can reach a
+          client is worth seeing while it's still onboarding, and it isn't
+          one of the in-development modules below. */}
+      <MembersPanel companyId={company.id} />
 
       {company.status === "complete" && <ManualDraftForm companyId={company.id} />}
 

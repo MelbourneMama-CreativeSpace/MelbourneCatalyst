@@ -119,6 +119,27 @@ export interface CompanyListResponse {
   total: number;
 }
 
+/**
+ * Someone with access to a company. `user_id` is null for an invite that
+ * hasn't been claimed yet — that row grants nothing until the invited
+ * person signs in with the matching email address.
+ */
+export interface CompanyMember {
+  id: string;
+  company_id: string;
+  user_id: string | null;
+  user_email: string | null;
+  invited_email: string | null;
+  role: string;
+  created_at: string;
+}
+
+export interface CompanyMemberListResponse {
+  items: CompanyMember[];
+  /** Which of `items` is you — the browser never needs its own Supabase id. */
+  current_user_id: string;
+}
+
 export interface CompanyCreatedResponse {
   id: string;
   url: string;
@@ -633,6 +654,31 @@ export function createCompany(url: string): Promise<CompanyCreatedResponse> {
   return apiFetch<CompanyCreatedResponse>("/companies/", {
     method: "POST",
     body: JSON.stringify({ url }),
+  });
+}
+
+export function listCompanyMembers(
+  companyId: string,
+): Promise<CompanyMemberListResponse> {
+  return apiFetch<CompanyMemberListResponse>(`/companies/${companyId}/members`);
+}
+
+export function inviteCompanyMember(
+  companyId: string,
+  email: string,
+): Promise<CompanyMember> {
+  return apiFetch<CompanyMember>(`/companies/${companyId}/members`, {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function removeCompanyMember(
+  companyId: string,
+  memberId: string,
+): Promise<CompanyMember> {
+  return apiFetch<CompanyMember>(`/companies/${companyId}/members/${memberId}`, {
+    method: "DELETE",
   });
 }
 

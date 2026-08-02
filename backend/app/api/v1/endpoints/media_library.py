@@ -19,19 +19,13 @@ from app.agents.media_library.storage import (
     upload_asset,
 )
 from app.config import settings
-from app.db.models import Company, MediaAsset
+from app.db.models import MediaAsset
 from app.db.session import get_session
 from app.models.media_library import MediaAssetListResponse, MediaAssetOut
-from app.security.auth import get_current_user
+from app.security.auth import CurrentUser, get_current_user
+from app.security.ownership import ensure_company_access
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
-
-
-async def _get_company_or_404(session: AsyncSession, company_id: uuid.UUID) -> Company:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
-    return company
 
 
 @router.post("/{company_id}/assets", response_model=MediaAssetOut)
@@ -41,8 +35,9 @@ async def upload_media_asset(
     tags: str | None = Form(None),
     uploaded_by: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> MediaAssetOut:
-    await _get_company_or_404(session, company_id)
+    await ensure_company_access(session, company_id, user)
 
     content_bytes = await file.read()
     if len(content_bytes) > settings.MEDIA_UPLOAD_MAX_BYTES:
@@ -75,8 +70,9 @@ async def list_media_assets(
     company_id: uuid.UUID,
     tag: str | None = None,
     session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> MediaAssetListResponse:
-    await _get_company_or_404(session, company_id)
+    await ensure_company_access(session, company_id, user)
 
     stmt = (
         select(MediaAsset)
@@ -96,11 +92,14 @@ async def list_media_assets(
 
 @router.delete("/assets/{asset_id}", response_model=MediaAssetOut)
 async def delete_media_asset(
-    asset_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    asset_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> MediaAssetOut:
     asset = await session.get(MediaAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
+    await ensure_company_access(session, asset.company_id, user)
 
     try:
         await delete_asset(asset)

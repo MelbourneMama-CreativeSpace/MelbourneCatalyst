@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 import pytest_asyncio
 from fastapi import FastAPI
@@ -10,8 +11,45 @@ from httpx import ASGITransport, AsyncClient
 
 from app.agents.chat import agent as agent_module
 from app.api.v1.endpoints import chat as chat_module
+from app.db.models import Company, ContentItem, ContentPlan
 from app.db.session import get_session
 from app.security.auth import CurrentUser, get_current_user
+
+
+@pytest_asyncio.fixture
+async def seeded_company(test_session_factory):
+    """A real Company row. Conversations and proposed actions now resolve
+    to a real company for their ownership check, so these can't use
+    made-up ids any more."""
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete"))
+        await session.commit()
+    return company_id
+
+
+@pytest_asyncio.fixture
+async def seeded_content_item(test_session_factory, seeded_company):
+    """A real ContentItem reachable from a real Company via its plan —
+    what `confirm-action` now re-checks ownership against before running a
+    proposed write tool."""
+    item_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(ContentPlan(id=plan_id, company_id=seeded_company, status="complete"))
+        session.add(
+            ContentItem(
+                id=item_id,
+                content_plan_id=plan_id,
+                title="Test post",
+                description="A test post.",
+                content_type="post",
+                platform="instagram",
+                suggested_date=date(2026, 8, 5),
+            )
+        )
+        await session.commit()
+    return item_id
 
 
 @pytest_asyncio.fixture
@@ -46,10 +84,21 @@ async def test_create_conversation(client):
     assert body["title"] is None
 
 
-async def test_create_conversation_scoped_to_company(client):
-    company_id = str(uuid.uuid4())
-    response = await client.post("/conversations", json={"company_id": company_id})
-    assert response.json()["company_id"] == company_id
+async def test_create_conversation_scoped_to_company(client, seeded_company):
+    response = await client.post(
+        "/conversations", json={"company_id": str(seeded_company)}
+    )
+    assert response.status_code == 200
+    assert response.json()["company_id"] == str(seeded_company)
+
+
+async def test_create_conversation_404s_for_a_company_that_does_not_exist(client):
+    """Scoping a conversation to a company is an access decision now, not
+    just a label — an unknown (or someone else's) company id is a 404."""
+    response = await client.post(
+        "/conversations", json={"company_id": str(uuid.uuid4())}
+    )
+    assert response.status_code == 404
 
 
 async def test_list_conversations(client):
@@ -163,11 +212,13 @@ async def test_send_message_real_graceful_degradation_without_api_key(
     assert "isn't available" in body["content"]
 
 
-async def test_confirm_action_executes_the_proposed_tool(client, monkeypatch):
+async def test_confirm_action_executes_the_proposed_tool(
+    client, monkeypatch, seeded_content_item
+):
     proposed_action = {
         "tool_name": "approve_content_item",
-        "tool_input": {"content_item_id": "abc-123"},
-        "description": "Approve content item abc-123",
+        "tool_input": {"content_item_id": str(seeded_content_item)},
+        "description": "Approve the content item",
     }
 
     async def _fake_with_proposal(history, company_id, session):
@@ -198,7 +249,7 @@ async def test_confirm_action_executes_the_proposed_tool(client, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["action_status"] == "confirmed"
-    assert executed_with == {"content_item_id": "abc-123"}
+    assert executed_with == {"content_item_id": str(seeded_content_item)}
 
     conversation = (await client.get(f"/conversations/{created['id']}")).json()
     assert conversation["messages"][-1]["content"] == "Approved content item 'Test post'."
@@ -216,11 +267,13 @@ async def test_confirm_action_404_when_message_has_no_proposal(client):
     assert response.status_code == 404
 
 
-async def test_confirm_action_409_when_already_resolved(client, monkeypatch):
+async def test_confirm_action_409_when_already_resolved(
+    client, monkeypatch, seeded_content_item
+):
     proposed_action = {
         "tool_name": "approve_content_item",
-        "tool_input": {"content_item_id": "abc-123"},
-        "description": "Approve content item abc-123",
+        "tool_input": {"content_item_id": str(seeded_content_item)},
+        "description": "Approve the content item",
     }
 
     async def _fake_with_proposal(history, company_id, session):

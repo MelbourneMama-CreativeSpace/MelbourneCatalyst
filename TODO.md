@@ -26,7 +26,8 @@
 
 ### Authentication & Authorization
 - [x] Implement user authentication (Supabase Auth — session JWTs verified on every backend request via `app/security/auth.py`, either HS256 shared-secret or ES256/RS256 via the project's public JWKS endpoint depending on how the Supabase project signs tokens)
-- [ ] Set up role-based access control (RBAC) — every signed-in user currently has equal access to every company; see `KNOWN_ISSUES.md`'s "No per-company ownership" item
+- [x] Per-company authorization (`company_members`, migration `0027`) — every route now verifies the caller is a member of the company being acted on, via the single `app/security/ownership.py::ensure_company_access` chokepoint. Non-members get 404 (not 403), so company ids can't be enumerated. Companies predating this are claimed by the first signed-in user to open one; teammates are added by email invite that binds on their first sign-in.
+- [ ] Roles that actually differ — `CompanyMember.role` records `owner` vs `member` but both have identical access today. The column exists so restricting destructive actions (disconnect a platform, delete a company) needs no further migration; see `KNOWN_ISSUES.md`.
 - [x] Create user registration & login flows (`/login` — sign in + sign up via `@supabase/ssr`, `src/proxy.ts` redirects unauthenticated visitors there and authenticated visitors away from it)
 - [ ] Implement API key management for agents
 
@@ -119,6 +120,7 @@
 - [x] Implement trend priority ranking (`min_relevance` filter + relevance-badge sort in dashboard)
 - [x] Create trend recommendation engine (`GET /api/v1/trend-analyzer/recommended` — formalizes the manual `min_relevance` filter into an opinionated, deterministic shortlist: relevance above a threshold *and* discovered recently, so a trend that was relevant months ago doesn't linger. A "Recommended" toggle on `/trends` surfaces it)
 - [x] Build trend matching dashboard UI (relevance badge on `TrendCard`, `min_relevance` filter in `/trends`)
+- [x] Make relevance genuinely per-company everywhere (`app/agents/trend_analyzer/relevance.py` — the single prefer-`CompanyTrendRelevance`-then-fall-back-to-global read now shared by Strategy Consultant, Campaign Manager, Brand Collaboration, Trend Reports, Content Planner, the chat agent, `/trends`'s `min_relevance`, and `/recommended`, all of which previously read the legacy single-tenant `Trend.relevance_score`)
 
 ### Performance Discovery
 - [ ] Implement content performance analyzer

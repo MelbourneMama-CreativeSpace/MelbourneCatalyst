@@ -25,7 +25,8 @@ from app.agents.content_management.content_plan_graph import (
 )
 from app.agents.knowledge_base.generated_content_indexing import index_on_approval
 from app.agents.knowledge_base.search import similarity_search
-from app.agents.trend_analyzer.recommendation import get_recommended_trends
+from app.agents.trend_analyzer.relevance import fetch_scored_trends
+from app.config import settings
 from app.db.models import Campaign, Company, ContentItem, ContentPlan, Strategy
 
 TOOL_SCHEMAS = [
@@ -114,15 +115,31 @@ def _parse_uuid(value: str, label: str) -> uuid.UUID | None:
         return None
 
 
-async def list_trending_topics(session: AsyncSession, *, limit: int | None = None) -> str:
-    trends = await get_recommended_trends(session, limit or 10)
-    if not trends:
+async def list_trending_topics(
+    session: AsyncSession, *, company_id: str | None = None, limit: int | None = None
+) -> str:
+    """`company_id` isn't in this tool's JSON schema — the dispatcher injects
+    the conversation's own company (see `_execute_tool`), so a
+    company-scoped chat ranks trends by that company's relevance rather
+    than the legacy global score. Conversations with no company still work
+    and fall back to the global ranking.
+
+    Uses `fetch_scored_trends` rather than `get_recommended_trends` so the
+    relevance number shown is the same one the ranking used — printing
+    `Trend.relevance_score` next to a per-company ordering would quietly
+    report a different company's score."""
+    scored = await fetch_scored_trends(
+        session,
+        _parse_uuid(company_id, "company_id") if company_id else None,
+        limit=limit or 10,
+        min_score=settings.TREND_RECOMMENDATION_MIN_RELEVANCE,
+        max_age_days=settings.TREND_RECOMMENDATION_MAX_AGE_DAYS,
+    )
+    if not scored:
         return "No trending topics meet the recommendation bar right now."
     lines = [
-        f"- {t.title} (source: {t.source}, relevance: {t.relevance_score:.2f})"
-        if t.relevance_score is not None
-        else f"- {t.title} (source: {t.source})"
-        for t in trends
+        f"- {trend.title} (source: {trend.source}, relevance: {score:.2f})"
+        for trend, score in scored
     ]
     return "Trending topics:\n" + "\n".join(lines)
 
