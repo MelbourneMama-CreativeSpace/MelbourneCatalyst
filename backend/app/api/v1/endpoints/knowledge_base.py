@@ -36,21 +36,23 @@ from app.models.knowledge_base import (
     SearchHitOut,
     SearchResponse,
 )
-from app.security.auth import get_current_user
+from app.security.auth import CurrentUser, get_current_user
+from app.security.ownership import get_owned_company, owned_company_ids
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-async def _get_company_or_404(session: AsyncSession, company_id: uuid.UUID) -> Company:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
-    return company
+async def _get_company_or_404(
+    session: AsyncSession, company_id: uuid.UUID, current_user: CurrentUser
+) -> Company:
+    return await get_owned_company(session, company_id, current_user)
 
 
-async def _get_ready_company_or_error(session: AsyncSession, company_id: uuid.UUID) -> Company:
+async def _get_ready_company_or_error(
+    session: AsyncSession, company_id: uuid.UUID, current_user: CurrentUser
+) -> Company:
     """Same guard as content_management.py's / trends.py's."""
-    company = await _get_company_or_404(session, company_id)
+    company = await _get_company_or_404(session, company_id, current_user)
     if company.status != "complete":
         raise HTTPException(
             status_code=409,
@@ -68,8 +70,14 @@ async def search(
     company_id: uuid.UUID | None = None,
     k: int = Query(default=5, ge=1, le=50),
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> SearchResponse:
-    hits = await similarity_search(session, q, company_id=company_id, k=k)
+    if company_id is not None:
+        await get_owned_company(session, company_id, current_user)
+        hits = await similarity_search(session, q, company_id=company_id, k=k)
+    else:
+        owned_ids = await owned_company_ids(session, current_user)
+        hits = await similarity_search(session, q, company_ids=owned_ids, k=k)
     return SearchResponse(
         query=q,
         hits=[
@@ -92,9 +100,11 @@ async def list_documents(
     limit: int | None = Query(default=None, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> DocumentListResponse:
     """Lightweight preview list — no company-readiness guard, since
     browsing/managing the KB should work regardless of onboarding status."""
+    await get_owned_company(session, company_id, current_user)
     effective_limit = limit or settings.KB_DOCUMENT_LIST_DEFAULT_LIMIT
     stmt = select(Document).where(Document.company_id == company_id).order_by(Document.created_at.desc())
     count_stmt = select(func.count()).select_from(Document).where(Document.company_id == company_id)
@@ -122,9 +132,11 @@ async def list_documents(
 
 @router.post("/documents/manual", response_model=IngestionResultOut)
 async def create_manual_document(
-    payload: ManualDocumentCreateRequest, session: AsyncSession = Depends(get_session)
+    payload: ManualDocumentCreateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> IngestionResultOut:
-    await _get_company_or_404(session, payload.company_id)
+    await _get_company_or_404(session, payload.company_id, current_user)
 
     raw = RawDocument(
         source_type="manual",
@@ -142,8 +154,9 @@ async def upload_document(
     company_id: uuid.UUID = Form(...),
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> IngestionResultOut:
-    await _get_company_or_404(session, company_id)
+    await _get_company_or_404(session, company_id, current_user)
 
     content_bytes = await file.read()
     if len(content_bytes) > settings.KB_UPLOAD_MAX_BYTES:
@@ -169,9 +182,11 @@ async def upload_document(
 
 @router.post("/documents/blog-index", response_model=IngestionResultOut)
 async def index_blog(
-    payload: BlogIndexRequest, session: AsyncSession = Depends(get_session)
+    payload: BlogIndexRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> IngestionResultOut:
-    await _get_company_or_404(session, payload.company_id)
+    await _get_company_or_404(session, payload.company_id, current_user)
 
     documents = await index_blog_feeds(payload.feed_urls, max_articles=settings.KB_BLOG_MAX_ARTICLES)
 
@@ -184,21 +199,27 @@ async def index_blog(
 
 @router.get("/documents/{document_id}", response_model=DocumentDetailOut)
 async def get_document(
-    document_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    document_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> DocumentDetailOut:
     document = await session.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    await get_owned_company(session, document.company_id, current_user)
     return DocumentDetailOut.model_validate(document)
 
 
 @router.delete("/documents/{document_id}", response_model=DocumentDetailOut)
 async def delete_document(
-    document_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    document_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> DocumentDetailOut:
     document = await session.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    await get_owned_company(session, document.company_id, current_user)
     deleted = DocumentDetailOut.model_validate(document)
     await session.delete(document)
     await session.commit()
@@ -207,14 +228,14 @@ async def delete_document(
 
 @router.get("/freshness", response_model=KnowledgeFreshnessOut)
 async def get_freshness(
-    company_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> KnowledgeFreshnessOut:
     """Purely derived from `documents` — no Claude call, works regardless
     of onboarding status (a company mid-onboarding legitimately has 0
     documents, which is itself useful information, not an error)."""
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
+    await get_owned_company(session, company_id, current_user)
 
     row = (
         await session.execute(
@@ -242,9 +263,11 @@ async def get_freshness(
 
 @router.post("/audit-reports", response_model=KnowledgeAuditReportOut)
 async def create_audit_report(
-    payload: KnowledgeAuditReportCreateRequest, session: AsyncSession = Depends(get_session)
+    payload: KnowledgeAuditReportCreateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> KnowledgeAuditReportOut:
-    await _get_ready_company_or_error(session, payload.company_id)
+    await _get_ready_company_or_error(session, payload.company_id, current_user)
 
     report = KnowledgeAuditReport(id=uuid.uuid4(), company_id=payload.company_id, status="pending")
     session.add(report)
@@ -264,13 +287,26 @@ async def create_audit_report(
 
 @router.get("/audit-reports", response_model=KnowledgeAuditReportListResponse)
 async def list_audit_reports(
-    company_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> KnowledgeAuditReportListResponse:
-    stmt = select(KnowledgeAuditReport).order_by(KnowledgeAuditReport.created_at.desc())
-    count_stmt = select(func.count()).select_from(KnowledgeAuditReport)
     if company_id is not None:
-        stmt = stmt.where(KnowledgeAuditReport.company_id == company_id)
-        count_stmt = count_stmt.where(KnowledgeAuditReport.company_id == company_id)
+        await get_owned_company(session, company_id, current_user)
+        owned_ids: list[uuid.UUID] = [company_id]
+    else:
+        owned_ids = await owned_company_ids(session, current_user)
+
+    stmt = (
+        select(KnowledgeAuditReport)
+        .where(KnowledgeAuditReport.company_id.in_(owned_ids))
+        .order_by(KnowledgeAuditReport.created_at.desc())
+    )
+    count_stmt = (
+        select(func.count())
+        .select_from(KnowledgeAuditReport)
+        .where(KnowledgeAuditReport.company_id.in_(owned_ids))
+    )
 
     total = (await session.execute(count_stmt)).scalar_one()
     rows = (await session.execute(stmt)).scalars().all()
@@ -281,9 +317,12 @@ async def list_audit_reports(
 
 @router.get("/audit-reports/{report_id}", response_model=KnowledgeAuditReportOut)
 async def get_audit_report(
-    report_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    report_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> KnowledgeAuditReportOut:
     report = await session.get(KnowledgeAuditReport, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Audit report not found")
+    await get_owned_company(session, report.company_id, current_user)
     return KnowledgeAuditReportOut.model_validate(report)

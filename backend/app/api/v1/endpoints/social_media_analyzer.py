@@ -58,7 +58,8 @@ from app.models.social_media import (
     PublishRequest,
     PublishResultOut,
 )
-from app.security.auth import get_current_user
+from app.security.auth import CurrentUser, get_current_user
+from app.security.ownership import get_owned_company, owned_company_ids
 
 # `get_current_user` accepts the session via an `access_token` query
 # param as a fallback to the Authorization header — needed here
@@ -71,11 +72,20 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 _UNSETTLED_STATUSES = {"pending"}
 
 
-async def _get_company_or_404(session: AsyncSession, company_id: uuid.UUID) -> Company:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
-    return company
+async def _get_company_or_404(
+    session: AsyncSession, company_id: uuid.UUID, current_user: CurrentUser
+) -> Company:
+    return await get_owned_company(session, company_id, current_user)
+
+
+async def _get_owned_connection(
+    session: AsyncSession, connection_id: uuid.UUID, current_user: CurrentUser
+) -> PlatformConnection:
+    connection = await session.get(PlatformConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    await get_owned_company(session, connection.company_id, current_user)
+    return connection
 
 
 async def _refresh_unsettled(session: AsyncSession, rows: list[PlatformConnection]) -> None:
@@ -98,13 +108,15 @@ async def _refresh_unsettled(session: AsyncSession, rows: list[PlatformConnectio
 
 @router.get("/connections", response_model=PlatformConnectionListResponse)
 async def list_connections(
-    company_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PlatformConnectionListResponse:
     """Always returns one row per known platform, even for platforms this
     company has never attempted to connect — unconnected platforms are
     synthesized as `status: "disconnected"` placeholders, not persisted,
     so the frontend has a stable list to render Connect buttons for."""
-    await _get_company_or_404(session, company_id)
+    await _get_company_or_404(session, company_id, current_user)
 
     rows = (
         await session.execute(
@@ -125,9 +137,12 @@ async def list_connections(
 
 @router.get("/connections/{platform}/authorize")
 async def authorize(
-    platform: str, company_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    platform: str,
+    company_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> RedirectResponse:
-    await _get_company_or_404(session, company_id)
+    await _get_company_or_404(session, company_id, current_user)
     if platform not in PLATFORM_CONFIGS:
         raise HTTPException(status_code=404, detail=f"Unknown platform: {platform!r}")
 
@@ -160,11 +175,11 @@ async def authorize(
 
 @router.delete("/connections/{connection_id}", response_model=PlatformConnectionOut)
 async def disconnect(
-    connection_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    connection_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PlatformConnectionOut:
-    connection = await session.get(PlatformConnection, connection_id)
-    if connection is None:
-        raise HTTPException(status_code=404, detail="Connection not found")
+    connection = await _get_owned_connection(session, connection_id, current_user)
 
     if connection.composio_connected_account_id:
         await disconnect_connection(connection.composio_connected_account_id)
@@ -188,11 +203,11 @@ async def disconnect(
 
 @router.get("/connections/{connection_id}/metrics", response_model=PlatformMetricSnapshotListResponse)
 async def get_metrics(
-    connection_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    connection_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PlatformMetricSnapshotListResponse:
-    connection = await session.get(PlatformConnection, connection_id)
-    if connection is None:
-        raise HTTPException(status_code=404, detail="Connection not found")
+    await _get_owned_connection(session, connection_id, current_user)
 
     rows = (
         await session.execute(
@@ -206,14 +221,14 @@ async def get_metrics(
 
 @router.post("/connections/{connection_id}/sync-metrics", response_model=PlatformMetricSnapshotOut)
 async def sync_metrics(
-    connection_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    connection_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PlatformMetricSnapshotOut:
     """Manually triggers a metrics fetch for one connection — the same
     call the scheduled job (`run_scheduled_metrics_sync`) makes
     automatically every `METRICS_SYNC_INTERVAL_MINUTES`."""
-    connection = await session.get(PlatformConnection, connection_id)
-    if connection is None:
-        raise HTTPException(status_code=404, detail="Connection not found")
+    connection = await _get_owned_connection(session, connection_id, current_user)
     if connection.status != "connected" or connection.composio_connected_account_id is None:
         raise HTTPException(status_code=409, detail="This platform isn't connected yet.")
 
@@ -278,23 +293,42 @@ async def _publish_and_log(
     )
 
 
+async def _get_owned_item_company_id(
+    session: AsyncSession, item: ContentItem, current_user: CurrentUser
+) -> uuid.UUID:
+    """Resolves and authorizes the company a ContentItem belongs to via
+    its ContentPlan — used to cross-check against a connection's own
+    company below (KNOWN_ISSUES.md C1: nothing previously stopped
+    publishing one client's content to a different client's connected
+    account, as long as the platform matched)."""
+    content_plan = await session.get(ContentPlan, item.content_plan_id)
+    if content_plan is None:
+        raise HTTPException(status_code=404, detail="Content plan for this item not found")
+    await get_owned_company(session, content_plan.company_id, current_user)
+    return content_plan.company_id
+
+
 @router.post("/connections/{connection_id}/publish", response_model=PublishResultOut)
 async def publish_now(
     connection_id: uuid.UUID,
     payload: PublishRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PublishResultOut:
     """Publish one ContentItem to one connected platform immediately — the
     Draft Workspace's "Publish now" action."""
-    connection = await session.get(PlatformConnection, connection_id)
-    if connection is None:
-        raise HTTPException(status_code=404, detail="Connection not found")
+    connection = await _get_owned_connection(session, connection_id, current_user)
     if connection.status != "connected" or connection.composio_connected_account_id is None:
         raise HTTPException(status_code=409, detail="This platform isn't connected yet.")
 
     item = await session.get(ContentItem, payload.content_item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Content item not found")
+    item_company_id = await _get_owned_item_company_id(session, item, current_user)
+    if item_company_id != connection.company_id:
+        raise HTTPException(
+            status_code=409, detail="This content item does not belong to this platform connection's company."
+        )
     if item.platform != connection.platform:
         raise HTTPException(
             status_code=400,
@@ -313,22 +347,28 @@ async def list_publish_attempts(
     platform: str | None = None,
     limit: int = 100,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PublishAttemptListResponse:
     """The Social Publishing Monitor — a history of this app's own publish
     attempts (not live platform engagement data, see
     `PlatformMetricSnapshot`/the metrics endpoints for that). Needs no
     Composio credentials to be useful: it's monitoring what this app
     itself already did, successfully or not."""
+    if company_id is not None:
+        await get_owned_company(session, company_id, current_user)
+        owned_ids: list[uuid.UUID] = [company_id]
+    else:
+        owned_ids = await owned_company_ids(session, current_user)
+
     stmt = (
         select(PublishAttempt, PlatformConnection, ContentItem, Company)
         .join(PlatformConnection, PublishAttempt.platform_connection_id == PlatformConnection.id)
         .join(ContentItem, PublishAttempt.content_item_id == ContentItem.id)
         .join(Company, PlatformConnection.company_id == Company.id)
+        .where(PlatformConnection.company_id.in_(owned_ids))
         .order_by(PublishAttempt.attempted_at.desc())
         .limit(limit)
     )
-    if company_id is not None:
-        stmt = stmt.where(PlatformConnection.company_id == company_id)
     if status is not None:
         stmt = stmt.where(PublishAttempt.status == status)
     if platform is not None:
@@ -356,7 +396,9 @@ async def list_publish_attempts(
 
 @router.post("/publish-attempts/{attempt_id}/retry", response_model=PublishResultOut)
 async def retry_publish_attempt(
-    attempt_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    attempt_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PublishResultOut:
     attempt = await session.get(PublishAttempt, attempt_id)
     if attempt is None:
@@ -364,33 +406,36 @@ async def retry_publish_attempt(
     if attempt.status != "failed":
         raise HTTPException(status_code=409, detail="Only a failed attempt can be retried")
 
+    connection = await _get_owned_connection(session, attempt.platform_connection_id, current_user)
+    if connection.status != "connected" or connection.composio_connected_account_id is None:
+        raise HTTPException(status_code=409, detail="This platform isn't connected yet.")
+
     item = await session.get(ContentItem, attempt.content_item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Content item not found")
+    item_company_id = await _get_owned_item_company_id(session, item, current_user)
+    if item_company_id != connection.company_id:
+        raise HTTPException(
+            status_code=409, detail="This content item does not belong to this platform connection's company."
+        )
     if item.published_at is not None:
         raise HTTPException(status_code=409, detail="This item has already been published.")
-
-    connection = await session.get(PlatformConnection, attempt.platform_connection_id)
-    if (
-        connection is None
-        or connection.status != "connected"
-        or connection.composio_connected_account_id is None
-    ):
-        raise HTTPException(status_code=409, detail="This platform isn't connected yet.")
 
     return await _publish_and_log(session, item, connection)
 
 
 @router.post("/insights", response_model=PerformanceInsightsOut)
 async def get_performance_insights(
-    company_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PerformanceInsightsOut:
     """One Claude call over the company's own real stored data — recent
     metric snapshots (see `metrics.py`) and recently published content.
     Never fabricates: explicitly asks Claude to say plainly when there
     isn't enough data yet, which is the honest answer until #18's metrics
     sync actually has real snapshots to work with."""
-    company = await _get_company_or_404(session, company_id)
+    company = await _get_company_or_404(session, company_id, current_user)
 
     snapshot_rows = (
         await session.execute(

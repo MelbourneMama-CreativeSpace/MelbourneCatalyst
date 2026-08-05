@@ -34,12 +34,17 @@ class CompanyListResponse(BaseModel):
 
 
 class CompanyCreateRequest(BaseModel):
-    """Onboarding input — just a URL. The agent extracts everything else."""
+    """Onboarding input. `url` is required; the agent extracts everything
+    else. `name` is optional — when given (e.g. typed at signup) it seeds
+    the row immediately instead of waiting on extraction, which still
+    overwrites it if the scrape finds a different name."""
 
     url: HttpUrl
+    name: str | None = None
 
 
 class CompanyCreatedResponse(BaseModel):
     id: uuid.UUID
     url: str
+    name: str | None
     status: str

@@ -31,18 +31,19 @@ from app.models.trend import (
     TrendReportListResponse,
     TrendReportOut,
 )
-from app.security.auth import get_current_user
+from app.security.auth import CurrentUser, get_current_user
+from app.security.ownership import get_owned_company, owned_company_ids
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-async def _get_ready_company_or_error(session: AsyncSession, company_id: uuid.UUID) -> Company:
+async def _get_ready_company_or_error(
+    session: AsyncSession, company_id: uuid.UUID, current_user: CurrentUser
+) -> Company:
     """Same guard as content_management.py's — a report generated from a
     company that hasn't finished onboarding wastes a Claude call on a
     context that's mostly 'Unknown'."""
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
+    company = await get_owned_company(session, company_id, current_user)
     if company.status != "complete":
         raise HTTPException(
             status_code=409,
@@ -134,9 +135,11 @@ async def source_status(session: AsyncSession = Depends(get_session)) -> list[So
 
 @router.post("/reports", response_model=TrendReportOut)
 async def create_trend_report(
-    payload: TrendReportCreateRequest, session: AsyncSession = Depends(get_session)
+    payload: TrendReportCreateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> TrendReportOut:
-    await _get_ready_company_or_error(session, payload.company_id)
+    await _get_ready_company_or_error(session, payload.company_id, current_user)
     period_days = payload.period_days or settings.TREND_REPORT_DEFAULT_PERIOD_DAYS
 
     report = TrendReport(
@@ -161,13 +164,22 @@ async def create_trend_report(
 
 @router.get("/reports", response_model=TrendReportListResponse)
 async def list_trend_reports(
-    company_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> TrendReportListResponse:
-    stmt = select(TrendReport).order_by(TrendReport.created_at.desc())
-    count_stmt = select(func.count()).select_from(TrendReport)
     if company_id is not None:
-        stmt = stmt.where(TrendReport.company_id == company_id)
-        count_stmt = count_stmt.where(TrendReport.company_id == company_id)
+        await get_owned_company(session, company_id, current_user)
+        owned_ids: list[uuid.UUID] = [company_id]
+    else:
+        owned_ids = await owned_company_ids(session, current_user)
+
+    stmt = (
+        select(TrendReport)
+        .where(TrendReport.company_id.in_(owned_ids))
+        .order_by(TrendReport.created_at.desc())
+    )
+    count_stmt = select(func.count()).select_from(TrendReport).where(TrendReport.company_id.in_(owned_ids))
 
     total = (await session.execute(count_stmt)).scalar_one()
     rows = (await session.execute(stmt)).scalars().all()
@@ -178,11 +190,14 @@ async def list_trend_reports(
 
 @router.get("/reports/{report_id}", response_model=TrendReportOut)
 async def get_trend_report(
-    report_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    report_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> TrendReportOut:
     report = await session.get(TrendReport, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Trend report not found")
+    await get_owned_company(session, report.company_id, current_user)
     return TrendReportOut.model_validate(report)
 
 
@@ -211,7 +226,9 @@ async def list_recommended_trends(
 
 @router.post("/opportunities", response_model=OpportunityListResponse)
 async def get_content_opportunities(
-    company_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> OpportunityListResponse:
     """Content Opportunity Discovery — one Claude call over this company's
     OWN real data: its relevance-scored trends (CompanyTrendRelevance, the
@@ -220,9 +237,7 @@ async def get_content_opportunities(
     any exist) its own recent performance snapshots. Registered before the
     `/{trend_id}` catch-all below, same defensive ordering convention as
     `/reports` above it."""
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
+    company = await get_owned_company(session, company_id, current_user)
 
     trend_rows = (
         await session.execute(

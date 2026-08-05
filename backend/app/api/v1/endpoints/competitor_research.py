@@ -26,16 +26,16 @@ from app.models.competitor import (
     CompetitorSuggestionsRequest,
     CompetitorSuggestionsResponse,
 )
-from app.security.auth import get_current_user
+from app.security.auth import CurrentUser, get_current_user
+from app.security.ownership import get_owned_company, owned_company_ids
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-async def _get_company_or_404(session: AsyncSession, company_id: uuid.UUID) -> Company:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
-    return company
+async def _get_company_or_404(
+    session: AsyncSession, company_id: uuid.UUID, current_user: CurrentUser
+) -> Company:
+    return await get_owned_company(session, company_id, current_user)
 
 
 @router.post("/competitors", response_model=CompetitorCreatedResponse, status_code=202)
@@ -43,12 +43,13 @@ async def create_competitor(
     payload: CompetitorCreateRequest,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CompetitorCreatedResponse:
     """Start onboarding for a competitor URL. Returns the pending row and
     kicks off the scrape+extract pipeline in the background — the caller
     polls `GET /competitors/{id}` until status becomes 'complete' or
     'failed', same as `POST /companies`."""
-    await _get_company_or_404(session, payload.company_id)
+    await _get_company_or_404(session, payload.company_id, current_user)
     url = normalize_url(str(payload.url))
 
     existing = (
@@ -87,13 +88,18 @@ async def create_competitor(
 
 @router.get("/competitors", response_model=CompetitorListResponse)
 async def list_competitors(
-    company_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CompetitorListResponse:
-    stmt = select(Competitor).order_by(Competitor.created_at.desc())
-    count_stmt = select(func.count()).select_from(Competitor)
     if company_id is not None:
-        stmt = stmt.where(Competitor.company_id == company_id)
-        count_stmt = count_stmt.where(Competitor.company_id == company_id)
+        await get_owned_company(session, company_id, current_user)
+        owned_ids: list[uuid.UUID] = [company_id]
+    else:
+        owned_ids = await owned_company_ids(session, current_user)
+
+    stmt = select(Competitor).where(Competitor.company_id.in_(owned_ids)).order_by(Competitor.created_at.desc())
+    count_stmt = select(func.count()).select_from(Competitor).where(Competitor.company_id.in_(owned_ids))
 
     total = (await session.execute(count_stmt)).scalar_one()
     rows = (await session.execute(stmt)).scalars().all()
@@ -104,22 +110,27 @@ async def list_competitors(
 
 @router.get("/competitors/{competitor_id}", response_model=CompetitorOut)
 async def get_competitor(
-    competitor_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    competitor_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CompetitorOut:
     competitor = await session.get(Competitor, competitor_id)
     if competitor is None:
         raise HTTPException(status_code=404, detail="Competitor not found")
+    await get_owned_company(session, competitor.company_id, current_user)
     return CompetitorOut.model_validate(competitor)
 
 
 @router.post("/competitors/{competitor_id}/comparison", response_model=CompetitorOut)
 async def create_comparison(
-    competitor_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    competitor_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CompetitorOut:
     competitor = await session.get(Competitor, competitor_id)
     if competitor is None:
         raise HTTPException(status_code=404, detail="Competitor not found")
-    company = await _get_company_or_404(session, competitor.company_id)
+    company = await _get_company_or_404(session, competitor.company_id, current_user)
 
     if company.status != "complete" or competitor.status != "complete":
         raise HTTPException(
@@ -151,9 +162,11 @@ async def create_comparison(
 
 @router.post("/suggestions", response_model=CompetitorSuggestionsResponse)
 async def get_suggestions(
-    payload: CompetitorSuggestionsRequest, session: AsyncSession = Depends(get_session)
+    payload: CompetitorSuggestionsRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CompetitorSuggestionsResponse:
-    company = await _get_company_or_404(session, payload.company_id)
+    company = await _get_company_or_404(session, payload.company_id, current_user)
 
     context = "\n".join(
         [

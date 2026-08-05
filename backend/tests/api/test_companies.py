@@ -137,6 +137,7 @@ async def test_get_company_returns_the_row(client, test_session_factory):
                 name="Example Co",
                 niche_keywords=["widgets"],
                 products_and_services=["Widget subscription box"],
+                owner_id="test-user-id",
             )
         )
         await session.commit()
@@ -152,8 +153,22 @@ async def test_get_company_returns_the_row(client, test_session_factory):
 
 async def test_list_companies_returns_all(client, test_session_factory):
     async with test_session_factory() as session:
-        session.add(Company(id=uuid.uuid4(), url="https://a.example.com", status="complete"))
-        session.add(Company(id=uuid.uuid4(), url="https://b.example.com", status="pending"))
+        session.add(
+            Company(
+                id=uuid.uuid4(),
+                url="https://a.example.com",
+                status="complete",
+                owner_id="test-user-id",
+            )
+        )
+        session.add(
+            Company(
+                id=uuid.uuid4(),
+                url="https://b.example.com",
+                status="pending",
+                owner_id="test-user-id",
+            )
+        )
         await session.commit()
 
     response = await client.get("/")

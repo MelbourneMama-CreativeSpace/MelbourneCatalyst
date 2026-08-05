@@ -27,10 +27,18 @@ async def similarity_search(
     query: str,
     *,
     company_id: uuid.UUID | None = None,
+    company_ids: list[uuid.UUID] | None = None,
     k: int = 5,
 ) -> list[SearchHit]:
     """Rank the top-k most similar Document chunks to `query`. Empty list on
-    unsupported backends (SQLite) or missing embedding key."""
+    unsupported backends (SQLite) or missing embedding key.
+
+    `company_id` scopes to one company (chat tools, content generation —
+    contexts that already resolved and authorized a single company).
+    `company_ids` scopes to a caller-owned set (the search endpoint, when
+    it isn't given a specific company to search) — passing neither would
+    search every company's documents, which is never what an HTTP caller
+    should get access to."""
     if session.bind is None or session.bind.dialect.name != "postgresql":
         logger.warning("similarity_search called on non-Postgres backend; returning []")
         return []
@@ -43,6 +51,8 @@ async def similarity_search(
     stmt = select(Document, distance.label("distance")).where(Document.embedding.is_not(None))
     if company_id is not None:
         stmt = stmt.where(Document.company_id == company_id)
+    elif company_ids is not None:
+        stmt = stmt.where(Document.company_id.in_(company_ids))
     stmt = stmt.order_by(distance).limit(k)
 
     rows = (await session.execute(stmt)).all()

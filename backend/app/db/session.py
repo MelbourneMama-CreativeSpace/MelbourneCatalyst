@@ -1,3 +1,4 @@
+
 """Async SQLAlchemy engine/session, targeting the Supabase Postgres instance."""
 
 from __future__ import annotations
@@ -8,6 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
+
+# DATABASE_URL must point at Supavisor's *session*-mode port (5432), not the
+# transaction-mode port (6543): transaction mode hands out a different
+# backend Postgres session per query, which breaks asyncpg's server-side
+# prepared statements (DuplicatePreparedStatementError — asyncpg's statement
+# names collide with whatever the previous logical connection on that
+# recycled backend session left behind). Session mode gives this app's
+# connection pool a stable backend session per connection, like a normal
+# Postgres connection, so prepared statements behave correctly.
 
 
 class Base(DeclarativeBase):

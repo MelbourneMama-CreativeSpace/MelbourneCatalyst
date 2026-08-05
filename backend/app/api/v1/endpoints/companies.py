@@ -20,7 +20,8 @@ from app.models.company import (
     CompanyListResponse,
     CompanyOut,
 )
-from app.security.auth import get_current_user
+from app.security.auth import CurrentUser, get_current_user
+from app.security.ownership import get_owned_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -30,6 +31,7 @@ async def create_company(
     payload: CompanyCreateRequest,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CompanyCreatedResponse:
     """Start onboarding for a new company URL. Returns the pending row and
     kicks off the LangGraph pipeline in the background — the caller polls
@@ -41,7 +43,14 @@ async def create_company(
     # doesn't normalize this consistently on its own.
     url = normalize_url(str(payload.url))
 
-    existing = (await session.execute(select(Company).where(Company.url == url))).scalar_one_or_none()
+    # Dedup is scoped to the caller's own companies — two different users
+    # onboarding the same URL each get their own private row, not one
+    # shared row (that would leak one user's re-onboard into another's).
+    existing = (
+        await session.execute(
+            select(Company).where(Company.url == url, Company.owner_id == current_user.id)
+        )
+    ).scalar_one_or_none()
     if existing is not None:
         # Re-onboard: wipe the previous run's Documents before resetting to
         # pending. Without this, search results accumulate stale/duplicate
@@ -49,23 +58,33 @@ async def create_company(
         await session.execute(delete(Document).where(Document.company_id == existing.id))
         existing.status = "pending"
         existing.status_error = None
+        if payload.name:
+            existing.name = payload.name
         await session.commit()
         background_tasks.add_task(run_onboarding, existing.id, url)
-        return CompanyCreatedResponse(id=existing.id, url=url, status=existing.status)
+        return CompanyCreatedResponse(id=existing.id, url=url, name=existing.name, status=existing.status)
 
-    company = Company(id=uuid.uuid4(), url=url, status="pending")
+    company = Company(
+        id=uuid.uuid4(), url=url, name=payload.name, status="pending", owner_id=current_user.id
+    )
     session.add(company)
     await session.commit()
 
     background_tasks.add_task(run_onboarding, company.id, url)
-    return CompanyCreatedResponse(id=company.id, url=url, status=company.status)
+    return CompanyCreatedResponse(id=company.id, url=url, name=company.name, status=company.status)
 
 
 @router.get("/", response_model=CompanyListResponse)
-async def list_companies(session: AsyncSession = Depends(get_session)) -> CompanyListResponse:
-    total = (await session.execute(select(func.count()).select_from(Company))).scalar_one()
+async def list_companies(
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CompanyListResponse:
+    stmt = select(Company).where(Company.owner_id == current_user.id)
+    total = (
+        await session.execute(select(func.count()).select_from(stmt.subquery()))
+    ).scalar_one()
     rows = (
-        await session.execute(select(Company).order_by(Company.updated_at.desc()))
+        await session.execute(stmt.order_by(Company.updated_at.desc()))
     ).scalars().all()
     return CompanyListResponse(
         items=[CompanyOut.model_validate(row) for row in rows], total=total
@@ -74,9 +93,9 @@ async def list_companies(session: AsyncSession = Depends(get_session)) -> Compan
 
 @router.get("/{company_id}", response_model=CompanyOut)
 async def get_company(
-    company_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CompanyOut:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
+    company = await get_owned_company(session, company_id, current_user)
     return CompanyOut.model_validate(company)
