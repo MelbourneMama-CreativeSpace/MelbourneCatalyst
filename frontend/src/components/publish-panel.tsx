@@ -13,11 +13,20 @@ import {
   type PublishResult,
 } from "@/lib/api";
 
+// Only these fields are actually used below — a structural (not nominal)
+// type, so a chat flashcard's much smaller ContentItemCard shape works
+// here unchanged, without needing every field a full ContentItemWithCompany
+// carries.
+type PublishableItem = Pick<
+  ContentItemWithCompany,
+  "id" | "company_id" | "platform" | "scheduled_at" | "published_at"
+>;
+
 // The one common publish/schedule surface every content item uses,
 // regardless of platform — connection status, "publish now," and
 // "schedule for later" are the same three controls no matter which
 // social handle the item belongs to.
-export function PublishPanel({ item }: { item: ContentItemWithCompany }) {
+export function PublishPanel({ item }: { item: PublishableItem }) {
   const [open, setOpen] = useState(false);
   const [connections, setConnections] = useState<PlatformConnection[] | null>(null);
   const [publishing, setPublishing] = useState(false);

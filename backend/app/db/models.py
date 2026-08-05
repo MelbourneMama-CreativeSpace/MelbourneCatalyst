@@ -90,6 +90,10 @@ class Company(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
     url: Mapped[str] = mapped_column(String(2048), nullable=False, unique=True)
+    # Supabase user id of whoever onboarded this company. Nullable only for
+    # rows created before ownership existed — see app/security/ownership.py
+    # for how those are treated (inaccessible, not shared).
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # `name` is nullable because the extractor fills it in during
     # onboarding — it doesn't exist yet when the pending row is created.
     name: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -586,10 +590,13 @@ class TrendReport(Base):
 class ChatConversation(Base):
     """A conversation with the intelligent chat agent. Nullable
     `company_id` — a conversation can be scoped to one company (tool calls
-    default to it) or general. No `user_id`: this app has no per-user data
-    isolation anywhere yet (a documented, deliberate gap — see
-    KNOWN_ISSUES.md), so chat follows the same model as every other table
-    rather than inventing a new isolation boundary as a side effect."""
+    default to it) or general.
+
+    `user_id` is the Supabase id of whoever started the conversation. It's
+    stored directly rather than derived from `company_id` — company_id is
+    nullable (general conversations aren't scoped to any company) and,
+    separately, chat history is personal even when it *is* scoped to a
+    shared company, so it isn't implied by company ownership either."""
 
     __tablename__ = "chat_conversations"
 
@@ -597,6 +604,9 @@ class ChatConversation(Base):
     company_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Nullable only for conversations created before per-user ownership
+    # existed — see app/security/ownership.py for how those are treated.
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # Set from the first user message once the agent has replied; null
     # until then (matches the sidebar's "New conversation" fallback label).
     title: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -638,6 +648,12 @@ class ChatMessage(Base):
     # isn't a pending-or-resolved action proposal.
     proposed_action: Mapped[dict | None] = mapped_column(_MetadataType, nullable=True)
     action_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # "pending" | "confirmed" | "cancelled"
+    # Small structured snapshots — a content item just created/found, a
+    # trend surfaced — the frontend renders as flashcards inline in the
+    # chat instead of the assistant only ever describing things in prose.
+    # Never replayed back to Claude, same display-only contract
+    # `tool_calls_summary` already has. Null when a reply has none.
+    cards: Mapped[list[dict] | None] = mapped_column(_MetadataType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped[ChatConversation] = relationship(back_populates="messages")

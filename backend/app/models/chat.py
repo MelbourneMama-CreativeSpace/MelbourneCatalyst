@@ -36,6 +36,7 @@ class ChatMessageOut(BaseModel):
     tool_calls_summary: list[str] | None
     proposed_action: dict | None
     action_status: str | None
+    cards: list[dict] | None = None
     created_at: datetime
     # Only meaningful on assistant messages — False means this is a
     # graceful-degradation reply (e.g. no Claude credit), not a real
@@ -49,3 +50,10 @@ class ConversationDetailOut(ConversationOut):
 
 class SendMessageRequest(BaseModel):
     content: str
+
+
+class AttachmentUploadResponse(BaseModel):
+    url: str
+    filename: str
+    content_type: str
+    size_bytes: int

@@ -19,12 +19,12 @@ from sqlalchemy.orm import selectinload
 from app.agents.content_management.campaign_graph import run_campaign_generation
 from app.agents.content_management.collaboration_graph import run_collaboration_generation
 from app.agents.content_management.content_plan_graph import (
+    create_manual_item,
     fetch_kb_references,
     format_context,
     regenerate_item_draft_copy,
     run_content_plan_generation,
 )
-from app.agents.content_management.content_planner import generate_content_item_from_input
 from app.agents.content_management.creative_brief import generate_creative_brief
 from app.agents.content_management.quality_check import check_content_quality
 from app.agents.content_management.repurposing import repurpose_content_item
@@ -75,33 +75,46 @@ from app.models.content_management import (
     StrategyListResponse,
     StrategyOut,
 )
-from app.security.auth import get_current_user
+from app.security.auth import CurrentUser, get_current_user
+from app.security.ownership import get_owned_company, owned_company_ids
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-async def _get_company_or_404(session: AsyncSession, company_id: uuid.UUID) -> Company:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
-    return company
+async def _get_company_or_404(
+    session: AsyncSession, company_id: uuid.UUID, current_user: CurrentUser
+) -> Company:
+    return await get_owned_company(session, company_id, current_user)
+
+
+async def _require_owns_company_of(
+    session: AsyncSession, company_id: uuid.UUID | None, current_user: CurrentUser
+) -> None:
+    """For resources reached by their own id (strategy_id, campaign_id,
+    …) rather than by company_id — once the row is loaded and its
+    company_id known, this confirms the caller actually owns that
+    company before the row is returned or mutated."""
+    if company_id is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    await get_owned_company(session, company_id, current_user)
 
 
 @router.get("/approvals/pending", response_model=PendingApprovalListResponse)
 async def list_pending_approvals(
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PendingApprovalListResponse:
     """One combined queue for every `pending` Strategy and ContentItem
-    across every company — the "assigned to you" surface the sidebar
-    badge and the /approvals page both read from. Registered before any
-    catch-all-shaped route in this router (there isn't one today, but
-    matches the defensive ordering convention used elsewhere in this
-    codebase, e.g. trends.py's /reports vs /{trend_id})."""
+    across every company *the caller owns* — the "assigned to you" surface
+    the sidebar badge and the /approvals page both read from. Registered
+    before any catch-all-shaped route in this router (there isn't one
+    today, but matches the defensive ordering convention used elsewhere in
+    this codebase, e.g. trends.py's /reports vs /{trend_id})."""
     strategy_rows = (
         await session.execute(
             select(Strategy, Company.name)
             .join(Company, Strategy.company_id == Company.id)
-            .where(Strategy.approval_status == "pending")
+            .where(Strategy.approval_status == "pending", Company.owner_id == current_user.id)
         )
     ).all()
     content_item_rows = (
@@ -109,7 +122,9 @@ async def list_pending_approvals(
             select(ContentItem, ContentPlan.company_id, Company.name)
             .join(ContentPlan, ContentItem.content_plan_id == ContentPlan.id)
             .join(Company, ContentPlan.company_id == Company.id)
-            .where(ContentItem.approval_status == "pending")
+            .where(
+                ContentItem.approval_status == "pending", Company.owner_id == current_user.id
+            )
         )
     ).all()
 
@@ -141,12 +156,14 @@ async def list_pending_approvals(
     return PendingApprovalListResponse(items=items, total=len(items))
 
 
-async def _get_ready_company_or_error(session: AsyncSession, company_id: uuid.UUID) -> Company:
+async def _get_ready_company_or_error(
+    session: AsyncSession, company_id: uuid.UUID, current_user: CurrentUser
+) -> Company:
     """Same as `_get_company_or_404`, but also rejects companies whose
     onboarding never produced a usable profile — generating a strategy or
     content plan from an all-`Unknown` context wastes a Claude call and
     silently produces low-value output with no clue why to the caller."""
-    company = await _get_company_or_404(session, company_id)
+    company = await _get_company_or_404(session, company_id, current_user)
     if company.status != "complete":
         raise HTTPException(
             status_code=409,
@@ -160,9 +177,11 @@ async def _get_ready_company_or_error(session: AsyncSession, company_id: uuid.UU
 
 @router.post("/strategies", response_model=StrategyOut)
 async def create_strategy(
-    payload: StrategyCreateRequest, session: AsyncSession = Depends(get_session)
+    payload: StrategyCreateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> StrategyOut:
-    await _get_ready_company_or_error(session, payload.company_id)
+    await _get_ready_company_or_error(session, payload.company_id, current_user)
 
     strategy = Strategy(id=uuid.uuid4(), company_id=payload.company_id, status="pending")
     session.add(strategy)
@@ -188,13 +207,18 @@ async def create_strategy(
 
 @router.get("/strategies", response_model=StrategyListResponse)
 async def list_strategies(
-    company_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> StrategyListResponse:
-    stmt = select(Strategy).order_by(Strategy.created_at.desc())
-    count_stmt = select(func.count()).select_from(Strategy)
     if company_id is not None:
-        stmt = stmt.where(Strategy.company_id == company_id)
-        count_stmt = count_stmt.where(Strategy.company_id == company_id)
+        await get_owned_company(session, company_id, current_user)
+        owned_ids: list[uuid.UUID] = [company_id]
+    else:
+        owned_ids = await owned_company_ids(session, current_user)
+
+    stmt = select(Strategy).where(Strategy.company_id.in_(owned_ids)).order_by(Strategy.created_at.desc())
+    count_stmt = select(func.count()).select_from(Strategy).where(Strategy.company_id.in_(owned_ids))
 
     total = (await session.execute(count_stmt)).scalar_one()
     rows = (await session.execute(stmt)).scalars().all()
@@ -203,11 +227,14 @@ async def list_strategies(
 
 @router.get("/strategies/{strategy_id}", response_model=StrategyOut)
 async def get_strategy(
-    strategy_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    strategy_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> StrategyOut:
     strategy = await session.get(Strategy, strategy_id)
     if strategy is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
+    await _require_owns_company_of(session, strategy.company_id, current_user)
     return StrategyOut.model_validate(strategy)
 
 
@@ -216,10 +243,12 @@ async def update_strategy_approval(
     strategy_id: uuid.UUID,
     payload: StrategyApprovalUpdateRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> StrategyOut:
     strategy = await session.get(Strategy, strategy_id)
     if strategy is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
+    await _require_owns_company_of(session, strategy.company_id, current_user)
     strategy.approval_status = payload.approval_status
     strategy.approved_by = payload.approved_by
     if payload.reviewer is not None:
@@ -247,9 +276,11 @@ async def update_strategy_approval(
 
 @router.post("/content-plans", response_model=ContentPlanOut)
 async def create_content_plan(
-    payload: ContentPlanCreateRequest, session: AsyncSession = Depends(get_session)
+    payload: ContentPlanCreateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentPlanOut:
-    await _get_ready_company_or_error(session, payload.company_id)
+    await _get_ready_company_or_error(session, payload.company_id, current_user)
     if payload.strategy_id is not None:
         strategy = await session.get(Strategy, payload.strategy_id)
         if strategy is None:
@@ -314,57 +345,50 @@ async def create_manual_content_item(
     company_id: uuid.UUID,
     payload: ManualContentItemCreateRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemOut:
     """A single user-supplied topic/idea, generated into one ready-to-publish
     item — the manual-input counterpart to the full-calendar `POST
     /content-plans` above. Grounded in the same company profile + KB
     reference-material context as regular generation, so voice stays
-    consistent between the two paths."""
-    company = await _get_ready_company_or_error(session, company_id)
-    manual_plan = await _get_or_create_manual_plan(session, company_id)
+    consistent between the two paths. The chat agent's `create_content_item`
+    write tool produces identical results through the same
+    `create_manual_item` — ownership/readiness is checked here (this
+    endpoint's session + current_user), the generation itself happens in
+    that shared, session-independent function."""
+    await _get_ready_company_or_error(session, company_id, current_user)
 
-    kb_references = await fetch_kb_references(session, company_id, payload.topic)
-    context = format_context(company, None, [], kb_references)
-
-    generated_item, ok = await generate_content_item_from_input(
-        context, payload.topic, payload.platform, payload.content_type
+    item, ok = await create_manual_item(
+        company_id, payload.topic, payload.platform, payload.content_type
     )
-    if not ok or generated_item is None:
+    if not ok or item is None:
         raise HTTPException(
             status_code=502,
             detail=(
                 "Content generation failed (check ANTHROPIC_API_KEY / Claude API availability)."
             ),
         )
-
-    item = ContentItem(
-        id=uuid.uuid4(),
-        content_plan_id=manual_plan.id,
-        title=generated_item.title,
-        description=generated_item.description,
-        content_type=generated_item.content_type,
-        platform=generated_item.platform,
-        theme=generated_item.theme,
-        suggested_date=generated_item.suggested_date,
-        draft_copy=generated_item.draft_copy,
-        hashtags=generated_item.hashtags,
-        approval_status="pending",
-    )
-    session.add(item)
-    await session.commit()
-    await session.refresh(item)
     return ContentItemOut.model_validate(item)
 
 
 @router.get("/content-plans", response_model=ContentPlanListResponse)
 async def list_content_plans(
-    company_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentPlanListResponse:
-    stmt = select(ContentPlan).order_by(ContentPlan.created_at.desc())
-    count_stmt = select(func.count()).select_from(ContentPlan)
     if company_id is not None:
-        stmt = stmt.where(ContentPlan.company_id == company_id)
-        count_stmt = count_stmt.where(ContentPlan.company_id == company_id)
+        await get_owned_company(session, company_id, current_user)
+        owned_ids: list[uuid.UUID] = [company_id]
+    else:
+        owned_ids = await owned_company_ids(session, current_user)
+
+    stmt = (
+        select(ContentPlan)
+        .where(ContentPlan.company_id.in_(owned_ids))
+        .order_by(ContentPlan.created_at.desc())
+    )
+    count_stmt = select(func.count()).select_from(ContentPlan).where(ContentPlan.company_id.in_(owned_ids))
 
     total = (await session.execute(count_stmt)).scalar_one()
     rows = (await session.execute(stmt)).scalars().all()
@@ -375,7 +399,9 @@ async def list_content_plans(
 
 @router.get("/content-plans/{content_plan_id}", response_model=ContentPlanOut)
 async def get_content_plan(
-    content_plan_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    content_plan_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentPlanOut:
     content_plan = (
         await session.execute(
@@ -386,6 +412,7 @@ async def get_content_plan(
     ).scalar_one_or_none()
     if content_plan is None:
         raise HTTPException(status_code=404, detail="Content plan not found")
+    await _require_owns_company_of(session, content_plan.company_id, current_user)
     return ContentPlanOut.model_validate(content_plan)
 
 
@@ -394,15 +421,20 @@ async def list_content_items(
     company_id: uuid.UUID | None = None,
     platform: str | None = None,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemListResponse:
-    """Flat, cross-company list of every content item — the Draft
-    Workspace's data source, grouped by platform client-side rather than
-    viewed one company's calendar at a time. `company_id`/`platform` are
-    optional filters."""
+    """Flat list of every content item across every company *the caller
+    owns* — the Draft Workspace's data source, grouped by platform
+    client-side rather than viewed one company's calendar at a time.
+    `company_id`/`platform` are optional filters."""
+    if company_id is not None:
+        await get_owned_company(session, company_id, current_user)
+
     stmt = (
         select(ContentItem, ContentPlan.company_id, Company.name)
         .join(ContentPlan, ContentItem.content_plan_id == ContentPlan.id)
         .join(Company, ContentPlan.company_id == Company.id)
+        .where(Company.owner_id == current_user.id)
         .order_by(ContentItem.suggested_date.desc())
     )
     if company_id is not None:
@@ -423,18 +455,32 @@ async def list_content_items(
     )
 
 
+async def _get_owned_content_item(
+    session: AsyncSession, item_id: uuid.UUID, current_user: CurrentUser
+) -> tuple[ContentItem, ContentPlan]:
+    """Every content-item route reaches ownership the same way: item ->
+    its content_plan -> the plan's company -> that company's owner."""
+    item = await session.get(ContentItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Content item not found")
+    content_plan = await session.get(ContentPlan, item.content_plan_id)
+    if content_plan is None:
+        raise HTTPException(status_code=404, detail="Content item not found")
+    await get_owned_company(session, content_plan.company_id, current_user)
+    return item, content_plan
+
+
 @router.patch("/content-items/{item_id}", response_model=ContentItemOut)
 async def update_content_item(
     item_id: uuid.UUID,
     payload: ContentItemUpdateRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemOut:
     """Content preview & approval flow, drag-and-drop rescheduling, and
     hand-editing the draft copy in the Draft Workspace — all plain field
     updates on an existing item, no regeneration."""
-    item = await session.get(ContentItem, item_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Content item not found")
+    item, _ = await _get_owned_content_item(session, item_id, current_user)
 
     if payload.approval_status is not None:
         item.approval_status = payload.approval_status
@@ -484,6 +530,7 @@ async def schedule_content_item(
     item_id: uuid.UUID,
     payload: ScheduleContentItemRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemOut:
     """Sets (or, with `scheduled_at: null`, clears) when the scheduled-
     publishing job should attempt to publish this item. Scheduling and
@@ -491,9 +538,7 @@ async def schedule_content_item(
     is BOTH scheduled and approved (see `run_scheduled_publishing`), so
     scheduling an unapproved draft is allowed here but won't publish
     until it's also approved."""
-    item = await session.get(ContentItem, item_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Content item not found")
+    item, _ = await _get_owned_content_item(session, item_id, current_user)
     if item.published_at is not None:
         raise HTTPException(status_code=409, detail="This item has already been published.")
 
@@ -505,12 +550,15 @@ async def schedule_content_item(
 
 @router.post("/content-items/{item_id}/regenerate-draft", response_model=ContentItemOut)
 async def regenerate_content_item_draft(
-    item_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    item_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemOut:
     """Rewrite this item's draft copy — the calendar detail panel's
     "regenerate" action, for when the first draft isn't right. Runs a
     single Claude call synchronously, same latency profile as the other
     content-management POSTs."""
+    await _get_owned_content_item(session, item_id, current_user)
     item, ok = await regenerate_item_draft_copy(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Content item not found")
@@ -527,6 +575,7 @@ async def repurpose_content_item_endpoint(
     item_id: uuid.UUID,
     payload: ContentItemRepurposeRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemOut:
     """Adapts an existing item's message into a NEW item for a different
     platform/format — the Content Repurposing Engine. Creates a fresh
@@ -534,16 +583,11 @@ async def repurpose_content_item_endpoint(
     per-company plan `create_manual_content_item` writes into), leaving
     the source item untouched. `repurposed_from_id` traces the new item
     back to where it came from."""
-    source = await session.get(ContentItem, item_id)
-    if source is None:
-        raise HTTPException(status_code=404, detail="Content item not found")
+    source, content_plan = await _get_owned_content_item(session, item_id, current_user)
     if not source.draft_copy:
         raise HTTPException(status_code=400, detail="This item has no draft copy to repurpose yet.")
 
-    content_plan = await session.get(ContentPlan, source.content_plan_id)
-    if content_plan is None:
-        raise HTTPException(status_code=404, detail="Content plan for this item not found")
-    company = await _get_ready_company_or_error(session, content_plan.company_id)
+    company = await _get_ready_company_or_error(session, content_plan.company_id, current_user)
     manual_plan = await _get_or_create_manual_plan(session, content_plan.company_id)
 
     kb_references = await fetch_kb_references(session, content_plan.company_id, source.title)
@@ -579,22 +623,19 @@ async def repurpose_content_item_endpoint(
 
 @router.post("/content-items/{item_id}/quality-check", response_model=ContentItemOut)
 async def check_content_item_quality(
-    item_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    item_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemOut:
     """Reviews the item's current draft_copy for grammar/tone/formatting
     issues and brand-voice consistency — one Claude call covering both,
     not two separate systems. Overwrites the previous check result
     (single current state, not versioned like draft_copy's revisions)."""
-    item = await session.get(ContentItem, item_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Content item not found")
+    item, content_plan = await _get_owned_content_item(session, item_id, current_user)
     if not item.draft_copy:
         raise HTTPException(status_code=400, detail="This item has no draft copy to check yet.")
 
-    content_plan = await session.get(ContentPlan, item.content_plan_id)
-    company = (
-        await session.get(Company, content_plan.company_id) if content_plan is not None else None
-    )
+    company = await session.get(Company, content_plan.company_id)
 
     result, ok = await check_content_quality(
         item.draft_copy, company.brand_voice if company else None, item.platform
@@ -620,24 +661,19 @@ async def check_content_item_quality(
     "/content-items/{item_id}/creative-brief", response_model=ContentItemCreativeBriefOut
 )
 async def create_content_item_creative_brief(
-    item_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    item_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemCreativeBriefOut:
     """Generates a production brief (hook, shot list, visual direction,
     editing notes) for one content item. Overwrites any existing brief for
     this item — single current state, not versioned like draft_copy's
     revisions."""
-    item = await session.get(ContentItem, item_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Content item not found")
+    item, content_plan = await _get_owned_content_item(session, item_id, current_user)
 
-    content_plan = await session.get(ContentPlan, item.content_plan_id)
-    company = (
-        await session.get(Company, content_plan.company_id) if content_plan is not None else None
-    )
+    company = await session.get(Company, content_plan.company_id)
     strategy = (
-        await session.get(Strategy, content_plan.strategy_id)
-        if content_plan is not None and content_plan.strategy_id
-        else None
+        await session.get(Strategy, content_plan.strategy_id) if content_plan.strategy_id else None
     )
     if company is None:
         raise HTTPException(status_code=404, detail="Company for this content item not found")
@@ -678,8 +714,11 @@ async def create_content_item_creative_brief(
     "/content-items/{item_id}/creative-brief", response_model=ContentItemCreativeBriefOut
 )
 async def get_content_item_creative_brief(
-    item_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    item_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemCreativeBriefOut:
+    await _get_owned_content_item(session, item_id, current_user)
     brief = (
         await session.execute(
             select(ContentItemCreativeBrief).where(
@@ -694,8 +733,11 @@ async def get_content_item_creative_brief(
 
 @router.get("/content-items/{item_id}/revisions", response_model=ContentItemRevisionListResponse)
 async def list_content_item_revisions(
-    item_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    item_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemRevisionListResponse:
+    await _get_owned_content_item(session, item_id, current_user)
     rows = (
         (
             await session.execute(
@@ -714,8 +756,11 @@ async def list_content_item_revisions(
 
 @router.get("/content-items/{item_id}/comments", response_model=ContentItemCommentListResponse)
 async def list_content_item_comments(
-    item_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    item_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemCommentListResponse:
+    await _get_owned_content_item(session, item_id, current_user)
     rows = (
         (
             await session.execute(
@@ -737,10 +782,9 @@ async def create_content_item_comment(
     item_id: uuid.UUID,
     payload: ContentItemCommentCreateRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> ContentItemCommentOut:
-    item = await session.get(ContentItem, item_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Content item not found")
+    await _get_owned_content_item(session, item_id, current_user)
 
     comment = ContentItemComment(
         id=uuid.uuid4(), content_item_id=item_id, author=payload.author, body=payload.body
@@ -753,9 +797,11 @@ async def create_content_item_comment(
 
 @router.post("/campaigns", response_model=CampaignOut)
 async def create_campaign(
-    payload: CampaignCreateRequest, session: AsyncSession = Depends(get_session)
+    payload: CampaignCreateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CampaignOut:
-    await _get_ready_company_or_error(session, payload.company_id)
+    await _get_ready_company_or_error(session, payload.company_id, current_user)
     if payload.content_plan_id is not None:
         content_plan = await session.get(ContentPlan, payload.content_plan_id)
         if content_plan is None:
@@ -801,13 +847,18 @@ async def create_campaign(
 
 @router.get("/campaigns", response_model=CampaignListResponse)
 async def list_campaigns(
-    company_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CampaignListResponse:
-    stmt = select(Campaign).order_by(Campaign.created_at.desc())
-    count_stmt = select(func.count()).select_from(Campaign)
     if company_id is not None:
-        stmt = stmt.where(Campaign.company_id == company_id)
-        count_stmt = count_stmt.where(Campaign.company_id == company_id)
+        await get_owned_company(session, company_id, current_user)
+        owned_ids: list[uuid.UUID] = [company_id]
+    else:
+        owned_ids = await owned_company_ids(session, current_user)
+
+    stmt = select(Campaign).where(Campaign.company_id.in_(owned_ids)).order_by(Campaign.created_at.desc())
+    count_stmt = select(func.count()).select_from(Campaign).where(Campaign.company_id.in_(owned_ids))
 
     total = (await session.execute(count_stmt)).scalar_one()
     rows = (await session.execute(stmt)).scalars().all()
@@ -816,11 +867,14 @@ async def list_campaigns(
 
 @router.get("/campaigns/{campaign_id}", response_model=CampaignOut)
 async def get_campaign(
-    campaign_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    campaign_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CampaignOut:
     campaign = await session.get(Campaign, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    await _require_owns_company_of(session, campaign.company_id, current_user)
     return CampaignOut.model_validate(campaign)
 
 
@@ -829,10 +883,12 @@ async def update_campaign_lifecycle(
     campaign_id: uuid.UUID,
     payload: CampaignLifecycleUpdateRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CampaignOut:
     campaign = await session.get(Campaign, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    await _require_owns_company_of(session, campaign.company_id, current_user)
     campaign.lifecycle_stage = payload.lifecycle_stage
     await session.commit()
     await session.refresh(campaign)
@@ -841,9 +897,11 @@ async def update_campaign_lifecycle(
 
 @router.post("/collaborations", response_model=CollaborationOut)
 async def create_collaboration(
-    payload: CollaborationCreateRequest, session: AsyncSession = Depends(get_session)
+    payload: CollaborationCreateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CollaborationOut:
-    await _get_ready_company_or_error(session, payload.company_id)
+    await _get_ready_company_or_error(session, payload.company_id, current_user)
     if payload.strategy_id is not None:
         strategy = await session.get(Strategy, payload.strategy_id)
         if strategy is None:
@@ -876,13 +934,22 @@ async def create_collaboration(
 
 @router.get("/collaborations", response_model=CollaborationListResponse)
 async def list_collaborations(
-    company_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
+    company_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CollaborationListResponse:
-    stmt = select(Collaboration).order_by(Collaboration.created_at.desc())
-    count_stmt = select(func.count()).select_from(Collaboration)
     if company_id is not None:
-        stmt = stmt.where(Collaboration.company_id == company_id)
-        count_stmt = count_stmt.where(Collaboration.company_id == company_id)
+        await get_owned_company(session, company_id, current_user)
+        owned_ids: list[uuid.UUID] = [company_id]
+    else:
+        owned_ids = await owned_company_ids(session, current_user)
+
+    stmt = (
+        select(Collaboration)
+        .where(Collaboration.company_id.in_(owned_ids))
+        .order_by(Collaboration.created_at.desc())
+    )
+    count_stmt = select(func.count()).select_from(Collaboration).where(Collaboration.company_id.in_(owned_ids))
 
     total = (await session.execute(count_stmt)).scalar_one()
     rows = (await session.execute(stmt)).scalars().all()
@@ -893,7 +960,9 @@ async def list_collaborations(
 
 @router.get("/collaborations/{collaboration_id}", response_model=CollaborationOut)
 async def get_collaboration(
-    collaboration_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    collaboration_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> CollaborationOut:
     collaboration = (
         await session.execute(
@@ -904,4 +973,5 @@ async def get_collaboration(
     ).scalar_one_or_none()
     if collaboration is None:
         raise HTTPException(status_code=404, detail="Collaboration not found")
+    await _require_owns_company_of(session, collaboration.company_id, current_user)
     return CollaborationOut.model_validate(collaboration)

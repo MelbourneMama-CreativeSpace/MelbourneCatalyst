@@ -10,16 +10,25 @@ from httpx import ASGITransport, AsyncClient
 
 from app.agents.chat import agent as agent_module
 from app.api.v1.endpoints import chat as chat_module
+from app.db.models import Company
 from app.db.session import get_session
 from app.security.auth import CurrentUser, get_current_user
 
 
 @pytest_asyncio.fixture
 async def client(monkeypatch, test_session_factory):
-    async def _fake_run_chat_turn(history, company_id, session):
-        return ("Fake assistant reply.", ["list_trending_topics"], True, None)
+    async def _fake_run_chat_turn(history, company_id, session, current_user):
+        return ("Fake assistant reply.", ["list_trending_topics"], True, None, [])
+
+    async def _fake_generate_conversation_title(user_message):
+        if user_message == "trigger-title-failure":
+            return None
+        return f"Title for: {user_message}"
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_run_chat_turn)
+    monkeypatch.setattr(
+        chat_module, "generate_conversation_title", _fake_generate_conversation_title
+    )
 
     app = FastAPI()
     app.include_router(chat_module.router)
@@ -38,6 +47,22 @@ async def client(monkeypatch, test_session_factory):
         yield async_client
 
 
+async def _seed_company(test_session_factory, **overrides) -> uuid.UUID:
+    company_id = uuid.uuid4()
+    defaults = dict(
+        id=company_id,
+        url=f"https://example.com/{company_id}",
+        status="complete",
+        name="Acme",
+        owner_id="test-user-id",
+    )
+    defaults.update(overrides)
+    async with test_session_factory() as session:
+        session.add(Company(**defaults))
+        await session.commit()
+    return company_id
+
+
 async def test_create_conversation(client):
     response = await client.post("/conversations", json={})
     assert response.status_code == 200
@@ -46,8 +71,8 @@ async def test_create_conversation(client):
     assert body["title"] is None
 
 
-async def test_create_conversation_scoped_to_company(client):
-    company_id = str(uuid.uuid4())
+async def test_create_conversation_scoped_to_company(client, test_session_factory):
+    company_id = str(await _seed_company(test_session_factory))
     response = await client.post("/conversations", json={"company_id": company_id})
     assert response.json()["company_id"] == company_id
 
@@ -90,7 +115,7 @@ async def test_delete_conversation(client):
     assert response.status_code == 404
 
 
-async def test_send_message_sets_title_from_first_message(client):
+async def test_send_message_sets_title_from_generated_intent(client):
     created = (await client.post("/conversations", json={})).json()
 
     response = await client.post(
@@ -104,7 +129,29 @@ async def test_send_message_sets_title_from_first_message(client):
     assert body["ok"] is True
 
     conversation = (await client.get(f"/conversations/{created['id']}")).json()
-    assert conversation["title"] == "What's trending?"
+    assert conversation["title"] == "Title for: What's trending?"
+
+
+async def test_send_message_title_falls_back_to_raw_message_if_generation_fails(client):
+    created = (await client.post("/conversations", json={})).json()
+
+    await client.post(
+        f"/conversations/{created['id']}/messages",
+        json={"content": "trigger-title-failure"},
+    )
+
+    conversation = (await client.get(f"/conversations/{created['id']}")).json()
+    assert conversation["title"] == "trigger-title-failure"
+
+
+async def test_send_message_does_not_rename_an_already_titled_conversation(client):
+    created = (await client.post("/conversations", json={})).json()
+    await client.post(f"/conversations/{created['id']}/messages", json={"content": "first"})
+
+    await client.post(f"/conversations/{created['id']}/messages", json={"content": "second"})
+
+    conversation = (await client.get(f"/conversations/{created['id']}")).json()
+    assert conversation["title"] == "Title for: first"
 
 
 async def test_send_message_404_for_unknown_conversation(client):
@@ -170,16 +217,16 @@ async def test_confirm_action_executes_the_proposed_tool(client, monkeypatch):
         "description": "Approve content item abc-123",
     }
 
-    async def _fake_with_proposal(history, company_id, session):
-        return ("I'll approve that.", [], True, proposed_action)
+    async def _fake_with_proposal(history, company_id, session, current_user):
+        return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
 
     executed_with: dict = {}
 
-    async def _fake_approve(session, **kwargs):
+    async def _fake_approve(session, current_user, **kwargs):
         executed_with.update(kwargs)
-        return "Approved content item 'Test post'."
+        return "Approved content item 'Test post'.", []
 
     monkeypatch.setitem(chat_module.WRITE_TOOL_IMPLEMENTATIONS, "approve_content_item", _fake_approve)
 
@@ -223,13 +270,13 @@ async def test_confirm_action_409_when_already_resolved(client, monkeypatch):
         "description": "Approve content item abc-123",
     }
 
-    async def _fake_with_proposal(history, company_id, session):
-        return ("I'll approve that.", [], True, proposed_action)
+    async def _fake_with_proposal(history, company_id, session, current_user):
+        return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
 
-    async def _fake_approve(session, **kwargs):
-        return "done"
+    async def _fake_approve(session, current_user, **kwargs):
+        return "done", []
 
     monkeypatch.setitem(chat_module.WRITE_TOOL_IMPLEMENTATIONS, "approve_content_item", _fake_approve)
 
@@ -254,17 +301,17 @@ async def test_cancel_action_marks_cancelled_without_executing(client, monkeypat
         "description": "Approve content item abc-123",
     }
 
-    async def _fake_with_proposal(history, company_id, session):
-        return ("I'll approve that.", [], True, proposed_action)
+    async def _fake_with_proposal(history, company_id, session, current_user):
+        return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
 
     executed = False
 
-    async def _fake_approve(session, **kwargs):
+    async def _fake_approve(session, current_user, **kwargs):
         nonlocal executed
         executed = True
-        return "should not run"
+        return "should not run", []
 
     monkeypatch.setitem(chat_module.WRITE_TOOL_IMPLEMENTATIONS, "approve_content_item", _fake_approve)
 

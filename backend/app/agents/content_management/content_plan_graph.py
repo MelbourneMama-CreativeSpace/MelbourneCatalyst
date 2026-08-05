@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.content_management.content_planner import (
+    generate_content_item_from_input,
     generate_content_plan,
     regenerate_draft_copy,
 )
@@ -318,6 +319,71 @@ async def regenerate_item_draft_copy(item_id: uuid.UUID) -> tuple[ContentItem | 
                 )
             )
         item.draft_copy = draft_copy
+        await session.commit()
+        await session.refresh(item)
+        return item, True
+
+
+async def create_manual_item(
+    company_id: uuid.UUID, topic: str, platform: str, content_type: str
+) -> tuple[ContentItem | None, bool]:
+    """Generate one ad-hoc ContentItem from a free-text brief and persist it
+    into the company's manual plan — the single-post counterpart to
+    `run_content_plan_generation`'s whole-calendar generation. Shared by the
+    manual-item HTTP endpoint and the chat agent's `create_content_item`
+    write tool, so "describe a post in chat" and "fill in the manual-item
+    form" produce identical results through one code path. Manages its own
+    session, same pattern as `regenerate_item_draft_copy` — callers that
+    already hold a session (e.g. an endpoint doing its own ownership check
+    first) are expected to, this never touches theirs. Returns
+    `(None, False)` if the company doesn't exist, isn't ready, or
+    generation itself fails."""
+    async with async_session_factory() as session:
+        company = await session.get(Company, company_id)
+        if company is None or company.status != "complete":
+            return None, False
+
+        # Same "one reusable plan per company for everything not part of a
+        # real generated calendar" shape as the manual-item endpoint's own
+        # `_get_or_create_manual_plan` — duplicated rather than imported
+        # across the endpoint/agent boundary, since it's a few lines and
+        # this module already owns every other piece of manual-item
+        # generation.
+        manual_plan = (
+            await session.execute(
+                select(ContentPlan).where(
+                    ContentPlan.company_id == company_id, ContentPlan.is_manual.is_(True)
+                )
+            )
+        ).scalar_one_or_none()
+        if manual_plan is None:
+            manual_plan = ContentPlan(
+                id=uuid.uuid4(), company_id=company_id, status="complete", is_manual=True
+            )
+            session.add(manual_plan)
+            await session.flush()
+
+        kb_references = await fetch_kb_references(session, company_id, topic)
+        context = format_context(company, None, [], kb_references)
+
+        generated, ok = await generate_content_item_from_input(context, topic, platform, content_type)
+        if not ok or generated is None:
+            return None, False
+
+        item = ContentItem(
+            id=uuid.uuid4(),
+            content_plan_id=manual_plan.id,
+            title=generated.title,
+            description=generated.description,
+            content_type=generated.content_type,
+            platform=generated.platform,
+            theme=generated.theme,
+            suggested_date=generated.suggested_date,
+            draft_copy=generated.draft_copy,
+            hashtags=generated.hashtags,
+            approval_status="pending",
+        )
+        session.add(item)
         await session.commit()
         await session.refresh(item)
         return item, True
