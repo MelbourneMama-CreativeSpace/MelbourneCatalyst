@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -12,6 +12,7 @@ import {
   History,
   Repeat2,
   ShieldCheck,
+  X as XIcon,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -56,8 +57,42 @@ const REPURPOSE_CONTENT_TYPES: ContentType[] = [
   "podcast",
 ];
 
-export function DraftCard({ item: initialItem }: { item: ContentItemWithCompany }) {
+export function DraftCard({
+  item: initialItem,
+  onChange,
+  onCreated,
+}: {
+  item: ContentItemWithCompany;
+  // Fired whenever this card's own item is updated in place (save,
+  // approve/reject, quality check, …) — lets a parent that also holds
+  // this item in a list (e.g. the workspace table) stay in sync instead
+  // of going stale until a full refetch.
+  onChange?: (item: ContentItemWithCompany) => void;
+  // Fired when this card spawns a brand-new item (repurposing) — same
+  // company as the source, so the parent can drop it straight into its
+  // list instead of the caller needing to know to refetch.
+  onCreated?: (item: ContentItemWithCompany) => void;
+}) {
   const [item, setItem] = useState(initialItem);
+  const [deciding, setDeciding] = useState(false);
+
+  function applyUpdate(updated: Partial<ContentItemWithCompany>) {
+    setItem((prev) => {
+      const next = { ...prev, ...updated };
+      onChange?.(next);
+      return next;
+    });
+  }
+
+  async function handleDecision(decision: "approved" | "rejected") {
+    setDeciding(true);
+    try {
+      const updated = await updateContentItem(item.id, { approvalStatus: decision });
+      applyUpdate(updated);
+    } finally {
+      setDeciding(false);
+    }
+  }
   const [draft, setDraft] = useState(item.draft_copy ?? "");
   const [hashtagsInput, setHashtagsInput] = useState((item.hashtags ?? []).join(", "));
   const [saving, setSaving] = useState(false);
@@ -99,7 +134,7 @@ export function DraftCard({ item: initialItem }: { item: ContentItemWithCompany 
     setQualityCheckError(false);
     try {
       const updated = await checkContentItemQuality(item.id);
-      setItem((prev) => ({ ...prev, ...updated }));
+      applyUpdate(updated);
     } catch {
       setQualityCheckError(true);
     } finally {
@@ -115,7 +150,7 @@ export function DraftCard({ item: initialItem }: { item: ContentItemWithCompany 
         draftCopy: draft,
         hashtags: hashtagsArray,
       });
-      setItem((prev) => ({ ...prev, ...updated }));
+      applyUpdate(updated);
       setHashtagsInput((updated.hashtags ?? []).join(", "));
       setSaved(true);
     } finally {
@@ -173,9 +208,12 @@ export function DraftCard({ item: initialItem }: { item: ContentItemWithCompany 
     setRepurposeError(false);
     setRepurposeResult(null);
     try {
-      setRepurposeResult(
-        await repurposeContentItem(item.id, repurposePlatform, repurposeContentType),
-      );
+      const created = await repurposeContentItem(item.id, repurposePlatform, repurposeContentType);
+      setRepurposeResult(created);
+      // Repurposing always lands in the source item's own company (see
+      // the backend's repurpose endpoint) — carry that over rather than
+      // asking the caller to look it up.
+      onCreated?.({ ...created, company_id: item.company_id, company_name: item.company_name });
     } catch {
       setRepurposeError(true);
     } finally {
@@ -204,9 +242,35 @@ export function DraftCard({ item: initialItem }: { item: ContentItemWithCompany 
             {item.company_name ?? "Unknown company"} · {item.suggested_date}
           </p>
         </div>
-        <Badge variant="outline" className="shrink-0 capitalize">
-          {item.approval_status}
-        </Badge>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Badge variant="outline" className="capitalize">
+            {item.approval_status}
+          </Badge>
+          {item.approval_status !== "approved" && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => handleDecision("approved")}
+              disabled={deciding}
+              aria-label="Approve"
+              title="Approve"
+            >
+              <Check className="h-3.5 w-3.5 text-primary" />
+            </Button>
+          )}
+          {item.approval_status !== "rejected" && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => handleDecision("rejected")}
+              disabled={deciding}
+              aria-label="Reject"
+              title="Reject"
+            >
+              <XIcon className="h-3.5 w-3.5 text-destructive" />
+            </Button>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <textarea
@@ -436,10 +500,7 @@ export function DraftCard({ item: initialItem }: { item: ContentItemWithCompany 
             )}
             {repurposeResult && (
               <p className="mt-2 text-foreground">
-                Created &quot;{repurposeResult.title}&quot; —{" "}
-                <Link href="/drafts" className="underline hover:text-primary">
-                  open in Drafts
-                </Link>
+                Created &quot;{repurposeResult.title}&quot; as a new draft — see it in the table above.
               </p>
             )}
           </div>
