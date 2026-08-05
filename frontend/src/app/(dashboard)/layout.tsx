@@ -1,4 +1,5 @@
 import { DashboardSidebar } from "@/components/dashboard-sidebar";
+import { LayoutWrapper } from "@/components/layout-wrapper";
 import { createClient } from "@/lib/supabase/server";
 
 // Every route under this group is auth-gated by `proxy.ts` — an
@@ -15,10 +16,15 @@ export default async function DashboardLayout({
     data: { user },
   } = await supabase.auth.getUser();
 
+  const fullName = user?.user_metadata?.full_name;
+
   return (
-    <div className="flex min-h-screen bg-background">
-      <DashboardSidebar initialEmail={user?.email ?? null} />
+    <LayoutWrapper>
+      <DashboardSidebar
+        initialEmail={user?.email ?? null}
+        initialName={typeof fullName === "string" && fullName ? fullName : null}
+      />
       <main className="min-w-0 flex-1">{children}</main>
-    </div>
+    </LayoutWrapper>
   );
 }

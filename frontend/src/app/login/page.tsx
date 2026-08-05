@@ -21,9 +21,10 @@ export default function LoginPage() {
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirectTo = searchParams.get("redirectTo") || "/dashboard";
+  const redirectTo = searchParams.get("redirectTo") || "/chat";
 
   const [mode, setMode] = useState<Mode>("sign-in");
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -50,7 +51,11 @@ function LoginForm() {
       return;
     }
 
-    const { data, error: signUpError } = await supabase.auth.signUp({ email, password });
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { full_name: fullName.trim() } },
+    });
     if (signUpError) {
       setError(signUpError.message);
       setSubmitting(false);
@@ -59,7 +64,9 @@ function LoginForm() {
     if (data.session) {
       // Email confirmation is off for this project — signUp already
       // returned a live session, so there's nothing left to wait for.
-      router.push(redirectTo);
+      // New accounts land on the company-onboarding step rather than
+      // wherever they were headed before signing up.
+      router.push("/onboarding?welcome=1");
       router.refresh();
       return;
     }
@@ -84,6 +91,19 @@ function LoginForm() {
             </p>
           ) : (
             <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+              {mode === "sign-up" && (
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Full name
+                  <input
+                    type="text"
+                    required
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    autoComplete="name"
+                    className="rounded-md border border-input bg-transparent px-2.5 py-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                  />
+                </label>
+              )}
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                 Email
                 <input

@@ -20,6 +20,13 @@ const PUBLIC_PATHS = ["/login"];
 const PUBLIC_EXACT_PATHS = ["/"];
 
 export async function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  if (pathname === "/") {
+    const chatUrl = request.nextUrl.clone();
+    chatUrl.pathname = "/chat";
+    return NextResponse.redirect(chatUrl);
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -50,7 +57,6 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const { pathname } = request.nextUrl;
   const isPublicPath =
     PUBLIC_EXACT_PATHS.includes(pathname) || PUBLIC_PATHS.some((path) => pathname.startsWith(path));
 
@@ -66,7 +72,7 @@ export async function proxy(request: NextRequest) {
   // deliberately visit the public landing page (e.g. to grab a link).
   if (user && PUBLIC_PATHS.some((path) => pathname.startsWith(path))) {
     const homeUrl = request.nextUrl.clone();
-    homeUrl.pathname = "/dashboard";
+    homeUrl.pathname = "/chat";
     homeUrl.search = "";
     return NextResponse.redirect(homeUrl);
   }
