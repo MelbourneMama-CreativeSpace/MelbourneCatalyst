@@ -101,6 +101,17 @@ Needs each platform's comments/DMs/mentions API — separate permission scopes f
 
 ---
 
+## Since this list was compiled: the app became genuinely multi-client
+
+Two things changed that affect every feature above, neither of which was on the 21-item list because both are infrastructure rather than features:
+
+- **Per-company authorization** (`company_members`, migration `0027`). Until this round, every signed-in user could act on every company's data — including connecting and disconnecting real social accounts. Every route now verifies membership through one shared chokepoint (`app/security/ownership.py`), and non-members get a 404 rather than a 403 so company ids can't be enumerated. Teammates are added by email invite that binds on their first sign-in; companies created before this exist unclaimed and are owned by the first person to open them. Verified live with two real users against a real running server — 32 checks, all passing.
+- **Trend relevance is now per-company everywhere.** #3 and #5 already used `CompanyTrendRelevance`; #4 (Strategy Planner), #15 (Campaign Management), Brand Collaboration, Trend Reports, #21's chat agent, and both trend endpoints were still ranking by a single global score computed against whichever company was most recently updated. All of them now share one implementation. With one client this changed nothing visible; with two it's the difference between the right recommendations and someone else's.
+
+**#11's caveat above is now partly out of date**: `reviewer`/`approved_by` are still free text, but "no real per-user auth exists in this app" no longer holds — there is a real signed-in identity, and `/companies/{id}/members` shows who it is. Wiring reviewer assignment to real user identities instead of a localStorage name is now a small change rather than a blocked one.
+
+---
+
 ## What's left
 
 **Only #17**, and only because it's genuinely credential-gated. Everything else on the original 21-item list is built, tested, and either live-verified against real external calls (Anthropic, Composio) or correctly proven to fail gracefully when a real account/config isn't present yet.

@@ -8,13 +8,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.trend_analyzer.recommendation import get_recommended_trends
+from app.agents.trend_analyzer.relevance import get_recommended_trends
 from app.db.models import Company
 from app.db.session import get_session
 from app.models.company import CompanyOut
 from app.models.dashboard import DashboardSummaryOut
 from app.models.trend import TrendOut
-from app.security.auth import get_current_user
+from app.security.auth import CurrentUser, get_current_user
+from app.security.ownership import accessible_company_clause
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -22,17 +23,30 @@ _ONBOARDING_STATUSES = ("pending", "scraping", "extracting")
 
 
 @router.get("/summary", response_model=DashboardSummaryOut)
-async def get_dashboard_summary(session: AsyncSession = Depends(get_session)) -> DashboardSummaryOut:
-    company_count = (await session.execute(select(func.count()).select_from(Company))).scalar_one()
+async def get_dashboard_summary(
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> DashboardSummaryOut:
+    # Every number here is scoped to the caller's own companies. An
+    # unscoped count would be a small but real leak: "how many clients does
+    # this instance have" is not the signed-in user's business, and the
+    # recent-companies list would name them outright.
+    visible = accessible_company_clause(user)
+
+    company_count = (
+        await session.execute(select(func.count()).select_from(Company).where(visible))
+    ).scalar_one()
     companies_onboarding = (
         await session.execute(
-            select(func.count()).select_from(Company).where(Company.status.in_(_ONBOARDING_STATUSES))
+            select(func.count())
+            .select_from(Company)
+            .where(visible, Company.status.in_(_ONBOARDING_STATUSES))
         )
     ).scalar_one()
     recent_companies = (
         (
             await session.execute(
-                select(Company).order_by(Company.updated_at.desc()).limit(5)
+                select(Company).where(visible).order_by(Company.updated_at.desc()).limit(5)
             )
         )
         .scalars()

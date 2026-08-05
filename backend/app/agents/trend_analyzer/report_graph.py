@@ -16,10 +16,11 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import select
 
+from app.agents.trend_analyzer.relevance import ScoredTrend, fetch_scored_trends
 from app.agents.trend_analyzer.report import generate_trend_report
 from app.agents.trend_analyzer.schemas import GeneratedTrendReport
 from app.config import settings
-from app.db.models import Campaign, Company, Competitor, Trend, TrendReport
+from app.db.models import Campaign, Company, Competitor, TrendReport
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class TrendReportGraphState(TypedDict):
 
 def _format_context(
     company: Company,
-    trends: list[Trend],
+    trends: list[ScoredTrend],
     campaigns: list[Campaign],
     competitors: list[Competitor],
     period_days: int,
@@ -52,9 +53,9 @@ def _format_context(
     lines.append("\n# Relevant Trends From This Period")
     if trends:
         lines.extend(
-            f"- {trend.title} (relevance: {trend.relevance_score:.2f}, "
+            f"- {trend.title} (relevance: {score:.2f}, "
             f"discovered: {trend.discovered_at.date().isoformat()})"
-            for trend in trends
+            for trend, score in trends
         )
     else:
         lines.append("None available — no relevance-scored trends were discovered in this period.")
@@ -83,15 +84,16 @@ async def _gather_context_node(state: TrendReportGraphState) -> dict:
         if company is None:
             return {"status": "failed", "status_error": "Company not found"}
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=state["period_days"])
-        trends = (
-            await session.execute(
-                select(Trend)
-                .where(Trend.relevance_score.is_not(None), Trend.discovered_at >= cutoff)
-                .order_by(Trend.relevance_score.desc())
-                .limit(settings.TREND_REPORT_MAX_TRENDS)
-            )
-        ).scalars().all()
+        # Ranked by this company's own relevance scores, not the legacy
+        # global one — see trend_analyzer/relevance.py. The period window
+        # is expressed as max_age_days so it applies identically on both
+        # the per-company and the legacy-fallback path.
+        trends = await fetch_scored_trends(
+            session,
+            state["company_id"],
+            limit=settings.TREND_REPORT_MAX_TRENDS,
+            max_age_days=state["period_days"],
+        )
 
         campaigns = (
             await session.execute(
