@@ -3,16 +3,15 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import type { LucideIcon } from "lucide-react";
 import {
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   LayoutDashboard,
   MessageSquare,
   Menu,
   Plug,
-  Radio,
   TrendingUp,
   Users,
   X,
@@ -20,16 +19,24 @@ import {
 
 import { AuthHeader } from "@/components/auth-header";
 import { ConversationList } from "@/components/conversation-list";
-import { listPendingApprovals } from "@/lib/api";
 
-const navItems = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  showCount?: boolean;
+}
+
+// Approvals and Publish Monitor are restricted for now — routes/pages
+// still exist, just not linked from here. Re-add the two entries below
+// (and restore the pendingCount polling this file used to do for
+// Approvals' badge) to bring them back.
+const navItems: NavItem[] = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/companies", label: "Content Studio", icon: Users },
   { href: "/integrations", label: "Integrations", icon: Plug },
   { href: "/trends", label: "Trends", icon: TrendingUp },
-  { href: "/approvals", label: "Approvals", icon: CheckCircle2, showCount: true },
-  { href: "/monitor", label: "Publish Monitor", icon: Radio },
 ];
 
 function SidebarContent({
@@ -44,13 +51,12 @@ function SidebarContent({
   onToggle: () => void;
 }) {
   const pathname = usePathname();
-  const [pendingCount, setPendingCount] = useState<number | null>(null);
-
-  useEffect(() => {
-    listPendingApprovals()
-      .then((res) => setPendingCount(res.total))
-      .catch(() => setPendingCount(null));
-  }, [pathname]);
+  // No nav item currently sets showCount (Approvals, the only one that
+  // did, is restricted for now — see the comment above navItems), so
+  // this stays null; the badge JSX below is dead until that changes,
+  // left in place rather than deleted since it's generic, not
+  // Approvals-specific.
+  const pendingCount: number | null = null;
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground overflow-hidden">
@@ -78,13 +84,25 @@ function SidebarContent({
           </>
         ) : (
           <>
-            <Image
-              src="/loomverse-logo-dark.png"
-              alt="LoomVerse AI"
-              width={130}
-              height={32}
-              priority
-            />
+            {/* Mark-only image + real text (not baked into an image) —
+                same navy/teal brand colors and weight as the wordmark. */}
+            <div className="flex items-center gap-2">
+              <Image
+                src="/loomverse-mark.png"
+                alt="LoomVerse AI"
+                width={26}
+                height={26}
+                priority
+              />
+              <p className="flex items-baseline leading-none">
+                <span className="text-base font-bold uppercase tracking-wide text-foreground">
+                  Loomverse
+                </span>
+                <span className="ml-0.5 text-xs font-medium normal-case tracking-normal text-primary">
+                  .ai
+                </span>
+              </p>
+            </div>
             {/* Push toggle to the far right */}
             <div className="flex-1" />
             <button
