@@ -11,16 +11,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.agents.chat import agent
-from app.security.auth import CurrentUser
-
-_CURRENT_USER = CurrentUser(id="test-user-id", email="test@example.com")
 
 
 async def test_falls_back_without_api_key(monkeypatch):
     monkeypatch.setattr(agent.settings, "ANTHROPIC_API_KEY", "")
 
     text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
-        [{"role": "user", "content": "hi"}], None, None, _CURRENT_USER
+        [{"role": "user", "content": "hi"}], None, None
     )
 
     assert ok is False
@@ -49,7 +46,7 @@ async def test_answers_directly_without_a_tool_call(monkeypatch):
     monkeypatch.setattr(agent, "_client", lambda: _FakeClient())
 
     text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
-        [{"role": "user", "content": "hello"}], None, None, _CURRENT_USER
+        [{"role": "user", "content": "hello"}], None, None
     )
 
     assert ok is True
@@ -86,7 +83,7 @@ async def test_executes_a_tool_call_then_returns_final_answer(monkeypatch):
 
     monkeypatch.setattr(agent, "_client", lambda: _FakeClient())
 
-    async def _fake_list_trending_topics(session, current_user, **kwargs):
+    async def _fake_list_trending_topics(session, **kwargs):
         return "Trending topics:\n- X\n- Y\n- Z", [{"type": "trend", "title": "X"}]
 
     monkeypatch.setitem(
@@ -94,7 +91,7 @@ async def test_executes_a_tool_call_then_returns_final_answer(monkeypatch):
     )
 
     text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
-        [{"role": "user", "content": "what's trending?"}], None, None, _CURRENT_USER
+        [{"role": "user", "content": "what's trending?"}], None, None
     )
 
     assert ok is True
@@ -128,7 +125,7 @@ async def test_iteration_cap_forces_a_final_answer_with_tools_disabled(monkeypat
 
     monkeypatch.setattr(agent, "_client", lambda: _FakeClient())
 
-    async def _fake_list_trending_topics(session, current_user, **kwargs):
+    async def _fake_list_trending_topics(session, **kwargs):
         return "some trends"
 
     monkeypatch.setitem(
@@ -136,7 +133,7 @@ async def test_iteration_cap_forces_a_final_answer_with_tools_disabled(monkeypat
     )
 
     text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
-        [{"role": "user", "content": "loop forever"}], None, None, _CURRENT_USER
+        [{"role": "user", "content": "loop forever"}], None, None
     )
 
     assert ok is True
@@ -161,7 +158,7 @@ async def test_falls_back_on_api_failure(monkeypatch):
     monkeypatch.setattr(agent, "_client", lambda: _FailingClient())
 
     text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
-        [{"role": "user", "content": "hi"}], None, None, _CURRENT_USER
+        [{"role": "user", "content": "hi"}], None, None
     )
 
     assert ok is False
@@ -194,7 +191,7 @@ async def test_a_write_tool_call_ends_the_turn_as_a_proposal_not_an_execution(mo
 
     monkeypatch.setattr(agent, "_client", lambda: _FakeClient())
 
-    async def _fake_approve(session, current_user, **kwargs):
+    async def _fake_approve(session, **kwargs):
         nonlocal executed
         executed = True
         return "should never run"
@@ -202,7 +199,7 @@ async def test_a_write_tool_call_ends_the_turn_as_a_proposal_not_an_execution(mo
     monkeypatch.setitem(agent.WRITE_TOOL_IMPLEMENTATIONS, "approve_content_item", _fake_approve)
 
     text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
-        [{"role": "user", "content": "approve item abc-123"}], None, None, _CURRENT_USER
+        [{"role": "user", "content": "approve item abc-123"}], None, None
     )
 
     assert ok is True

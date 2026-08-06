@@ -124,6 +124,54 @@ class Company(Base):
     documents: Mapped[list[Document]] = relationship(back_populates="company", cascade="all, delete-orphan")
 
 
+class CompanyMember(Base):
+    """Who is allowed to act on a given company — the per-company half of
+    authorization that `get_current_user` (which only proves *someone* is
+    signed in) deliberately left open.
+
+    Membership rather than a single `companies.owner_id` because this app
+    already assumes several people work one client: `approved_by`,
+    `reviewer`, and the /approvals "Assign to me" toggle all exist. A single
+    owner column would have needed replacing the first time a second person
+    touched an account.
+
+    `user_id` is a plain string, not a foreign key: it holds the Supabase
+    `sub` claim, and Supabase's `auth.users` lives in a schema this app has
+    no business referencing (and which doesn't exist at all under SQLite in
+    tests). Same reasoning as `approved_by`/`reviewer` storing free text.
+
+    Exactly one of `user_id` / `invited_email` is set:
+
+    - `user_id` — a real, resolved member. This is what access checks match.
+    - `invited_email` — someone invited before they ever signed in. Carries
+      no access on its own; `ensure_company_access` binds it to a real
+      `user_id` the first time a user whose token carries that email address
+      accesses the company. This avoids needing Supabase's Admin API (and a
+      service-role key) just to turn an email into a user id.
+    """
+
+    __tablename__ = "company_members"
+    __table_args__ = (
+        UniqueConstraint("company_id", "user_id", name="uq_company_members_company_user"),
+        UniqueConstraint("company_id", "invited_email", name="uq_company_members_company_email"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    invited_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    # Recorded for display ("who's on this account") — access checks use
+    # user_id only, since an email claim can change without the id changing.
+    user_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    # 'owner' (created or first claimed the company) | 'member' (invited).
+    # Both have identical access today — the distinction exists so a future
+    # round can restrict destructive actions without another migration.
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -592,11 +640,13 @@ class ChatConversation(Base):
     `company_id` — a conversation can be scoped to one company (tool calls
     default to it) or general.
 
-    `user_id` is the Supabase id of whoever started the conversation. It's
-    stored directly rather than derived from `company_id` — company_id is
-    nullable (general conversations aren't scoped to any company) and,
-    separately, chat history is personal even when it *is* scoped to a
-    shared company, so it isn't implied by company ownership either."""
+    `user_id` (the Supabase `sub`, same as `CompanyMember.user_id`) is what
+    makes a conversation private. Unlike every other table here, a
+    conversation isn't owned via its company — a general conversation has
+    no company at all — so it carries the owning user directly. Null on
+    rows created before ownership existed; those are claimed by the first
+    user to open them, matching `ensure_company_access`'s behaviour for
+    unclaimed companies."""
 
     __tablename__ = "chat_conversations"
 
@@ -606,7 +656,7 @@ class ChatConversation(Base):
     )
     # Nullable only for conversations created before per-user ownership
     # existed — see app/security/ownership.py for how those are treated.
-    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     # Set from the first user message once the agent has replied; null
     # until then (matches the sidebar's "New conversation" fallback label).
     title: Mapped[str | None] = mapped_column(String(256), nullable=True)

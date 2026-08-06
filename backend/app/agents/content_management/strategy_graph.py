@@ -15,12 +15,12 @@ import uuid
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import select
 
 from app.agents.content_management.schemas import GeneratedStrategy
 from app.agents.content_management.strategy import generate_strategy
+from app.agents.trend_analyzer.relevance import ScoredTrend, fetch_scored_trends
 from app.config import settings
-from app.db.models import Company, Strategy, Trend
+from app.db.models import Company, Strategy
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ class StrategyGraphState(TypedDict):
     status_error: str | None
 
 
-def _format_context(company: Company, trends: list[Trend]) -> str:
+def _format_context(company: Company, trends: list[ScoredTrend]) -> str:
     lines = [
         "# Company Profile",
         f"Name: {company.name or 'Unknown'}",
@@ -48,7 +48,7 @@ def _format_context(company: Company, trends: list[Trend]) -> str:
     ]
     lines.append("\n# Currently Relevant Trends")
     if trends:
-        lines.extend(f"- {trend.title} (relevance: {trend.relevance_score:.2f})" for trend in trends)
+        lines.extend(f"- {trend.title} (relevance: {score:.2f})" for trend, score in trends)
     else:
         lines.append("None available.")
     return "\n".join(lines)
@@ -63,16 +63,13 @@ async def _gather_context_node(state: StrategyGraphState) -> dict:
             # where the company is deleted mid-request.
             return {"status": "failed", "status_error": "Company not found"}
 
-        trends = (
-            await session.execute(
-                select(Trend)
-                .where(Trend.relevance_score.is_not(None))
-                .order_by(Trend.relevance_score.desc())
-                .limit(settings.STRATEGY_MAX_TRENDS)
-            )
-        ).scalars().all()
+        # Ranked by this company's own relevance scores, not the legacy
+        # global one — see trend_analyzer/relevance.py.
+        trends = await fetch_scored_trends(
+            session, state["company_id"], limit=settings.STRATEGY_MAX_TRENDS
+        )
 
-    return {"context": _format_context(company, list(trends))}
+    return {"context": _format_context(company, trends)}
 
 
 async def _generate_node(state: StrategyGraphState) -> dict:

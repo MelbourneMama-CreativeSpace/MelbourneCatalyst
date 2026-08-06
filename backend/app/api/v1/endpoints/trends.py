@@ -14,10 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.content_management.content_planner import seasonal_candidates
 from app.agents.trend_analyzer.graph import get_last_run_summary, run_collection
 from app.agents.trend_analyzer.opportunities import generate_content_opportunities
-from app.agents.trend_analyzer.recommendation import get_recommended_trends
+from app.agents.trend_analyzer.relevance import fetch_scored_trends, get_recommended_trends
 from app.agents.trend_analyzer.report_graph import run_trend_report_generation
 from app.config import settings
-from app.db.models import Company, CompanyTrendRelevance, PlatformConnection, PlatformMetricSnapshot, Trend, TrendReport
+from app.db.models import Company, PlatformConnection, PlatformMetricSnapshot, Trend, TrendReport
 from app.db.session import get_session
 from app.models.trend import (
     CollectionRunResult,
@@ -32,18 +32,18 @@ from app.models.trend import (
     TrendReportOut,
 )
 from app.security.auth import CurrentUser, get_current_user
-from app.security.ownership import get_owned_company, owned_company_ids
+from app.security.ownership import accessible_company_id_clause, ensure_company_access
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 async def _get_ready_company_or_error(
-    session: AsyncSession, company_id: uuid.UUID, current_user: CurrentUser
+    session: AsyncSession, company_id: uuid.UUID, user: CurrentUser
 ) -> Company:
     """Same guard as content_management.py's — a report generated from a
     company that hasn't finished onboarding wastes a Claude call on a
     context that's mostly 'Unknown'."""
-    company = await get_owned_company(session, company_id, current_user)
+    company = await ensure_company_access(session, company_id, user)
     if company.status != "complete":
         raise HTTPException(
             status_code=409,
@@ -61,13 +61,28 @@ async def list_trends(
     category: str | None = None,
     since: datetime | None = None,
     min_relevance: float | None = Query(default=None, ge=0.0, le=1.0),
+    company_id: uuid.UUID | None = Query(
+        default=None,
+        description=(
+            "Score `min_relevance` against this company's own relevance "
+            "scores instead of the legacy global score. Omit for the "
+            "global view."
+        ),
+    ),
     ids: list[uuid.UUID] | None = Query(
         default=None, description="Look up specific trends by id (repeatable query param)"
     ),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> TrendListResponse:
+    # Trends themselves are public web data, not per-tenant data, so this
+    # route isn't membership-scoped — but `company_id` is, since it reaches
+    # that company's private relevance scores.
+    if company_id is not None:
+        await ensure_company_access(session, company_id, user)
+
     filters = []
     if ids:
         filters.append(Trend.id.in_(ids))
@@ -77,8 +92,29 @@ async def list_trends(
         filters.append(Trend.category == category)
     if since:
         filters.append(Trend.discovered_at >= since)
+
     if min_relevance is not None:
-        filters.append(Trend.relevance_score >= min_relevance)
+        # Relevance filtering goes through the shared helper so it uses
+        # this company's own scores where they exist, matching what every
+        # generation agent now sees. Ordering stays newest-first here (this
+        # is a browse view, not a shortlist) — the helper's own relevance
+        # ordering is what /recommended uses.
+        scored = await fetch_scored_trends(
+            session,
+            company_id,
+            limit=limit + offset,
+            min_score=min_relevance,
+            extra_filters=tuple(filters),
+        )
+        ordered = sorted(
+            (trend for trend, _ in scored), key=lambda t: t.discovered_at, reverse=True
+        )
+        return TrendListResponse(
+            items=[TrendOut.model_validate(row) for row in ordered[offset : offset + limit]],
+            total=len(scored),
+            limit=limit,
+            offset=offset,
+        )
 
     count_stmt = select(func.count()).select_from(Trend)
     list_stmt = select(Trend).order_by(Trend.discovered_at.desc()).limit(limit).offset(offset)
@@ -137,9 +173,9 @@ async def source_status(session: AsyncSession = Depends(get_session)) -> list[So
 async def create_trend_report(
     payload: TrendReportCreateRequest,
     session: AsyncSession = Depends(get_session),
-    current_user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> TrendReportOut:
-    await _get_ready_company_or_error(session, payload.company_id, current_user)
+    await _get_ready_company_or_error(session, payload.company_id, user)
     period_days = payload.period_days or settings.TREND_REPORT_DEFAULT_PERIOD_DAYS
 
     report = TrendReport(
@@ -166,20 +202,14 @@ async def create_trend_report(
 async def list_trend_reports(
     company_id: uuid.UUID | None = None,
     session: AsyncSession = Depends(get_session),
-    current_user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> TrendReportListResponse:
+    visible = accessible_company_id_clause(user, TrendReport.company_id)
+    stmt = select(TrendReport).where(visible).order_by(TrendReport.created_at.desc())
+    count_stmt = select(func.count()).select_from(TrendReport).where(visible)
     if company_id is not None:
-        await get_owned_company(session, company_id, current_user)
-        owned_ids: list[uuid.UUID] = [company_id]
-    else:
-        owned_ids = await owned_company_ids(session, current_user)
-
-    stmt = (
-        select(TrendReport)
-        .where(TrendReport.company_id.in_(owned_ids))
-        .order_by(TrendReport.created_at.desc())
-    )
-    count_stmt = select(func.count()).select_from(TrendReport).where(TrendReport.company_id.in_(owned_ids))
+        stmt = stmt.where(TrendReport.company_id == company_id)
+        count_stmt = count_stmt.where(TrendReport.company_id == company_id)
 
     total = (await session.execute(count_stmt)).scalar_one()
     rows = (await session.execute(stmt)).scalars().all()
@@ -192,19 +222,24 @@ async def list_trend_reports(
 async def get_trend_report(
     report_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    current_user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> TrendReportOut:
     report = await session.get(TrendReport, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Trend report not found")
-    await get_owned_company(session, report.company_id, current_user)
+    await ensure_company_access(session, report.company_id, user)
     return TrendReportOut.model_validate(report)
 
 
 @router.get("/recommended", response_model=TrendListResponse)
 async def list_recommended_trends(
     limit: int | None = Query(default=None, ge=1, le=50),
+    company_id: uuid.UUID | None = Query(
+        default=None,
+        description="Rank by this company's own relevance scores. Omit for the global shortlist.",
+    ),
     session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
 ) -> TrendListResponse:
     """Formalizes the dashboard's manual `min_relevance` filter into an
     opinionated shortlist: highly relevant AND recently discovered, so a
@@ -212,9 +247,14 @@ async def list_recommended_trends(
     doesn't linger at the top. No Claude call — pure filter + sort over
     already-scored trends, same `relevance_score` the collection graph
     computes. Shared with the dashboard summary endpoint via
-    `get_recommended_trends` so both read the same shortlist logic."""
+    `get_recommended_trends` so both read the same shortlist logic.
+
+    With `company_id`, the ranking uses that company's own relevance
+    scores rather than the legacy global one."""
+    if company_id is not None:
+        await ensure_company_access(session, company_id, user)
     effective_limit = limit or settings.TREND_RECOMMENDATION_LIMIT
-    rows = await get_recommended_trends(session, limit)
+    rows = await get_recommended_trends(session, limit, company_id)
 
     return TrendListResponse(
         items=[TrendOut.model_validate(row) for row in rows],
@@ -228,7 +268,7 @@ async def list_recommended_trends(
 async def get_content_opportunities(
     company_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    current_user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> OpportunityListResponse:
     """Content Opportunity Discovery — one Claude call over this company's
     OWN real data: its relevance-scored trends (CompanyTrendRelevance, the
@@ -237,17 +277,17 @@ async def get_content_opportunities(
     any exist) its own recent performance snapshots. Registered before the
     `/{trend_id}` catch-all below, same defensive ordering convention as
     `/reports` above it."""
-    company = await get_owned_company(session, company_id, current_user)
+    company = await ensure_company_access(session, company_id, user)
 
-    trend_rows = (
-        await session.execute(
-            select(Trend, CompanyTrendRelevance.relevance_score)
-            .join(CompanyTrendRelevance, CompanyTrendRelevance.trend_id == Trend.id)
-            .where(CompanyTrendRelevance.company_id == company_id)
-            .order_by(CompanyTrendRelevance.relevance_score.desc())
-            .limit(settings.OPPORTUNITY_MAX_TRENDS)
-        )
-    ).all()
+    # No legacy fallback here: the prompt below labels these as "this
+    # company's relevant trends", and the honest empty state is better than
+    # passing off another company's scores as this one's.
+    trend_rows = await fetch_scored_trends(
+        session,
+        company_id,
+        limit=settings.OPPORTUNITY_MAX_TRENDS,
+        fallback_to_global=False,
+    )
 
     seasonal = seasonal_candidates(date.today(), settings.OPPORTUNITY_SEASONAL_WINDOW_DAYS)
 

@@ -25,15 +25,14 @@ from app.agents.content_management.content_planner import (
 from app.agents.content_management.schemas import GeneratedContentPlan
 from app.agents.knowledge_base.schemas import SearchHit
 from app.agents.knowledge_base.search import similarity_search
+from app.agents.trend_analyzer.relevance import ScoredTrend, fetch_scored_trends
 from app.config import settings
 from app.db.models import (
     Company,
-    CompanyTrendRelevance,
     ContentItem,
     ContentItemRevision,
     ContentPlan,
     Strategy,
-    Trend,
 )
 from app.db.session import async_session_factory
 
@@ -55,7 +54,7 @@ class ContentPlanGraphState(TypedDict):
 def format_context(
     company: Company,
     strategy: Strategy | None,
-    trends: list[tuple[Trend, float]],
+    trends: list[ScoredTrend],
     kb_references: list[SearchHit] | None = None,
 ) -> str:
     lines = [
@@ -113,35 +112,13 @@ async def _gather_context_node(state: ContentPlanGraphState) -> dict:
         if state["strategy_id"] is not None:
             strategy = await session.get(Strategy, state["strategy_id"])
 
-        # Prefer this company's own relevance scores (CompanyTrendRelevance)
-        # — falls back to the legacy global Trend.relevance_score when this
-        # company has no scored trends yet (e.g. onboarded after the last
-        # collection run, or embeddings were never configured). See
-        # CompanyTrendRelevance's docstring in db/models.py: a single global
-        # score per trend stopped being reliable once more than one company
-        # is onboarded, which is exactly the case this falls back for.
-        per_company_rows = (
-            await session.execute(
-                select(Trend, CompanyTrendRelevance.relevance_score)
-                .join(CompanyTrendRelevance, CompanyTrendRelevance.trend_id == Trend.id)
-                .where(CompanyTrendRelevance.company_id == state["company_id"])
-                .order_by(CompanyTrendRelevance.relevance_score.desc())
-                .limit(settings.CONTENT_PLAN_MAX_TRENDS)
-            )
-        ).all()
-
-        if per_company_rows:
-            trends_with_scores: list[tuple[Trend, float]] = [(row[0], row[1]) for row in per_company_rows]
-        else:
-            legacy_trends = (
-                await session.execute(
-                    select(Trend)
-                    .where(Trend.relevance_score.is_not(None))
-                    .order_by(Trend.relevance_score.desc())
-                    .limit(settings.CONTENT_PLAN_MAX_TRENDS)
-                )
-            ).scalars().all()
-            trends_with_scores = [(trend, trend.relevance_score) for trend in legacy_trends]
+        # This prefer-per-company-then-fall-back-to-global read used to
+        # live here and only here; it now lives in
+        # trend_analyzer/relevance.py, shared with the five other callers
+        # that were still reading the legacy global score.
+        trends_with_scores = await fetch_scored_trends(
+            session, state["company_id"], limit=settings.CONTENT_PLAN_MAX_TRENDS
+        )
 
         # General style-reference query (not topic-specific, since a whole
         # plan spans many themes) — company summary/industry is a reasonable

@@ -59,11 +59,7 @@ async def client(monkeypatch, test_session_factory):
 async def _seed_company(test_session_factory, **overrides) -> uuid.UUID:
     company_id = uuid.uuid4()
     defaults = dict(
-        id=company_id,
-        url=f"https://example.com/{company_id}",
-        status="complete",
-        name="Acme",
-        owner_id="test-user-id",
+        id=company_id, url=f"https://example.com/{company_id}", status="complete", name="Acme"
     )
     defaults.update(overrides)
     async with test_session_factory() as session:
@@ -73,7 +69,10 @@ async def _seed_company(test_session_factory, **overrides) -> uuid.UUID:
 
 
 async def test_search_returns_hits_from_similarity_search(monkeypatch, client):
-    async def fake_similarity_search(session, query, *, company_id=None, company_ids=None, k=5):
+    captured: dict = {}
+
+    async def fake_similarity_search(session, query, *, company_id=None, restrict_to=None, k=5):
+        captured["restrict_to"] = restrict_to
         return [
             SearchHit(
                 document_id="doc-1",
@@ -94,6 +93,10 @@ async def test_search_returns_hits_from_similarity_search(monkeypatch, client):
     assert len(body["hits"]) == 1
     assert body["hits"][0]["source_url"] == "https://example.com/about"
     assert body["hits"][0]["similarity"] == 0.87
+    # An unfiltered search must still be constrained to the caller's own
+    # companies — without this the endpoint would rank across every
+    # tenant's documents and return their content verbatim.
+    assert captured["restrict_to"] is not None
 
 
 async def test_search_requires_non_empty_query(client):

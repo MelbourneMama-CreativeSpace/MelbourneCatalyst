@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 import pytest_asyncio
 from fastapi import FastAPI
@@ -10,14 +11,50 @@ from httpx import ASGITransport, AsyncClient
 
 from app.agents.chat import agent as agent_module
 from app.api.v1.endpoints import chat as chat_module
-from app.db.models import Company
+from app.db.models import Company, ContentItem, ContentPlan
 from app.db.session import get_session
 from app.security.auth import CurrentUser, get_current_user
 
 
 @pytest_asyncio.fixture
+async def seeded_company(test_session_factory):
+    """A real Company row. Conversations and proposed actions now resolve
+    to a real company for their ownership check, so these can't use
+    made-up ids any more."""
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete"))
+        await session.commit()
+    return company_id
+
+
+@pytest_asyncio.fixture
+async def seeded_content_item(test_session_factory, seeded_company):
+    """A real ContentItem reachable from a real Company via its plan —
+    what `confirm-action` now re-checks ownership against before running a
+    proposed write tool."""
+    item_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(ContentPlan(id=plan_id, company_id=seeded_company, status="complete"))
+        session.add(
+            ContentItem(
+                id=item_id,
+                content_plan_id=plan_id,
+                title="Test post",
+                description="A test post.",
+                content_type="post",
+                platform="instagram",
+                suggested_date=date(2026, 8, 5),
+            )
+        )
+        await session.commit()
+    return item_id
+
+
+@pytest_asyncio.fixture
 async def client(monkeypatch, test_session_factory):
-    async def _fake_run_chat_turn(history, company_id, session, current_user):
+    async def _fake_run_chat_turn(history, company_id, session):
         return ("Fake assistant reply.", ["list_trending_topics"], True, None, [])
 
     async def _fake_generate_conversation_title(user_message):
@@ -47,22 +84,6 @@ async def client(monkeypatch, test_session_factory):
         yield async_client
 
 
-async def _seed_company(test_session_factory, **overrides) -> uuid.UUID:
-    company_id = uuid.uuid4()
-    defaults = dict(
-        id=company_id,
-        url=f"https://example.com/{company_id}",
-        status="complete",
-        name="Acme",
-        owner_id="test-user-id",
-    )
-    defaults.update(overrides)
-    async with test_session_factory() as session:
-        session.add(Company(**defaults))
-        await session.commit()
-    return company_id
-
-
 async def test_create_conversation(client):
     response = await client.post("/conversations", json={})
     assert response.status_code == 200
@@ -71,10 +92,21 @@ async def test_create_conversation(client):
     assert body["title"] is None
 
 
-async def test_create_conversation_scoped_to_company(client, test_session_factory):
-    company_id = str(await _seed_company(test_session_factory))
-    response = await client.post("/conversations", json={"company_id": company_id})
-    assert response.json()["company_id"] == company_id
+async def test_create_conversation_scoped_to_company(client, seeded_company):
+    response = await client.post(
+        "/conversations", json={"company_id": str(seeded_company)}
+    )
+    assert response.status_code == 200
+    assert response.json()["company_id"] == str(seeded_company)
+
+
+async def test_create_conversation_404s_for_a_company_that_does_not_exist(client):
+    """Scoping a conversation to a company is an access decision now, not
+    just a label — an unknown (or someone else's) company id is a 404."""
+    response = await client.post(
+        "/conversations", json={"company_id": str(uuid.uuid4())}
+    )
+    assert response.status_code == 404
 
 
 async def test_list_conversations(client):
@@ -210,23 +242,25 @@ async def test_send_message_real_graceful_degradation_without_api_key(
     assert "isn't available" in body["content"]
 
 
-async def test_confirm_action_executes_the_proposed_tool(client, monkeypatch):
+async def test_confirm_action_executes_the_proposed_tool(
+    client, monkeypatch, seeded_content_item
+):
     proposed_action = {
         "tool_name": "approve_content_item",
-        "tool_input": {"content_item_id": "abc-123"},
-        "description": "Approve content item abc-123",
+        "tool_input": {"content_item_id": str(seeded_content_item)},
+        "description": "Approve the content item",
     }
 
-    async def _fake_with_proposal(history, company_id, session, current_user):
+    async def _fake_with_proposal(history, company_id, session):
         return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
 
     executed_with: dict = {}
 
-    async def _fake_approve(session, current_user, **kwargs):
+    async def _fake_approve(session, **kwargs):
         executed_with.update(kwargs)
-        return "Approved content item 'Test post'.", []
+        return "Approved content item 'Test post'."
 
     monkeypatch.setitem(chat_module.WRITE_TOOL_IMPLEMENTATIONS, "approve_content_item", _fake_approve)
 
@@ -245,7 +279,7 @@ async def test_confirm_action_executes_the_proposed_tool(client, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["action_status"] == "confirmed"
-    assert executed_with == {"content_item_id": "abc-123"}
+    assert executed_with == {"content_item_id": str(seeded_content_item)}
 
     conversation = (await client.get(f"/conversations/{created['id']}")).json()
     assert conversation["messages"][-1]["content"] == "Approved content item 'Test post'."
@@ -263,20 +297,22 @@ async def test_confirm_action_404_when_message_has_no_proposal(client):
     assert response.status_code == 404
 
 
-async def test_confirm_action_409_when_already_resolved(client, monkeypatch):
+async def test_confirm_action_409_when_already_resolved(
+    client, monkeypatch, seeded_content_item
+):
     proposed_action = {
         "tool_name": "approve_content_item",
-        "tool_input": {"content_item_id": "abc-123"},
-        "description": "Approve content item abc-123",
+        "tool_input": {"content_item_id": str(seeded_content_item)},
+        "description": "Approve the content item",
     }
 
-    async def _fake_with_proposal(history, company_id, session, current_user):
+    async def _fake_with_proposal(history, company_id, session):
         return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
 
-    async def _fake_approve(session, current_user, **kwargs):
-        return "done", []
+    async def _fake_approve(session, **kwargs):
+        return "done"
 
     monkeypatch.setitem(chat_module.WRITE_TOOL_IMPLEMENTATIONS, "approve_content_item", _fake_approve)
 
@@ -301,17 +337,17 @@ async def test_cancel_action_marks_cancelled_without_executing(client, monkeypat
         "description": "Approve content item abc-123",
     }
 
-    async def _fake_with_proposal(history, company_id, session, current_user):
+    async def _fake_with_proposal(history, company_id, session):
         return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
 
     executed = False
 
-    async def _fake_approve(session, current_user, **kwargs):
+    async def _fake_approve(session, **kwargs):
         nonlocal executed
         executed = True
-        return "should not run", []
+        return "should not run"
 
     monkeypatch.setitem(chat_module.WRITE_TOOL_IMPLEMENTATIONS, "approve_content_item", _fake_approve)
 

@@ -18,8 +18,9 @@ from sqlalchemy import select
 
 from app.agents.content_management.collaboration import generate_collaboration
 from app.agents.content_management.schemas import GeneratedCollaboration
+from app.agents.trend_analyzer.relevance import ScoredTrend, fetch_scored_trends
 from app.config import settings
-from app.db.models import Collaboration, CollaborationIdea, Company, Strategy, Trend
+from app.db.models import Collaboration, CollaborationIdea, Company, Strategy
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ class CollaborationGraphState(TypedDict):
     status_error: str | None
 
 
-def _format_context(company: Company, strategy: Strategy | None, trends: list[Trend]) -> str:
+def _format_context(company: Company, strategy: Strategy | None, trends: list[ScoredTrend]) -> str:
     lines = [
         "# Company Profile",
         f"Name: {company.name or 'Unknown'}",
@@ -53,7 +54,7 @@ def _format_context(company: Company, strategy: Strategy | None, trends: list[Tr
 
     lines.append("\n# Currently Relevant Trends")
     if trends:
-        lines.extend(f"- {trend.title} (relevance: {trend.relevance_score:.2f})" for trend in trends)
+        lines.extend(f"- {trend.title} (relevance: {score:.2f})" for trend, score in trends)
     else:
         lines.append("None available.")
     return "\n".join(lines)
@@ -69,16 +70,13 @@ async def _gather_context_node(state: CollaborationGraphState) -> dict:
         if state["strategy_id"] is not None:
             strategy = await session.get(Strategy, state["strategy_id"])
 
-        trends = (
-            await session.execute(
-                select(Trend)
-                .where(Trend.relevance_score.is_not(None))
-                .order_by(Trend.relevance_score.desc())
-                .limit(settings.STRATEGY_MAX_TRENDS)
-            )
-        ).scalars().all()
+        # Ranked by this company's own relevance scores, not the legacy
+        # global one — see trend_analyzer/relevance.py.
+        trends = await fetch_scored_trends(
+            session, state["company_id"], limit=settings.STRATEGY_MAX_TRENDS
+        )
 
-    return {"context": _format_context(company, strategy, list(trends))}
+    return {"context": _format_context(company, strategy, trends)}
 
 
 async def _generate_node(state: CollaborationGraphState) -> dict:

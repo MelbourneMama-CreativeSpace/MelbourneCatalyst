@@ -24,10 +24,9 @@ from app.agents.chat.tools import (
     WRITE_TOOL_IMPLEMENTATIONS,
     WRITE_TOOL_SCHEMAS,
     _content_item_card,
-    _owned_content_item_or_none,
 )
 from app.config import settings
-from app.security.auth import CurrentUser
+from app.db.models import ContentItem, ContentPlan
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +115,6 @@ async def _execute_tool(
     tool_input: dict,
     company_id: uuid.UUID | None,
     session: AsyncSession,
-    current_user: CurrentUser,
 ) -> tuple[str, list[dict]]:
     """Runs one read tool and always returns `(tool_result_text, cards)` —
     most implementations only return plain text (no cards to show), which
@@ -135,7 +133,7 @@ async def _execute_tool(
         kwargs.setdefault("company_id", str(company_id))
 
     try:
-        result = await impl(session, current_user, **kwargs)
+        result = await impl(session, **kwargs)
     except Exception:
         logger.exception("Chat tool %s failed", name)
         return f"Tool {name} failed to run.", []
@@ -167,14 +165,17 @@ async def generate_conversation_title(user_message: str) -> str | None:
 
 
 async def _preview_card_for_write_tool(
-    tool_name: str, tool_input: dict, session: AsyncSession, current_user: CurrentUser
+    tool_name: str, tool_input: dict, session: AsyncSession
 ) -> list[dict]:
     """A write-tool *proposal* (before confirm) can already show the real
     item it's about to act on, for the tools that target one existing item
     by id — approve/reject/regenerate/publish/schedule. Best-effort: an
     invalid id or a lookup failure just means no preview card, never an
     error (the proposal itself still stands; confirming it will surface
-    the same "not found" message the tool always would)."""
+    the same "not found" message the tool always would). Just a lookup, no
+    access check — the real one runs at confirm time
+    (`_ensure_action_target_allowed` in chat.py), same as the write tools
+    themselves don't check access either."""
     if tool_name not in _ITEM_WRITE_TOOLS:
         return []
     content_item_id = tool_input.get("content_item_id")
@@ -184,8 +185,11 @@ async def _preview_card_for_write_tool(
         parsed = uuid.UUID(content_item_id)
     except (ValueError, AttributeError, TypeError):
         return []
-    item, content_plan = await _owned_content_item_or_none(session, parsed, current_user)
+    item = await session.get(ContentItem, parsed)
     if item is None:
+        return []
+    content_plan = await session.get(ContentPlan, item.content_plan_id)
+    if content_plan is None:
         return []
     return [_content_item_card(item, content_plan.company_id)]
 
@@ -194,7 +198,6 @@ async def run_chat_turn(
     conversation_history: list[dict],
     company_id: uuid.UUID | None,
     session: AsyncSession,
-    current_user: CurrentUser,
 ) -> tuple[str, list[str], bool, dict | None, list[dict]]:
     """Run one assistant turn given the full prior conversation history
     (already including the new user message). Returns
@@ -260,7 +263,7 @@ async def run_chat_turn(
                 }
                 text = _extract_text(response.content) or proposed_action["description"]
                 preview_cards = await _preview_card_for_write_tool(
-                    write_block.name, write_input, session, current_user
+                    write_block.name, write_input, session
                 )
                 return (text, tools_used, True, proposed_action, cards + preview_cards)
 
@@ -271,7 +274,7 @@ async def run_chat_turn(
                     continue
                 tools_used.append(block.name)
                 result, result_cards = await _execute_tool(
-                    block.name, block.input, company_id, session, current_user
+                    block.name, block.input, company_id, session
                 )
                 cards.extend(result_cards)
                 tool_results.append(
