@@ -16,13 +16,14 @@ from app.agents.chat import agent
 async def test_falls_back_without_api_key(monkeypatch):
     monkeypatch.setattr(agent.settings, "ANTHROPIC_API_KEY", "")
 
-    text, tools_used, ok, proposed_action = await agent.run_chat_turn(
+    text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
         [{"role": "user", "content": "hi"}], None, None
     )
 
     assert ok is False
     assert tools_used == []
     assert proposed_action is None
+    assert cards == []
     assert "isn't available" in text
 
 
@@ -44,7 +45,7 @@ async def test_answers_directly_without_a_tool_call(monkeypatch):
 
     monkeypatch.setattr(agent, "_client", lambda: _FakeClient())
 
-    text, tools_used, ok, proposed_action = await agent.run_chat_turn(
+    text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
         [{"role": "user", "content": "hello"}], None, None
     )
 
@@ -52,6 +53,7 @@ async def test_answers_directly_without_a_tool_call(monkeypatch):
     assert text == "Hello! How can I help?"
     assert tools_used == []
     assert proposed_action is None
+    assert cards == []
     assert call_count == 1
 
 
@@ -82,13 +84,13 @@ async def test_executes_a_tool_call_then_returns_final_answer(monkeypatch):
     monkeypatch.setattr(agent, "_client", lambda: _FakeClient())
 
     async def _fake_list_trending_topics(session, **kwargs):
-        return "Trending topics:\n- X\n- Y\n- Z"
+        return "Trending topics:\n- X\n- Y\n- Z", [{"type": "trend", "title": "X"}]
 
     monkeypatch.setitem(
         agent.TOOL_IMPLEMENTATIONS, "list_trending_topics", _fake_list_trending_topics
     )
 
-    text, tools_used, ok, proposed_action = await agent.run_chat_turn(
+    text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
         [{"role": "user", "content": "what's trending?"}], None, None
     )
 
@@ -96,6 +98,7 @@ async def test_executes_a_tool_call_then_returns_final_answer(monkeypatch):
     assert text == "Here's what's trending: X, Y, Z."
     assert tools_used == ["list_trending_topics"]
     assert proposed_action is None
+    assert cards == [{"type": "trend", "title": "X"}]
     assert call_count == 2
 
 
@@ -129,13 +132,14 @@ async def test_iteration_cap_forces_a_final_answer_with_tools_disabled(monkeypat
         agent.TOOL_IMPLEMENTATIONS, "list_trending_topics", _fake_list_trending_topics
     )
 
-    text, tools_used, ok, proposed_action = await agent.run_chat_turn(
+    text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
         [{"role": "user", "content": "loop forever"}], None, None
     )
 
     assert ok is True
     assert text == "Here's my best answer so far."
     assert proposed_action is None
+    assert cards == []
     # 2 tool-loop iterations (CHAT_MAX_ITERATIONS) + 1 forced final call
     assert len(call_kwargs) == 3
     assert call_kwargs[-1]["tool_choice"] == {"type": "none"}
@@ -153,12 +157,13 @@ async def test_falls_back_on_api_failure(monkeypatch):
 
     monkeypatch.setattr(agent, "_client", lambda: _FailingClient())
 
-    text, tools_used, ok, proposed_action = await agent.run_chat_turn(
+    text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
         [{"role": "user", "content": "hi"}], None, None
     )
 
     assert ok is False
     assert proposed_action is None
+    assert cards == []
     assert "went wrong" in text
 
 
@@ -193,7 +198,7 @@ async def test_a_write_tool_call_ends_the_turn_as_a_proposal_not_an_execution(mo
 
     monkeypatch.setitem(agent.WRITE_TOOL_IMPLEMENTATIONS, "approve_content_item", _fake_approve)
 
-    text, tools_used, ok, proposed_action = await agent.run_chat_turn(
+    text, tools_used, ok, proposed_action, cards = await agent.run_chat_turn(
         [{"role": "user", "content": "approve item abc-123"}], None, None
     )
 
@@ -207,3 +212,6 @@ async def test_a_write_tool_call_ends_the_turn_as_a_proposal_not_an_execution(mo
         "description": "Approve content item abc-123",
     }
     assert text == "Approve content item abc-123"
+    # "abc-123" isn't a real UUID, so there's no item to preview — the
+    # proposal still stands, just without a flashcard attached.
+    assert cards == []

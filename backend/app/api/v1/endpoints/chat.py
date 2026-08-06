@@ -4,18 +4,26 @@ tool-using chat agent (`app/agents/chat/agent.py`).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.agents.chat.agent import run_chat_turn
+from app.agents.chat.agent import generate_conversation_title, run_chat_turn
 from app.agents.chat.tools import WRITE_TOOL_IMPLEMENTATIONS
+from app.agents.media_library.storage import (
+    MediaLibraryNotConfiguredError,
+    _client,
+    _require_configured,
+)
+from app.config import settings
 from app.db.models import ChatConversation, ChatMessage, ContentItem, ContentPlan
 from app.db.session import get_session
 from app.models.chat import (
+    AttachmentUploadResponse,
     ChatMessageOut,
     ConversationCreateRequest,
     ConversationDetailOut,
@@ -29,6 +37,49 @@ from app.security.ownership import ensure_company_access
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 _TITLE_MAX_LEN = 80
+
+# Bucket for chat attachments — separate prefix from media-library assets
+# so they don't show up in company media libraries.
+_CHAT_BUCKET = "chat-attachments"
+_CHAT_MAX_BYTES = 20_000_000  # 20 MB, same cap as media library
+
+
+@router.post("/attachments", response_model=AttachmentUploadResponse)
+async def upload_chat_attachment(
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> AttachmentUploadResponse:
+    """Upload a file for use in a chat message. Stores it in Supabase
+    Storage under `chat-attachments/{user_id}/` and returns a public URL
+    the frontend embeds in the message content so the AI can reference it.
+    No DB row is written — the URL lives in the message content itself."""
+    try:
+        _require_configured()
+    except MediaLibraryNotConfiguredError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    content_bytes = await file.read()
+    if len(content_bytes) > _CHAT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds maximum upload size (20 MB)")
+
+    safe_filename = file.filename or f"upload-{uuid.uuid4()}"
+    content_type = file.content_type or "application/octet-stream"
+    storage_path = f"{current_user.id}/{uuid.uuid4()}-{safe_filename}"
+
+    client = await _client()
+    # Use the same media-library bucket with a chat-attachments/ prefix so
+    # bucket creation stays a single one-time step; files are logically
+    # separated by path prefix.
+    bucket = client.storage.from_(settings.SUPABASE_STORAGE_BUCKET)
+    await bucket.upload(storage_path, content_bytes, file_options={"content-type": content_type})
+    public_url = await bucket.get_public_url(storage_path)
+
+    return AttachmentUploadResponse(
+        url=public_url,
+        filename=safe_filename,
+        content_type=content_type,
+        size_bytes=len(content_bytes),
+    )
 
 
 @router.post("/conversations", response_model=ConversationOut)
@@ -144,14 +195,26 @@ async def send_message(
     )
     session.add(user_message)
 
-    if conversation.title is None:
-        conversation.title = payload.content[:_TITLE_MAX_LEN]
+    needs_title = conversation.title is None
 
     await session.commit()
 
-    text, tools_used, ok, proposed_action = await run_chat_turn(
+    # Renaming the conversation from the raw first message to something
+    # that reflects its actual intent (e.g. "hi what can you do" ->
+    # "Exploring Assistant Capabilities") is a separate, cheap Claude call
+    # — run it alongside the real turn instead of before it, so it never
+    # adds latency to the reply the user is waiting on. It never touches
+    # `session`, so it's safe to run concurrently with `run_chat_turn`
+    # (which does).
+    title_task = asyncio.create_task(generate_conversation_title(payload.content)) if needs_title else None
+
+    text, tools_used, ok, proposed_action, cards = await run_chat_turn(
         history, conversation.company_id, session
     )
+
+    if title_task is not None:
+        generated_title = await title_task
+        conversation.title = (generated_title or payload.content)[:_TITLE_MAX_LEN]
 
     assistant_message = ChatMessage(
         id=uuid.uuid4(),
@@ -161,6 +224,7 @@ async def send_message(
         tool_calls_summary=tools_used or None,
         proposed_action=proposed_action,
         action_status="pending" if proposed_action is not None else None,
+        cards=cards or None,
     )
     session.add(assistant_message)
     await session.commit()

@@ -55,9 +55,17 @@ async def seeded_content_item(test_session_factory, seeded_company):
 @pytest_asyncio.fixture
 async def client(monkeypatch, test_session_factory):
     async def _fake_run_chat_turn(history, company_id, session):
-        return ("Fake assistant reply.", ["list_trending_topics"], True, None)
+        return ("Fake assistant reply.", ["list_trending_topics"], True, None, [])
+
+    async def _fake_generate_conversation_title(user_message):
+        if user_message == "trigger-title-failure":
+            return None
+        return f"Title for: {user_message}"
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_run_chat_turn)
+    monkeypatch.setattr(
+        chat_module, "generate_conversation_title", _fake_generate_conversation_title
+    )
 
     app = FastAPI()
     app.include_router(chat_module.router)
@@ -139,7 +147,7 @@ async def test_delete_conversation(client):
     assert response.status_code == 404
 
 
-async def test_send_message_sets_title_from_first_message(client):
+async def test_send_message_sets_title_from_generated_intent(client):
     created = (await client.post("/conversations", json={})).json()
 
     response = await client.post(
@@ -153,7 +161,29 @@ async def test_send_message_sets_title_from_first_message(client):
     assert body["ok"] is True
 
     conversation = (await client.get(f"/conversations/{created['id']}")).json()
-    assert conversation["title"] == "What's trending?"
+    assert conversation["title"] == "Title for: What's trending?"
+
+
+async def test_send_message_title_falls_back_to_raw_message_if_generation_fails(client):
+    created = (await client.post("/conversations", json={})).json()
+
+    await client.post(
+        f"/conversations/{created['id']}/messages",
+        json={"content": "trigger-title-failure"},
+    )
+
+    conversation = (await client.get(f"/conversations/{created['id']}")).json()
+    assert conversation["title"] == "trigger-title-failure"
+
+
+async def test_send_message_does_not_rename_an_already_titled_conversation(client):
+    created = (await client.post("/conversations", json={})).json()
+    await client.post(f"/conversations/{created['id']}/messages", json={"content": "first"})
+
+    await client.post(f"/conversations/{created['id']}/messages", json={"content": "second"})
+
+    conversation = (await client.get(f"/conversations/{created['id']}")).json()
+    assert conversation["title"] == "Title for: first"
 
 
 async def test_send_message_404_for_unknown_conversation(client):
@@ -222,7 +252,7 @@ async def test_confirm_action_executes_the_proposed_tool(
     }
 
     async def _fake_with_proposal(history, company_id, session):
-        return ("I'll approve that.", [], True, proposed_action)
+        return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
 
@@ -277,7 +307,7 @@ async def test_confirm_action_409_when_already_resolved(
     }
 
     async def _fake_with_proposal(history, company_id, session):
-        return ("I'll approve that.", [], True, proposed_action)
+        return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
 
@@ -308,7 +338,7 @@ async def test_cancel_action_marks_cancelled_without_executing(client, monkeypat
     }
 
     async def _fake_with_proposal(history, company_id, session):
-        return ("I'll approve that.", [], True, proposed_action)
+        return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
 

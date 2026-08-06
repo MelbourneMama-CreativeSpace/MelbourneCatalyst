@@ -13,7 +13,15 @@ export const metadata: Metadata = {
   description:
     "LoomVerse AI's Content Studio — drafting weekly client content: strategy, a content calendar with ready-to-publish captions, campaigns, and collaboration ideas.",
   keywords: ["LoomVerse AI", "content studio", "content calendar", "content drafting"],
-  icons: { icon: "/loomverse-mark.png" },
+  icons: {
+    icon: [
+      { url: "/loomverse-mark.png", type: "image/png", sizes: "any" },
+    ],
+    apple: [
+      { url: "/loomverse-mark.png", sizes: "180x180", type: "image/png" },
+    ],
+    shortcut: "/loomverse-mark.png",
+  },
 };
 
 // Deliberately minimal — no auth-aware chrome here. The landing page (`/`)
@@ -25,7 +33,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <body
         className={`${inter.variable} font-sans antialiased bg-background text-foreground`}
       >

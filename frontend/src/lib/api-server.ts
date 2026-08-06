@@ -107,3 +107,21 @@ export function getTrendsByIds(ids: string[]): Promise<TrendListResponse> {
   query.set("limit", String(ids.length));
   return serverApiFetch<TrendListResponse>(`/trend-analyzer/?${query.toString()}`);
 }
+
+export function listContentItems(params: {
+  companyId?: string;
+  platform?: string;
+} = {}): Promise<{ items: import("@/lib/api").ContentItemWithCompany[] }> {
+  return serverApiFetch<{ items: import("@/lib/api").ContentItemWithCompany[] }>(
+    `/content-management/content-items${toQueryString({
+      company_id: params.companyId,
+      platform: params.platform,
+    })}`,
+  );
+}
+
+export function listPendingApprovals(): Promise<import("@/lib/api").PendingApprovalListResponse> {
+  return serverApiFetch<import("@/lib/api").PendingApprovalListResponse>(
+    "/content-management/approvals/pending",
+  );
+}

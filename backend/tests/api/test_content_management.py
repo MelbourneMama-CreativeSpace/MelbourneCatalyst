@@ -125,23 +125,48 @@ async def client(monkeypatch, test_session_factory):
             True,
         )
 
-    async def _fake_generate_content_item_from_input(context, user_input, platform, content_type):
-        if user_input == "trigger-failure":
+    async def _fake_create_manual_item(company_id, topic, platform, content_type):
+        # Replaces the real create_manual_item wholesale (same reason
+        # _fake_regenerate_item_draft_copy below replaces the whole
+        # function rather than just its inner Claude call): the real one
+        # opens its own session via the production async_session_factory,
+        # which isn't the test's isolated test_session_factory — faking
+        # only the Claude-call layer would leave that real production
+        # session open against the test's event loop. This still exercises
+        # the real get-or-create-manual-plan + persist behavior, just with
+        # the test session.
+        if topic == "trigger-failure":
             return None, False
-        from app.agents.content_management.schemas import GeneratedContentItem
-
-        return (
-            GeneratedContentItem(
-                title=f"Manual: {user_input}",
+        async with test_session_factory() as session:
+            manual_plan = (
+                await session.execute(
+                    select(ContentPlan).where(
+                        ContentPlan.company_id == company_id, ContentPlan.is_manual.is_(True)
+                    )
+                )
+            ).scalar_one_or_none()
+            if manual_plan is None:
+                manual_plan = ContentPlan(
+                    id=uuid.uuid4(), company_id=company_id, status="complete", is_manual=True
+                )
+                session.add(manual_plan)
+                await session.flush()
+            item = ContentItem(
+                id=uuid.uuid4(),
+                content_plan_id=manual_plan.id,
+                title=f"Manual: {topic}",
                 description="Fake manual description.",
                 content_type=content_type,
                 platform=platform,
                 suggested_date=date.today(),
                 draft_copy="Fake manual ready-to-publish caption.",
                 hashtags=["fake", "manual"],
-            ),
-            True,
-        )
+                approval_status="pending",
+            )
+            session.add(item)
+            await session.commit()
+            await session.refresh(item)
+            return item, True
 
     async def _fake_run_collaboration_generation(collaboration_id, company_id, strategy_id):
         async with test_session_factory() as session:
@@ -174,8 +199,8 @@ async def client(monkeypatch, test_session_factory):
     )
     monkeypatch.setattr(
         content_management_module,
-        "generate_content_item_from_input",
-        _fake_generate_content_item_from_input,
+        "create_manual_item",
+        _fake_create_manual_item,
     )
     monkeypatch.setattr(
         content_management_module, "check_content_quality", _fake_check_content_quality
@@ -217,7 +242,11 @@ async def _seed_company(test_session_factory, **overrides) -> uuid.UUID:
     # url is unique per Company — default to one derived from the id so
     # multiple calls within a single test don't collide.
     defaults = dict(
-        id=company_id, url=f"https://example.com/{company_id}", status="complete", name="Acme"
+        id=company_id,
+        url=f"https://example.com/{company_id}",
+        status="complete",
+        name="Acme",
+        owner_id="test-user-id",
     )
     defaults.update(overrides)
     async with test_session_factory() as session:

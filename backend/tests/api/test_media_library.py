@@ -64,7 +64,11 @@ async def client(monkeypatch, test_session_factory):
 async def _seed_company(test_session_factory, **overrides) -> uuid.UUID:
     company_id = uuid.uuid4()
     defaults = dict(
-        id=company_id, url=f"https://example.com/{company_id}", status="complete", name="Acme"
+        id=company_id,
+        url=f"https://example.com/{company_id}",
+        status="complete",
+        name="Acme",
+        owner_id="test-user-id",
     )
     defaults.update(overrides)
     async with test_session_factory() as session:

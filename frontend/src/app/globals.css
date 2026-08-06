@@ -1,5 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "streamdown/styles.css";
+
+@source "../../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -44,44 +47,75 @@
 }
 
 :root {
-  /* LoomVerse AI brand palette (see Loomverse_Brand_Kit_Final.pdf):
-     Deep Navy #071A33, Signal Teal #00A6A6, Aqua #48D7CE, Graphite
-     #101827, Cloud #F7FAFC, Slate #627083 — converted to oklch. Card/
-     sidebar/border tones are derived lighter steps in the same navy hue
-     (~256°) rather than the literal Deep Navy hex, since Deep Navy and
-     Graphite sit at almost the same oklch lightness (~0.21) and would
-     give no visible separation between background and elevated surfaces. */
+  /* =====================================================================
+     LoomVerse AI brand palette — "Trust first. Energy second."
+     ---------------------------------------------------------------
+     Deep Navy   #071A33  → primary brand / text
+     Signal Teal #00A6A6  → action / intelligence (primary)
+     Aqua        #48D7CE  → highlights / motion (accent)
+     Graphite    #101827  → dark surfaces (sidebar)
+     Cloud       #F7FAFC  → primary background
+     Slate       #627083  → supporting text (muted-foreground)
+     =====================================================================
+     All values converted to oklch for Tailwind v4 compatibility.
+     Sidebar uses Graphite (dark) so it contrasts the Cloud main area.
+  */
   --radius: 0.625rem;
-  --background: oklch(0.2093 0.0323 262.41); /* Graphite */
-  --foreground: oklch(0.9834 0.0042 236.5); /* Cloud */
-  --card: oklch(0.27 0.045 256);
-  --card-foreground: oklch(0.9834 0.0042 236.5);
-  --popover: oklch(0.27 0.045 256);
-  --popover-foreground: oklch(0.9834 0.0042 236.5);
-  --primary: oklch(0.6566 0.1121 194.77); /* Signal Teal */
-  --primary-foreground: oklch(0.19 0.05 256);
-  --secondary: oklch(0.24 0.035 256);
-  --secondary-foreground: oklch(0.9834 0.0042 236.5);
-  --muted: oklch(0.235 0.025 258);
-  --muted-foreground: oklch(0.5405 0.0343 256.09); /* Slate */
-  --accent: oklch(0.8019 0.1205 188.99); /* Aqua */
-  --accent-foreground: oklch(0.19 0.05 256);
+
+  /* Page background — Cloud */
+  --background: oklch(0.9837 0.0037 236.7); /* #F7FAFC */
+  /* Primary text — Deep Navy */
+  --foreground: oklch(0.1741 0.0386 258.06); /* #071A33 */
+
+  /* Card — pure white, pops against Cloud background */
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.1741 0.0386 258.06); /* Deep Navy */
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.1741 0.0386 258.06);
+
+  /* Primary action — Signal Teal #00A6A6 */
+  --primary: oklch(0.6566 0.1121 194.77);
+  --primary-foreground: oklch(1 0 0); /* white text on teal buttons */
+
+  /* Secondary — very light teal tint for subtle elements */
+  --secondary: oklch(0.955 0.018 196);
+  --secondary-foreground: oklch(0.1741 0.0386 258.06);
+
+  /* Muted — light Cloud-tinted surface */
+  --muted: oklch(0.965 0.008 236);
+  /* Slate #627083 — supporting / secondary text */
+  --muted-foreground: oklch(0.5405 0.0343 256.09); /* #627083 */
+
+  /* Accent — Aqua #48D7CE */
+  --accent: oklch(0.8019 0.1205 188.99);
+  --accent-foreground: oklch(0.1741 0.0386 258.06); /* Deep Navy on Aqua */
+
   --destructive: oklch(0.55 0.2 25);
-  --border: oklch(0.33 0.03 256);
-  --input: oklch(0.33 0.03 256);
-  --ring: oklch(0.6566 0.1121 194.77); /* Signal Teal */
+
+  /* Borders — subtle teal-navy tint */
+  --border: oklch(0.9 0.012 220);
+  --input: oklch(0.9 0.012 220);
+
+  /* Focus ring — Signal Teal */
+  --ring: oklch(0.6566 0.1121 194.77);
+
+  /* Charts */
   --chart-1: oklch(0.6566 0.1121 194.77); /* Signal Teal */
   --chart-2: oklch(0.8019 0.1205 188.99); /* Aqua */
   --chart-3: oklch(0.5405 0.0343 256.09); /* Slate */
-  --chart-4: oklch(0.45 0.05 256); /* navy-light tint */
-  --chart-5: oklch(0.65 0.15 50); /* warm tint, kept for differentiation */
-  --sidebar: oklch(0.27 0.045 256);
-  --sidebar-foreground: oklch(0.9834 0.0042 236.5);
-  --sidebar-primary: oklch(0.6566 0.1121 194.77);
-  --sidebar-primary-foreground: oklch(0.19 0.05 256);
-  --sidebar-accent: oklch(0.31 0.04 256);
-  --sidebar-accent-foreground: oklch(0.9834 0.0042 236.5);
-  --sidebar-border: oklch(0.33 0.03 256);
+  --chart-4: oklch(0.2875 0.0447 258.06); /* Deep Navy mid */
+  --chart-5: oklch(0.65 0.15 50);          /* warm accent */
+
+  /* ── Sidebar — slightly darker than Cloud background ── */
+  --sidebar: oklch(0.955 0.009 220); /* a gentle step below Cloud #F7FAFC */
+  --sidebar-foreground: oklch(0.1741 0.0386 258.06); /* Deep Navy text */
+  --sidebar-primary: oklch(0.6566 0.1121 194.77); /* Signal Teal */
+  --sidebar-primary-foreground: oklch(1 0 0);
+  /* Active nav item — another subtle step darker */
+  --sidebar-accent: oklch(0.915 0.012 220);
+  --sidebar-accent-foreground: oklch(0.1741 0.0386 258.06);
+  --sidebar-border: oklch(0.895 0.012 220); /* soft divider line */
   --sidebar-ring: oklch(0.6566 0.1121 194.77);
 }
 
@@ -132,6 +166,19 @@
   to { transform: rotate(360deg); }
 }
 
+/* Chat "thinking" state — the assistant avatar breathes while a reply is
+   being searched/generated, so waiting reads as active work, not a
+   frozen UI. */
+@keyframes logo-pulse {
+  0%, 100% { transform: scale(0.92); opacity: 0.75; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
+@keyframes bounce-dot {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+
 /* ===== Utility Classes ===== */
 .animate-float {
   animation: float 6s ease-in-out infinite;
@@ -176,6 +223,14 @@
 
 .animate-rotate-slow {
   animation: rotate-slow 20s linear infinite;
+}
+
+.animate-logo-pulse {
+  animation: logo-pulse 1.4s ease-in-out infinite;
+}
+
+.animate-bounce-dot {
+  animation: bounce-dot 1.2s ease-in-out infinite;
 }
 
 /* Staggered animation delays */
@@ -249,16 +304,16 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: oklch(0.2093 0.0323 262.41);
+  background: oklch(0.9837 0.0037 236.7); /* Cloud */
 }
 
 ::-webkit-scrollbar-thumb {
-  background: oklch(0.33 0.03 256);
+  background: oklch(0.82 0.015 220);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.4 0.05 256);
+  background: oklch(0.70 0.025 220);
 }
 
 /* ===== Background Patterns ===== */
@@ -272,4 +327,11 @@
 .bg-dots {
   background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px);
   background-size: 30px 30px;
+}
+
+/* ===== Claude.ai Theme Style for Chat Interface ===== */
+/* Removed — using brand palette consistently across all routes */
+
+.claude-serif {
+  font-family: Georgia, Cambria, "Times New Roman", Times, serif;
 }

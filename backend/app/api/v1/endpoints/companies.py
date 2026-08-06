@@ -68,7 +68,9 @@ async def create_company(
         existing.status_error = None
         await session.commit()
         background_tasks.add_task(run_onboarding, existing.id, url)
-        return CompanyCreatedResponse(id=existing.id, url=url, status=existing.status)
+        return CompanyCreatedResponse(
+            id=existing.id, url=url, name=existing.name, status=existing.status
+        )
 
     company = Company(id=uuid.uuid4(), url=url, status="pending")
     session.add(company)
@@ -79,7 +81,7 @@ async def create_company(
     await session.commit()
 
     background_tasks.add_task(run_onboarding, company.id, url)
-    return CompanyCreatedResponse(id=company.id, url=url, status=company.status)
+    return CompanyCreatedResponse(id=company.id, url=url, name=company.name, status=company.status)
 
 
 @router.get("/", response_model=CompanyListResponse)

@@ -143,6 +143,7 @@ export interface CompanyMemberListResponse {
 export interface CompanyCreatedResponse {
   id: string;
   url: string;
+  name: string | null;
   status: CompanyStatus;
 }
 
@@ -522,6 +523,36 @@ export interface ProposedAction {
   description: string;
 }
 
+// Small structured snapshots a tool call surfaced this turn — the
+// assistant referencing/creating a specific content item, or a trend —
+// rendered as flashcards instead of only ever being described in prose.
+export interface ContentItemCard {
+  type: "content_item";
+  id: string;
+  company_id: string;
+  title: string;
+  platform: Platform;
+  content_type: ContentType;
+  draft_copy: string | null;
+  hashtags: string[] | null;
+  approval_status: ApprovalStatus;
+  scheduled_at: string | null;
+  published_at: string | null;
+}
+
+export interface TrendCard {
+  type: "trend";
+  id: string;
+  title: string;
+  source: string;
+  url: string;
+  category: string | null;
+  insight: string | null;
+  relevance_score: number | null;
+}
+
+export type ChatCard = ContentItemCard | TrendCard;
+
 export interface ChatMessage {
   id: string;
   conversation_id: string;
@@ -529,10 +560,11 @@ export interface ChatMessage {
   content: string;
   tool_calls_summary: string[] | null;
   // Non-null when this message proposes a write action (approve/reject/
-  // regenerate/create) — never auto-executed, only run once the user hits
-  // confirm via confirmAction below.
+  // regenerate/publish/schedule) — never auto-executed, only run once the
+  // user hits confirm via confirmAction below.
   proposed_action: ProposedAction | null;
   action_status: "pending" | "confirmed" | "cancelled" | null;
+  cards: ChatCard[] | null;
   // Only meaningful on assistant messages — false means this is a
   // graceful-degradation reply (e.g. no Claude credit), not a real answer.
   // Absent on user messages.
@@ -650,10 +682,10 @@ export function getCompany(id: string): Promise<Company> {
   return apiFetch<Company>(`/companies/${id}`);
 }
 
-export function createCompany(url: string): Promise<CompanyCreatedResponse> {
+export function createCompany(url: string, name?: string): Promise<CompanyCreatedResponse> {
   return apiFetch<CompanyCreatedResponse>("/companies/", {
     method: "POST",
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url, name }),
   });
 }
 
@@ -1249,6 +1281,22 @@ export function cancelAction(conversationId: string, messageId: string): Promise
     `/chat/conversations/${conversationId}/messages/${messageId}/cancel-action`,
     { method: "POST" },
   );
+}
+
+export interface ChatAttachment {
+  url: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+}
+
+export function uploadChatAttachment(file: File): Promise<ChatAttachment> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return apiFetch<ChatAttachment>("/chat/attachments", {
+    method: "POST",
+    body: formData,
+  });
 }
 
 // ---------------------------------------------------------------------------

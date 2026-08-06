@@ -19,12 +19,12 @@ from sqlalchemy.orm import selectinload
 from app.agents.content_management.campaign_graph import run_campaign_generation
 from app.agents.content_management.collaboration_graph import run_collaboration_generation
 from app.agents.content_management.content_plan_graph import (
+    create_manual_item,
     fetch_kb_references,
     format_context,
     regenerate_item_draft_copy,
     run_content_plan_generation,
 )
-from app.agents.content_management.content_planner import generate_content_item_from_input
 from app.agents.content_management.creative_brief import generate_creative_brief
 from app.agents.content_management.quality_check import check_content_quality
 from app.agents.content_management.repurposing import repurpose_content_item
@@ -358,40 +358,22 @@ async def create_manual_content_item(
     item — the manual-input counterpart to the full-calendar `POST
     /content-plans` above. Grounded in the same company profile + KB
     reference-material context as regular generation, so voice stays
-    consistent between the two paths."""
-    company = await _get_ready_company_or_error(session, company_id, user)
-    manual_plan = await _get_or_create_manual_plan(session, company_id)
+    consistent between the two paths. The chat agent's `create_content_item`
+    tool produces identical results through the same `create_manual_item` —
+    access is checked here (this endpoint's session + user), the generation
+    itself happens in that shared, session-independent function."""
+    await _get_ready_company_or_error(session, company_id, user)
 
-    kb_references = await fetch_kb_references(session, company_id, payload.topic)
-    context = format_context(company, None, [], kb_references)
-
-    generated_item, ok = await generate_content_item_from_input(
-        context, payload.topic, payload.platform, payload.content_type
+    item, ok = await create_manual_item(
+        company_id, payload.topic, payload.platform, payload.content_type
     )
-    if not ok or generated_item is None:
+    if not ok or item is None:
         raise HTTPException(
             status_code=502,
             detail=(
                 "Content generation failed (check ANTHROPIC_API_KEY / Claude API availability)."
             ),
         )
-
-    item = ContentItem(
-        id=uuid.uuid4(),
-        content_plan_id=manual_plan.id,
-        title=generated_item.title,
-        description=generated_item.description,
-        content_type=generated_item.content_type,
-        platform=generated_item.platform,
-        theme=generated_item.theme,
-        suggested_date=generated_item.suggested_date,
-        draft_copy=generated_item.draft_copy,
-        hashtags=generated_item.hashtags,
-        approval_status="pending",
-    )
-    session.add(item)
-    await session.commit()
-    await session.refresh(item)
     return ContentItemOut.model_validate(item)
 
 
