@@ -57,32 +57,39 @@ class Settings(BaseSettings):
     # format than the old trending_searches()'s `pn` param used (full
     # country names) — that method is no longer used (see google_trends.py).
     GOOGLE_TRENDS_REGION: str = ""
-    GOOGLE_TRENDS_SEED_KEYWORDS: list[str] = ["marketing", "social media", "AI"]
+    # What each collector searches for is NOT configured here — it is
+    # resolved at collection time from the onboarded companies' extracted
+    # `niche_keywords` (see `trend_analyzer/niche.py`). These two only bound
+    # how much of that resolved niche gets used per run, so adding companies
+    # can't grow external API spend without limit.
+    TREND_NICHE_MAX_KEYWORDS: int = 12
+    # Deliberately far lower: Meta caps an Instagram account at 30 unique
+    # hashtags per rolling 7 days, shared across every run in that window.
+    TREND_NICHE_MAX_HASHTAGS: int = 5
     # Reddit — read-only OAuth (a free "script" app registration), not the
     # public JSON endpoints (those return 403 Blocked in practice now).
     REDDIT_CLIENT_ID: str = ""
     REDDIT_CLIENT_SECRET: str = ""
-    REDDIT_SUBREDDITS: list[str] = ["marketing", "socialmedia", "smallbusiness"]
+    # How many subreddits to discover per niche keyword via Reddit's own
+    # subreddit search — keywords like "handmade ceramics" are not subreddit
+    # names, so they can't be used as one directly.
+    REDDIT_SUBREDDITS_PER_KEYWORD: int = 2
     RSS_FEED_URLS: list[str] = [
         "https://feeds.feedburner.com/TechCrunch",
         "https://www.socialmediatoday.com/feeds/news/",
     ]
     YOUTUBE_API_KEY: str = ""
-    YOUTUBE_SEARCH_QUERIES: list[str] = ["marketing trends", "social media strategy"]
 
     # X / Twitter — API v2 recent search needs a paid developer tier
     TWITTER_BEARER_TOKEN: str = ""
-    TWITTER_SEARCH_QUERIES: list[str] = ["marketing trends", "social media strategy"]
 
     # Instagram — Graph API hashtag search needs a Business/Creator account
     INSTAGRAM_ACCESS_TOKEN: str = ""
     INSTAGRAM_BUSINESS_ACCOUNT_ID: str = ""
-    INSTAGRAM_HASHTAGS: list[str] = ["marketing", "socialmedia"]
 
     # TikTok — Research API needs academic/institutional approval
     TIKTOK_CLIENT_KEY: str = ""
     TIKTOK_CLIENT_SECRET: str = ""
-    TIKTOK_SEARCH_KEYWORDS: list[str] = ["marketing trends", "social media"]
 
     # Knowledge Base — Voyage AI embeddings (voyage-3-lite is 1024-dim)
     VOYAGE_API_KEY: str = ""

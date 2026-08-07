@@ -98,7 +98,10 @@ export type CompanyStatus =
 
 export interface Company {
   id: string;
-  url: string;
+  // Null for a company onboarded from a typed description rather than a
+  // website — not every business has one.
+  url: string | null;
+  description: string | null;
   name: string | null;
   status: CompanyStatus;
   status_error: string | null;
@@ -142,7 +145,7 @@ export interface CompanyMemberListResponse {
 
 export interface CompanyCreatedResponse {
   id: string;
-  url: string;
+  url: string | null;
   name: string | null;
   status: CompanyStatus;
 }
@@ -682,10 +685,17 @@ export function getCompany(id: string): Promise<Company> {
   return apiFetch<Company>(`/companies/${id}`);
 }
 
-export function createCompany(url: string, name?: string): Promise<CompanyCreatedResponse> {
+/**
+ * Start onboarding. Pass a website URL, a description of the business, or
+ * both — the API rejects neither, since it would have nothing to build a
+ * profile (and therefore the trend niche) from.
+ */
+export function createCompany(
+  input: { url?: string; description?: string; name?: string },
+): Promise<CompanyCreatedResponse> {
   return apiFetch<CompanyCreatedResponse>("/companies/", {
     method: "POST",
-    body: JSON.stringify({ url, name }),
+    body: JSON.stringify(input),
   });
 }
 

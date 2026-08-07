@@ -327,7 +327,7 @@ export default async function DashboardPage() {
                       href={`/companies/${c.id}`}
                       className="text-sm font-medium text-foreground hover:text-primary transition-colors"
                     >
-                      {c.name ?? c.url}
+                      {c.name ?? c.url ?? "Untitled company"}
                     </Link>
                     <div>{companyStatusBadge(c.status)}</div>
                   </div>
