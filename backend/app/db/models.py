@@ -89,7 +89,16 @@ class Company(Base):
     __tablename__ = "companies"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
-    url: Mapped[str] = mapped_column(String(2048), nullable=False, unique=True)
+    # Nullable: a company can onboard from a typed description or its
+    # connected social accounts instead of a website. Postgres allows any
+    # number of NULLs under a UNIQUE constraint, so uniqueness still holds
+    # for the companies that do have a URL.
+    url: Mapped[str | None] = mapped_column(String(2048), nullable=True, unique=True)
+    # The operator's own words about the business — the profile-extraction
+    # input when there is no site to scrape. Distinct from `summary`, which
+    # is Claude's *output*; this is raw human input and is never overwritten
+    # by extraction, so a re-onboard can always be replayed from it.
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
     # Supabase user id of whoever onboarded this company. Nullable only for
     # rows created before ownership existed — see app/security/ownership.py
     # for how those are treated (inaccessible, not shared).

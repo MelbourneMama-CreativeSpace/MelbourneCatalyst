@@ -40,17 +40,27 @@ async def create_company(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(get_current_user),
 ) -> CompanyCreatedResponse:
-    """Start onboarding for a new company URL. Returns the pending row and
+    """Start onboarding for a new company. Returns the pending row and
     kicks off the LangGraph pipeline in the background — the caller polls
     `GET /companies/{id}` until status becomes 'complete' or 'failed'.
+
+    Takes a website URL, a typed description, or both (the request model
+    rejects neither). Only a URL identifies a company well enough to
+    de-duplicate against: two businesses can describe themselves
+    identically, so a description-only request always creates a new row.
     """
     # Normalize before the dedup lookup and storage so "example.com",
     # "https://example.com", and "https://example.com/" all resolve to the
     # same Company row instead of creating duplicates — Pydantic's HttpUrl
     # doesn't normalize this consistently on its own.
-    url = normalize_url(str(payload.url))
+    url = normalize_url(str(payload.url)) if payload.url is not None else None
+    description = (payload.description or "").strip() or None
 
-    existing = (await session.execute(select(Company).where(Company.url == url))).scalar_one_or_none()
+    existing = (
+        (await session.execute(select(Company).where(Company.url == url))).scalar_one_or_none()
+        if url is not None
+        else None
+    )
     if existing is not None:
         # Ownership check before the re-onboard, not after: without it this
         # branch is a hijack path — POSTing a URL that already belongs to
@@ -66,13 +76,18 @@ async def create_company(
         await session.execute(delete(Document).where(Document.company_id == existing.id))
         existing.status = "pending"
         existing.status_error = None
+        # A re-onboard that omits the description keeps the stored one —
+        # it's raw human input that extraction never regenerates, so
+        # dropping it would silently degrade the profile on every re-run.
+        if description is not None:
+            existing.description = description
         await session.commit()
-        background_tasks.add_task(run_onboarding, existing.id, url)
+        background_tasks.add_task(run_onboarding, existing.id, url, existing.description)
         return CompanyCreatedResponse(
             id=existing.id, url=url, name=existing.name, status=existing.status
         )
 
-    company = Company(id=uuid.uuid4(), url=url, status="pending")
+    company = Company(id=uuid.uuid4(), url=url, description=description, status="pending")
     session.add(company)
     # Creation is the one moment ownership is unambiguous — recorded here
     # rather than relying on the claim-on-first-access fallback, which
@@ -80,7 +95,7 @@ async def create_company(
     await register_company_owner(session, company.id, user)
     await session.commit()
 
-    background_tasks.add_task(run_onboarding, company.id, url)
+    background_tasks.add_task(run_onboarding, company.id, url, description)
     return CompanyCreatedResponse(id=company.id, url=url, name=company.name, status=company.status)
 
 

@@ -49,6 +49,13 @@ class _PartiallyFailingTrendReq(_FakeTrendReq):
         super().build_payload(kw_list, timeframe=timeframe, geo=geo)
 
 
+def _stub_resolve(keywords: list[str]):
+    async def _resolve(limit=None):
+        return keywords
+
+    return _resolve
+
+
 def test_parse_growth_value_handles_numbers_and_breakout():
     assert _parse_growth_value(150) == 150.0
     assert _parse_growth_value("150") == 150.0
@@ -84,3 +91,42 @@ async def test_collect_isolates_a_failing_seed_keyword(monkeypatch):
 
     assert len(items) == 2
     assert all(item.raw_metadata["seed_keyword"] == "marketing" for item in items)
+
+
+async def test_collect_resolves_the_niche_when_no_keywords_are_passed(monkeypatch):
+    """Seeds come from the onboarded companies, not from .env."""
+    monkeypatch.setattr(google_trends_module, "TrendReq", _FakeTrendReq)
+    monkeypatch.setattr(
+        google_trends_module, "resolve_niche_keywords", _stub_resolve(["ceramics"])
+    )
+
+    items = await GoogleTrendsCollector().collect()
+
+    assert items
+    assert all(item.raw_metadata["seed_keyword"] == "ceramics" for item in items)
+
+
+async def test_collect_resolves_the_niche_on_every_run(monkeypatch):
+    """`graph.py` builds its collectors once at import time, so a niche read
+    in __init__ would be frozen at process start and never see a company
+    onboarded afterwards."""
+    monkeypatch.setattr(google_trends_module, "TrendReq", _FakeTrendReq)
+    collector = GoogleTrendsCollector()
+
+    monkeypatch.setattr(google_trends_module, "resolve_niche_keywords", _stub_resolve(["first"]))
+    first = await collector.collect()
+    monkeypatch.setattr(google_trends_module, "resolve_niche_keywords", _stub_resolve(["second"]))
+    second = await collector.collect()
+
+    assert first[0].raw_metadata["seed_keyword"] == "first"
+    assert second[0].raw_metadata["seed_keyword"] == "second"
+
+
+async def test_collect_is_a_no_op_when_no_company_has_a_niche_yet(monkeypatch):
+    def _explode(**kwargs):
+        raise AssertionError("Google Trends must not be queried without a niche")
+
+    monkeypatch.setattr(google_trends_module, "TrendReq", _explode)
+    monkeypatch.setattr(google_trends_module, "resolve_niche_keywords", _stub_resolve([]))
+
+    assert await GoogleTrendsCollector().collect() == []

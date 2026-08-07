@@ -8,12 +8,22 @@ from typing import Any
 
 @dataclass(slots=True)
 class ScrapedPage:
-    """A single page's main-content extraction, before chunking/embedding."""
+    """A unit of company content, before chunking/embedding.
+
+    Despite the name this isn't always a scraped web page — a company with
+    no website is described by typed text or by its connected social
+    accounts, and those enter the pipeline as `ScrapedPage`s too so that
+    chunking, embedding and extraction stay one code path.
+
+    `source_type` overrides the URL-based classification in
+    `classify_source_type()`, which can only distinguish kinds of web page.
+    """
 
     url: str
     title: str | None
     content: str
     raw_metadata: dict[str, Any] = field(default_factory=dict)
+    source_type: str | None = None
 
 
 @dataclass(slots=True)

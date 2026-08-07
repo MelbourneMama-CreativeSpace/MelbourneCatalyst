@@ -33,7 +33,7 @@ export default async function IntegrationsPage({ params, searchParams }: Integra
           href={`/companies/${companyId}`}
           className="text-sm text-muted-foreground hover:text-foreground"
         >
-          &larr; Back to {company.name ?? company.url}
+          &larr; Back to {company.name ?? company.url ?? "the company"}
         </Link>
         <h1 className="mt-2 mb-1 text-3xl font-bold">Social connections</h1>
         <p className="mb-6 text-sm text-muted-foreground">

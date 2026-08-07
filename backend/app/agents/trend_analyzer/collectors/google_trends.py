@@ -1,5 +1,11 @@
-"""Google Trends collector — rising related search queries for configured
-seed keywords, via `pytrends-modern`.
+"""Google Trends collector — rising related search queries for the active
+niche, via `pytrends-modern`.
+
+Seed keywords come from the onboarded companies' extracted niche (see
+`trend_analyzer/niche.py`), resolved on each `collect()` rather than in
+`__init__`: `graph.py` builds its collectors once at import time, so
+anything read in the constructor would freeze the niche as it was at
+process start and never pick up a newly onboarded company.
 
 No API key required. `pytrends-modern` is a synchronous client (the async
 variant requires a headless-browser `BrowserConfig`, overkill here), so the
@@ -27,6 +33,7 @@ from datetime import datetime, timezone
 
 from pytrends_modern import TrendReq
 
+from app.agents.trend_analyzer.niche import resolve_niche_keywords
 from app.agents.trend_analyzer.schemas import RawTrendItem, TrendSource
 from app.config import settings
 
@@ -36,11 +43,18 @@ logger = logging.getLogger(__name__)
 class GoogleTrendsCollector:
     def __init__(self, region: str | None = None, seed_keywords: list[str] | None = None) -> None:
         self.region = region if region is not None else settings.GOOGLE_TRENDS_REGION
-        self.seed_keywords = seed_keywords or settings.GOOGLE_TRENDS_SEED_KEYWORDS
+        # None means "resolve from the onboarded companies' niche at collect
+        # time"; an explicit list overrides that (used by tests).
+        self.seed_keywords = seed_keywords
 
     async def collect(self) -> list[RawTrendItem]:
+        keywords = (
+            self.seed_keywords
+            if self.seed_keywords is not None
+            else await resolve_niche_keywords()
+        )
         items: list[RawTrendItem] = []
-        for keyword in self.seed_keywords:
+        for keyword in keywords:
             try:
                 items.extend(await asyncio.to_thread(self._collect_keyword_sync, keyword))
             except Exception:
