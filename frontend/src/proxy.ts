@@ -21,11 +21,6 @@ const PUBLIC_EXACT_PATHS = ["/"];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (pathname === "/") {
-    const chatUrl = request.nextUrl.clone();
-    chatUrl.pathname = "/chat";
-    return NextResponse.redirect(chatUrl);
-  }
 
   let response = NextResponse.next({ request });
 
