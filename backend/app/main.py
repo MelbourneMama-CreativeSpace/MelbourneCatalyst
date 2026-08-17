@@ -17,6 +17,7 @@ from app.agents.trend_analyzer.graph import run_collection
 from app.agents.trend_analyzer.report_graph import run_scheduled_daily_reports
 from app.api.v1.router import api_router
 from app.config import settings
+from app.db.session import engine
 from app.security.auth import get_current_user, require_allowlisted_user
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,15 @@ async def lifespan(_app: FastAPI):
     )
     yield
     scheduler.shutdown(wait=False)
+    # Without this, pooled asyncpg connections are only ever closed by the
+    # garbage collector, which runs after the event loop that could await
+    # their real async close() is already gone — surfaces in production
+    # logs (confirmed live on Render) as "RuntimeError: greenlet is being
+    # finalized" plus a SAWarning every time the process exits, e.g. the
+    # free-tier instance spinning down after inactivity or a redeploy.
+    # Disposing here closes every pooled connection cleanly while the loop
+    # is still running, before anything can fall to the finalizer.
+    await engine.dispose()
 
 
 app = FastAPI(
