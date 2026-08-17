@@ -63,6 +63,15 @@ function ContentItemFlashcard({ card }: { card: ContentItemCard }) {
         </span>
       </div>
 
+      {card.media_url && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={card.media_url}
+          alt="Attached media"
+          className="mt-2 max-h-40 w-full rounded-lg object-cover"
+        />
+      )}
+
       {card.draft_copy && (
         <p className="mt-2 line-clamp-5 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
           {card.draft_copy}

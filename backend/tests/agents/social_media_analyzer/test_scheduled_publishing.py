@@ -111,9 +111,9 @@ async def test_publishes_and_logs_success(monkeypatch, test_session_factory):
     past = datetime.now(timezone.utc) - timedelta(minutes=5)
     item_id = await _seed_item(test_session_factory, scheduled_at=past, with_connection=True)
 
-    async def _fake_publish_post(platform, connected_account_id, text):
-        assert platform == "linkedin"
-        assert connected_account_id == "conn-abc123"
+    async def _fake_publish_post(session, connection, text, media_url=None):
+        assert connection.platform == "linkedin"
+        assert connection.composio_connected_account_id == "conn-abc123"
         assert text == "Ready to publish."
         return "exec-xyz"
 
@@ -143,7 +143,7 @@ async def test_logs_failure_and_leaves_item_unpublished(monkeypatch, test_sessio
     past = datetime.now(timezone.utc) - timedelta(minutes=5)
     item_id = await _seed_item(test_session_factory, scheduled_at=past, with_connection=True)
 
-    async def _failing_publish_post(platform, connected_account_id, text):
+    async def _failing_publish_post(session, connection, text, media_url=None):
         raise RuntimeError("Composio: rate limited")
 
     monkeypatch.setattr(scheduled_module, "publish_post", _failing_publish_post)
@@ -173,7 +173,7 @@ async def test_one_item_failure_does_not_block_another(monkeypatch, test_session
     failing_id = await _seed_item(test_session_factory, scheduled_at=past, with_connection=True)
     ok_id = await _seed_item(test_session_factory, scheduled_at=past, with_connection=True)
 
-    async def _flaky_publish_post(platform, connected_account_id, text):
+    async def _flaky_publish_post(session, connection, text, media_url=None):
         # Fail the first call, succeed on the second — order isn't
         # guaranteed, so key off call count rather than item identity.
         _flaky_publish_post.calls += 1

@@ -1,5 +1,5 @@
-"""YouTube collector — recent high-view videos matching configured search
-queries via the YouTube Data API v3 REST endpoint.
+"""YouTube collector — recent high-view videos matching the active niche via
+the YouTube Data API v3 REST endpoint.
 
 Calls the REST API directly with `httpx` rather than depending on
 `google-api-python-client`, which is sync-only and pulls in a heavy transitive
@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from app.agents.trend_analyzer.niche import resolve_niche_keywords
 from app.agents.trend_analyzer.schemas import RawTrendItem, TrendSource
 from app.config import settings
 
@@ -33,12 +34,18 @@ class YouTubeCollector:
         max_results: int = 10,
     ) -> None:
         self.api_key = api_key or settings.YOUTUBE_API_KEY
-        self.queries = queries or settings.YOUTUBE_SEARCH_QUERIES
+        # None means "resolve from the onboarded companies' niche at collect
+        # time" (see `trend_analyzer/niche.py`); an explicit list overrides.
+        self.queries = queries
         self.max_results = max_results
 
     async def collect(self) -> list[RawTrendItem]:
         if not self.api_key:
             logger.warning("YOUTUBE_API_KEY not configured; skipping YouTube collection")
+            return []
+
+        queries = self.queries if self.queries is not None else await resolve_niche_keywords()
+        if not queries:
             return []
 
         published_after = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(
@@ -47,7 +54,7 @@ class YouTubeCollector:
         items: list[RawTrendItem] = []
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            for query in self.queries:
+            for query in queries:
                 try:
                     items.extend(await self._collect_query(client, query, published_after))
                 except Exception:

@@ -1,5 +1,11 @@
-"""Google Trends collector — rising related search queries for configured
-seed keywords, via `pytrends-modern`.
+"""Google Trends collector — rising related search queries for the active
+niche, via `pytrends-modern`.
+
+Seed keywords come from the onboarded companies' extracted niche (see
+`trend_analyzer/niche.py`), resolved on each `collect()` rather than in
+`__init__`: `graph.py` builds its collectors once at import time, so
+anything read in the constructor would freeze the niche as it was at
+process start and never pick up a newly onboarded company.
 
 No API key required. `pytrends-modern` is a synchronous client (the async
 variant requires a headless-browser `BrowserConfig`, overkill here), so the
@@ -17,33 +23,78 @@ is arguably a *better* trend signal anyway: growth-scored terms related to
 a topic you actually care about, not an undifferentiated firehose of
 today's top searches — the same seed-keyword pattern the YouTube/X/TikTok
 collectors already use.
+
+Google throttles this endpoint aggressively (HTTP 429) once a handful of
+requests land in a short window — easy to hit in dev when "Run a new
+collection" gets clicked a few times in a row. Two things keep one
+rate-limited run from being noisy or making the situation worse: a short
+delay between each keyword's request, and — once a 429 is actually seen —
+stopping the rest of this run's keywords immediately rather than retrying
+into the same throttle. The next scheduled/manual run tries again fresh.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime, timezone
 
 from pytrends_modern import TrendReq
 
+from app.agents.trend_analyzer.niche import resolve_niche_keywords
 from app.agents.trend_analyzer.schemas import RawTrendItem, TrendSource
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Spread consecutive keyword requests out so a 12-keyword run doesn't read
+# as a burst to Google's rate limiter. Randomized so parallel dev/CI runs
+# don't all hammer on the same cadence.
+_MIN_DELAY_BETWEEN_KEYWORDS_SECONDS = 2.5
+_MAX_DELAY_BETWEEN_KEYWORDS_SECONDS = 5.0
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    """True for the specific "Google is throttling us" shape, not just any
+    network failure — a DNS blip or timeout should still retry next run
+    without tripping the same "stop the whole batch" circuit breaker."""
+    return "429" in str(exc)
+
 
 class GoogleTrendsCollector:
     def __init__(self, region: str | None = None, seed_keywords: list[str] | None = None) -> None:
         self.region = region if region is not None else settings.GOOGLE_TRENDS_REGION
-        self.seed_keywords = seed_keywords or settings.GOOGLE_TRENDS_SEED_KEYWORDS
+        # None means "resolve from the onboarded companies' niche at collect
+        # time"; an explicit list overrides that (used by tests).
+        self.seed_keywords = seed_keywords
 
     async def collect(self) -> list[RawTrendItem]:
+        keywords = (
+            self.seed_keywords
+            if self.seed_keywords is not None
+            else await resolve_niche_keywords()
+        )
         items: list[RawTrendItem] = []
-        for keyword in self.seed_keywords:
+        for i, keyword in enumerate(keywords):
+            if i > 0:
+                await asyncio.sleep(
+                    random.uniform(
+                        _MIN_DELAY_BETWEEN_KEYWORDS_SECONDS, _MAX_DELAY_BETWEEN_KEYWORDS_SECONDS
+                    )
+                )
             try:
                 items.extend(await asyncio.to_thread(self._collect_keyword_sync, keyword))
-            except Exception:
+            except Exception as exc:
+                if _is_rate_limited(exc):
+                    logger.warning(
+                        "Google Trends rate-limited (429) after %d/%d keywords — stopping "
+                        "this run's Google Trends collection rather than retrying into the "
+                        "same throttle; the next run will pick up where this left off.",
+                        i,
+                        len(keywords),
+                    )
+                    break
                 logger.exception("Google Trends collection failed for seed keyword %r", keyword)
         return items
 
@@ -51,8 +102,8 @@ class GoogleTrendsCollector:
         pytrends = TrendReq(
             hl="en-US",
             tz=0,
-            retries=3,
-            backoff_factor=0.3,
+            retries=2,
+            backoff_factor=1.0,
             rotate_user_agent=True,
         )
         pytrends.build_payload(kw_list=[keyword], timeframe="now 7-d", geo=self.region)

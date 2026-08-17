@@ -1,12 +1,16 @@
-"""Instagram collector — top media for configured hashtags via the Instagram
-Graph API's hashtag search + top_media endpoints.
+"""Instagram collector — top media for hashtags derived from the active
+niche, via the Instagram Graph API's hashtag search + top_media endpoints.
 
 Requires a Business/Creator Instagram account behind a Meta app with hashtag
 search permissions: `INSTAGRAM_ACCESS_TOKEN` (long-lived token) and
 `INSTAGRAM_BUSINESS_ACCOUNT_ID`. Skips collection (with a warning, not an
-error) when unset, same as the YouTube collector. Meta caps hashtag search
-at 30 unique hashtags per Instagram account per rolling 7 days — keep
-`INSTAGRAM_HASHTAGS` short.
+error) when unset, same as the YouTube collector.
+
+Hashtags are derived from the onboarded companies' niche (see
+`trend_analyzer/niche.py`) rather than configured. Meta caps hashtag search
+at 30 unique hashtags per Instagram account per rolling 7 days and every
+run spends from that budget, which is why `TREND_NICHE_MAX_HASHTAGS`
+defaults far below the general keyword cap.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.agents.trend_analyzer.niche import resolve_niche_keywords, to_hashtags
 from app.agents.trend_analyzer.schemas import RawTrendItem, TrendSource
 from app.config import settings
 
@@ -35,7 +40,9 @@ class InstagramCollector:
     ) -> None:
         self.access_token = access_token or settings.INSTAGRAM_ACCESS_TOKEN
         self.business_account_id = business_account_id or settings.INSTAGRAM_BUSINESS_ACCOUNT_ID
-        self.hashtags = hashtags or settings.INSTAGRAM_HASHTAGS
+        # None means "derive from the onboarded companies' niche at collect
+        # time" (see `trend_analyzer/niche.py`); an explicit list overrides.
+        self.hashtags = hashtags
         self.limit_per_hashtag = limit_per_hashtag
 
     async def collect(self) -> list[RawTrendItem]:
@@ -46,9 +53,17 @@ class InstagramCollector:
             )
             return []
 
+        hashtags = (
+            self.hashtags
+            if self.hashtags is not None
+            else to_hashtags(await resolve_niche_keywords())
+        )
+        if not hashtags:
+            return []
+
         items: list[RawTrendItem] = []
         async with httpx.AsyncClient(timeout=10.0) as client:
-            for hashtag in self.hashtags:
+            for hashtag in hashtags:
                 try:
                     items.extend(await self._collect_hashtag(client, hashtag))
                 except Exception:

@@ -43,7 +43,7 @@ async def test_enrich_items_maps_tool_use_results_by_index(monkeypatch):
             ]
         },
     )
-    fake_response = SimpleNamespace(content=[tool_use_block])
+    fake_response = SimpleNamespace(content=[tool_use_block], stop_reason="tool_use")
 
     class _FakeMessages:
         async def create(self, **kwargs):
@@ -58,6 +58,34 @@ async def test_enrich_items_maps_tool_use_results_by_index(monkeypatch):
 
     assert [r.category for r in result] == ["marketing", "technology"]
     assert result[0].insight == "Relevant to campaigns"
+
+
+async def test_enrich_items_falls_back_when_response_truncated_at_max_tokens(monkeypatch):
+    """Regression test for a real bug: a full 25-item batch's structured
+    tool output genuinely needs more than the old max_tokens=1024 budget —
+    confirmed live against the real API, where a truncated response came
+    back with stop_reason="max_tokens" and a completely empty
+    tool_use.input (not even a partial "results" array), crashing with a
+    bare KeyError instead of degrading gracefully like every other
+    enrichment failure here does."""
+    monkeypatch.setattr(enrichment.settings, "ANTHROPIC_API_KEY", "test-key")
+
+    truncated_tool_use = SimpleNamespace(type="tool_use", input={})
+    fake_response = SimpleNamespace(content=[truncated_tool_use], stop_reason="max_tokens")
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            return fake_response
+
+    class _FakeClient:
+        messages = _FakeMessages()
+
+    monkeypatch.setattr(enrichment, "_client", lambda: _FakeClient())
+
+    result = await enrichment.enrich_items([_item("A"), _item("B")])
+
+    assert [r.category for r in result] == [enrichment._FALLBACK_CATEGORY] * 2
+    assert all(r.insight == "" for r in result)
 
 
 async def test_enrich_items_falls_back_on_batch_failure(monkeypatch):

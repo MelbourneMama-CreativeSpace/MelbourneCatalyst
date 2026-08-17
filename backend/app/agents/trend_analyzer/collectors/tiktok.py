@@ -1,5 +1,5 @@
-"""TikTok collector — recent public videos matching configured keywords via
-the TikTok Research API.
+"""TikTok collector — recent public videos matching the active niche via the
+TikTok Research API.
 
 Requires `TIKTOK_CLIENT_KEY`/`TIKTOK_CLIENT_SECRET`. Note: the Research API
 is gated behind academic/institutional approval, not a standard developer
@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from app.agents.trend_analyzer.niche import resolve_niche_keywords
 from app.agents.trend_analyzer.schemas import RawTrendItem, TrendSource
 from app.config import settings
 
@@ -38,7 +39,9 @@ class TikTokCollector:
     ) -> None:
         self.client_key = client_key or settings.TIKTOK_CLIENT_KEY
         self.client_secret = client_secret or settings.TIKTOK_CLIENT_SECRET
-        self.keywords = keywords or settings.TIKTOK_SEARCH_KEYWORDS
+        # None means "resolve from the onboarded companies' niche at collect
+        # time" (see `trend_analyzer/niche.py`); an explicit list overrides.
+        self.keywords = keywords
         self.max_count = max_count
 
     async def collect(self) -> list[RawTrendItem]:
@@ -48,10 +51,14 @@ class TikTokCollector:
             )
             return []
 
+        keywords = self.keywords if self.keywords is not None else await resolve_niche_keywords()
+        if not keywords:
+            return []
+
         async with httpx.AsyncClient(timeout=15.0) as client:
             access_token = await self._get_access_token(client)
             items: list[RawTrendItem] = []
-            for keyword in self.keywords:
+            for keyword in keywords:
                 try:
                     items.extend(await self._collect_keyword(client, access_token, keyword))
                 except Exception:

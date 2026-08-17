@@ -1,5 +1,5 @@
-"""X (Twitter) collector — recent posts matching configured search queries
-via the X API v2 recent-search endpoint.
+"""X (Twitter) collector — recent posts matching the active niche via the X
+API v2 recent-search endpoint.
 
 Requires `TWITTER_BEARER_TOKEN` from a paid X API developer tier — the free
 tier cannot search. Skips collection (with a warning, not an error) when
@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.agents.trend_analyzer.niche import resolve_niche_keywords
 from app.agents.trend_analyzer.schemas import RawTrendItem, TrendSource
 from app.config import settings
 
@@ -29,7 +30,9 @@ class TwitterCollector:
         max_results: int = 25,
     ) -> None:
         self.bearer_token = bearer_token or settings.TWITTER_BEARER_TOKEN
-        self.queries = queries or settings.TWITTER_SEARCH_QUERIES
+        # None means "resolve from the onboarded companies' niche at collect
+        # time" (see `trend_analyzer/niche.py`); an explicit list overrides.
+        self.queries = queries
         self.max_results = max_results
 
     async def collect(self) -> list[RawTrendItem]:
@@ -37,10 +40,14 @@ class TwitterCollector:
             logger.warning("TWITTER_BEARER_TOKEN not configured; skipping X/Twitter collection")
             return []
 
+        queries = self.queries if self.queries is not None else await resolve_niche_keywords()
+        if not queries:
+            return []
+
         items: list[RawTrendItem] = []
         headers = {"Authorization": f"Bearer {self.bearer_token}"}
         async with httpx.AsyncClient(headers=headers, timeout=10.0) as client:
-            for query in self.queries:
+            for query in queries:
                 try:
                     items.extend(await self._collect_query(client, query))
                 except Exception:

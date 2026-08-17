@@ -106,11 +106,27 @@ async def _enrich_batch(
     try:
         response = await client.messages.create(
             model=_MODEL,
-            max_tokens=1024,
+            # A full batch of _BATCH_SIZE=25 items' worth of structured
+            # tool output (index + category + one-sentence insight, times
+            # 25) genuinely needs more than the old 1024 — confirmed live:
+            # a real batch hit stop_reason="max_tokens" at exactly 1024,
+            # with tool_use.input truncated to nothing at all (`{}`, not
+            # even a partial "results" array), which is what the bare
+            # KeyError on "results" actually was. 4096 was verified live
+            # against a real 25-item batch (~1200 output tokens used,
+            # comfortable margin) — not just bumped blindly.
+            max_tokens=4096,
             tools=[_TOOL],
             tool_choice={"type": "tool", "name": "categorize_trends"},
             messages=[{"role": "user", "content": _build_prompt(batch)}],
         )
+        if response.stop_reason == "max_tokens":
+            logger.warning(
+                "Trend enrichment response truncated at max_tokens for a batch of %d items — "
+                "falling back to uncategorized for this batch",
+                len(batch),
+            )
+            return [_fallback(item) for item in batch]
         tool_use = next(block for block in response.content if block.type == "tool_use")
         results = {r["index"]: r for r in tool_use.input["results"]}
     except Exception:
