@@ -1,8 +1,6 @@
 "use client";
 
-import Link from "next/link";
-
-import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/error-state";
 
 export default function KnowledgeBaseError({
   error,
@@ -12,21 +10,13 @@ export default function KnowledgeBaseError({
   reset: () => void;
 }) {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-6 text-center">
-      <h1 className="text-2xl font-bold">Couldn&apos;t load the knowledge base</h1>
-      <p className="max-w-md text-muted-foreground">
-        The Knowledge Base API didn&apos;t respond as expected. This usually means the
-        backend isn&apos;t reachable yet, or its database isn&apos;t configured.
-      </p>
-      <p className="max-w-md text-xs text-muted-foreground/70">{error.message}</p>
-      <div className="flex gap-3">
-        <Button onClick={() => reset()}>Try again</Button>
-        <Button
-          variant="outline"
-          nativeButton={false}
-          render={<Link href="/companies">Back to companies</Link>}
-        />
-      </div>
-    </div>
+    <ErrorState
+      title="Couldn't load the knowledge base"
+      hint="We ran into a problem loading the knowledge base. Please try again in a moment."
+      error={error}
+      reset={reset}
+      backHref="/companies"
+      backLabel="Back to companies"
+    />
   );
 }

@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from app.api.v1.endpoints.analysis import router as analysis_router
 from app.api.v1.endpoints.chat import router as chat_router
 from app.api.v1.endpoints.companies import router as companies_router
 from app.api.v1.endpoints.competitor_research import router as competitor_research_router
@@ -31,3 +32,4 @@ api_router.include_router(
     social_media_analyzer_router, prefix="/social-media-analyzer", tags=["Social Media Analyzer"]
 )
 api_router.include_router(media_library_router, prefix="/media-library", tags=["Media Library"])
+api_router.include_router(analysis_router, prefix="/analysis", tags=["Analysis"])

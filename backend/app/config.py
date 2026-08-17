@@ -57,32 +57,43 @@ class Settings(BaseSettings):
     # format than the old trending_searches()'s `pn` param used (full
     # country names) — that method is no longer used (see google_trends.py).
     GOOGLE_TRENDS_REGION: str = ""
-    GOOGLE_TRENDS_SEED_KEYWORDS: list[str] = ["marketing", "social media", "AI"]
+    # NOTE: what each collector searches for is NOT configured here. The
+    # niche is resolved at collection time from the onboarded companies'
+    # extracted `niche_keywords` (website, typed description, or connected
+    # social accounts — see app/agents/trend_analyzer/niche.py). The two
+    # caps below only bound how much of that niche is used per run.
+    TREND_NICHE_MAX_KEYWORDS: int = 12
+    # Keep low: Meta caps an Instagram account at 30 unique hashtags per 7 days
+    TREND_NICHE_MAX_HASHTAGS: int = 5
     # Reddit — read-only OAuth (a free "script" app registration), not the
     # public JSON endpoints (those return 403 Blocked in practice now).
     REDDIT_CLIENT_ID: str = ""
     REDDIT_CLIENT_SECRET: str = ""
-    REDDIT_SUBREDDITS: list[str] = ["marketing", "socialmedia", "smallbusiness"]
-    RSS_FEED_URLS: list[str] = [
-        "https://feeds.feedburner.com/TechCrunch",
-        "https://www.socialmediatoday.com/feeds/news/",
-    ]
+    # Subreddits are discovered per niche keyword via Reddit's own search
+    REDDIT_SUBREDDITS_PER_KEYWORD: int = 2
+    # Optional supplemental static feeds, still supported alongside the
+    # dynamic per-niche-keyword Google News search RSSCollector now also
+    # does — leave empty to rely on the dynamic feeds only.
+    RSS_FEED_URLS: list[str] = []
     YOUTUBE_API_KEY: str = ""
-    YOUTUBE_SEARCH_QUERIES: list[str] = ["marketing trends", "social media strategy"]
 
     # X / Twitter — API v2 recent search needs a paid developer tier
     TWITTER_BEARER_TOKEN: str = ""
-    TWITTER_SEARCH_QUERIES: list[str] = ["marketing trends", "social media strategy"]
 
     # Instagram — Graph API hashtag search needs a Business/Creator account
     INSTAGRAM_ACCESS_TOKEN: str = ""
     INSTAGRAM_BUSINESS_ACCOUNT_ID: str = ""
-    INSTAGRAM_HASHTAGS: list[str] = ["marketing", "socialmedia"]
 
     # TikTok — Research API needs academic/institutional approval
     TIKTOK_CLIENT_KEY: str = ""
     TIKTOK_CLIENT_SECRET: str = ""
-    TIKTOK_SEARCH_KEYWORDS: list[str] = ["marketing trends", "social media"]
+
+    # Shared secret for the unauthenticated POST /internal/trend-collection
+    # endpoint — lets an external scheduler (a GitHub Actions cron workflow,
+    # see .github/workflows/trend-collection.yml) trigger a collection run
+    # over plain HTTP, which has no way to hold a real user session. Leave
+    # blank to disable the endpoint entirely (503s with an explanation).
+    CRON_SECRET: str = ""
 
     # Knowledge Base — Voyage AI embeddings (voyage-3-lite is 1024-dim)
     VOYAGE_API_KEY: str = ""
@@ -95,6 +106,10 @@ class Settings(BaseSettings):
     STRATEGY_MAX_TRENDS: int = 10
     CONTENT_PLAN_MAX_TRENDS: int = 10
     CONTENT_PLAN_DAYS: int = 14
+    # A single ad-hoc post (create_manual_item — the chat/manual-item-form
+    # path) doesn't need as much ambient trend context as a whole
+    # calendar does; smaller than CONTENT_PLAN_MAX_TRENDS on purpose.
+    MANUAL_ITEM_MAX_TRENDS: int = 5
 
     # Content Management — Campaign Manager + Brand Collaboration
     COLLABORATION_MAX_IDEAS: int = 5
@@ -137,6 +152,21 @@ class Settings(BaseSettings):
     COMPOSIO_YOUTUBE_POST_TOOL_SLUG: str = ""
     # How often the scheduler checks for due scheduled posts.
     PUBLISH_SCHEDULER_INTERVAL_MINUTES: int = 5
+
+    # Real YouTube video uploads (youtube_upload.py) are queued rather than
+    # one-shot — a transient failure (a stalled network hop, a Composio
+    # 5xx) retries automatically instead of just failing once. Capped so a
+    # permanently-broken upload (bad config, a deleted video source)
+    # doesn't retry forever.
+    YOUTUBE_UPLOAD_SCHEDULER_INTERVAL_MINUTES: int = 15
+    MAX_YOUTUBE_UPLOAD_ATTEMPTS: int = 5
+
+    # Real per-post metrics (post_metrics.py) — the data layer under
+    # LoomVerse's Analysis. Every run re-syncs every published item, so
+    # this is deliberately not aggressive: matches trend collection's own
+    # 6-hour cadence rather than something tighter that would risk
+    # rate limits across every connected platform at once.
+    POST_METRICS_SYNC_INTERVAL_MINUTES: int = 360
 
     # Same "you look it up in Composio's catalog, we don't guess it"
     # deal as the post tool slugs above, for whichever "get account/post
@@ -195,6 +225,15 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+
+    # Temporary pre-launch access gate — see require_allowlisted_user in
+    # app/security/auth.py. Empty (the default) means unrestricted, i.e.
+    # identical to today's behavior (any valid Supabase session). Once
+    # populated, every /api/v1 route additionally requires the signed-in
+    # user's email to appear here. Meant to be deleted entirely once
+    # Stripe billing becomes the real access gate — same JSON-array-in-.env
+    # format as CORS_ORIGINS, e.g. ALLOWED_USER_IDS=["you@example.com"].
+    ALLOWED_USER_IDS: list[str] = []
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 

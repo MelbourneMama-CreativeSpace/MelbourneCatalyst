@@ -13,6 +13,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
     Uuid,
@@ -324,6 +325,13 @@ class ContentItem(Base):
     # written inline into draft_copy's prose. Null for platforms/formats
     # that don't use them, or items generated before this field existed.
     hashtags: Mapped[list[str] | None] = mapped_column(_StringArrayType, nullable=True)
+    # A user-attached image (or video) for this item — a public Supabase
+    # Storage URL, same shape as chat attachments. Nothing in this app
+    # generates one; it's supplied by hand via POST .../media. Most
+    # platforms don't need this (a caption alone is a valid post), but
+    # Instagram's real API has no text-only post at all — every Instagram
+    # publish requires this to be set, checked in publish.py, not here.
+    media_url: Mapped[str | None] = mapped_column(String, nullable=True)
     # Set when this item was created by the Content Repurposing Engine
     # (adapting another item's message for a different platform/format) —
     # a self-referential reference back to that source item, same shape
@@ -439,6 +447,76 @@ class PublishAttempt(Base):
     # for looking the post up on Composio's side later, not this app's PK.
     composio_execution_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PostMetricSnapshot(Base):
+    """Real per-post engagement metrics (likes/comments/shares/saves/
+    views/reach), one row per fetch — same "log entry, never overwrite"
+    shape as PublishAttempt/PlatformMetricSnapshot, so a metric's history
+    over time is never lost, not just its latest value. Distinct from
+    PlatformMetricSnapshot, which is account-level (follower count,
+    overall engagement rate) — this is specifically per-ContentItem, the
+    granularity LoomVerse's Analysis needs to answer "what worked" at the
+    individual-post level, not just in aggregate.
+
+    Every field is nullable on purpose: what's actually fetchable differs
+    genuinely per platform (confirmed live against each real Composio
+    toolkit, not assumed) — e.g. LinkedIn currently only exposes a
+    reaction count, nothing for comments/shares/views/reach. A null here
+    means "this platform doesn't expose this metric," never a fabricated
+    zero."""
+
+    __tablename__ = "post_metric_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    content_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("content_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    likes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    comments: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    saves: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    views: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reach: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Full raw response, for anything not yet promoted to its own column
+    # (e.g. Reels-specific retention metrics) and for diagnosing a
+    # surprising number against what the platform actually returned.
+    raw_metadata: Mapped[dict] = mapped_column(_MetadataType, nullable=False, default=dict)
+
+
+class AnalysisInsightCache(Base):
+    """The Analysis page's AI "why" + "what's next" (see
+    social_media_analyzer/analysis.py's generate_insight), memoized per
+    (company, period_days) instead of regenerated on every page view.
+
+    Before this existed, GET /analysis/overview called Claude fresh on
+    every single request — a real, avoidable cost, since the underlying
+    numbers only actually change on the post-metrics sync cadence
+    (POST_METRICS_SYNC_INTERVAL_MINUTES), not on every page refresh.
+    get_or_generate_insight treats a row here as fresh until it's older
+    than that same interval, then regenerates and overwrites in place —
+    one row per (company, period), not an append-only log like
+    PostMetricSnapshot, since only the current insight is ever useful."""
+
+    __tablename__ = "analysis_insight_cache"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    period_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    ai_why: Mapped[str | None] = mapped_column(String, nullable=True)
+    ai_recommendations: Mapped[list[str]] = mapped_column(_StringArrayType, nullable=False, default=list)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "period_days", name="uq_analysis_insight_cache_company_period"
+        ),
+    )
 
 
 class Campaign(Base):
@@ -591,6 +669,41 @@ class PlatformConnection(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class YouTubeUploadJob(Base):
+    """A queued real YouTube video upload — retried by
+    `run_scheduled_youtube_uploads` until it succeeds or hits
+    `MAX_YOUTUBE_UPLOAD_ATTEMPTS`, rather than the one-shot synchronous
+    attempt `upload_youtube_video_tool` used to make alone. Same
+    "log what happened, keep the row" shape as `PublishAttempt`, but this
+    one *is* the retryable unit of work (one row per upload, mutated in
+    place across attempts) rather than an attempt log — a video upload
+    isn't associated with a `ContentItem` the way a text post is, so
+    there's no existing row to log attempts against."""
+
+    __tablename__ = "youtube_upload_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    platform_connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("platform_connections.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    video_url: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str] = mapped_column(String, nullable=False)
+    tags: Mapped[list[str] | None] = mapped_column(_StringArrayType, nullable=True)
+    # unlisted | public | private — YouTube's own three privacyStatus
+    # values. Defaults to unlisted (safest default: never searchable/public
+    # unless the user explicitly asks), but is a real, user-settable choice
+    # per upload, not a hardcoded constant.
+    privacy_status: Mapped[str] = mapped_column(String(16), nullable=False, default="unlisted")
+    # pending | success | failed (failed = gave up after MAX_YOUTUBE_UPLOAD_ATTEMPTS)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    status_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    composio_execution_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PlatformMetricSnapshot(Base):
