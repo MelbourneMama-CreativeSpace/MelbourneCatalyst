@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { describeError } from "@/lib/api-error";
 import {
   createManualDocument,
   deleteDocument,
@@ -65,7 +66,7 @@ export function KnowledgeBaseDashboard({ companyId }: { companyId: string }) {
         setTotal(total);
         setListError(null);
       })
-      .catch((err) => setListError(err instanceof Error ? err.message : "Failed to load documents."));
+      .catch((err) => setListError(describeError(err)));
   }
 
   useEffect(() => {
@@ -86,7 +87,7 @@ export function KnowledgeBaseDashboard({ companyId }: { companyId: string }) {
       const { hits } = await searchKnowledgeBase(searchQuery, { company_id: companyId, k: 10 });
       setSearchHits(hits);
     } catch (err) {
-      setSearchError(err instanceof Error ? err.message : "Search failed.");
+      setSearchError(describeError(err));
     } finally {
       setSearching(false);
     }
@@ -98,7 +99,7 @@ export function KnowledgeBaseDashboard({ companyId }: { companyId: string }) {
       setDocuments((prev) => prev.filter((doc) => doc.id !== documentId));
       setTotal((prev) => prev - 1);
     } catch (err) {
-      setListError(err instanceof Error ? err.message : "Failed to delete document.");
+      setListError(describeError(err));
     }
   }
 
@@ -112,7 +113,7 @@ export function KnowledgeBaseDashboard({ companyId }: { companyId: string }) {
       setManualContent("");
       refreshDocuments();
     } catch (err) {
-      setManualError(err instanceof Error ? err.message : "Failed to save entry.");
+      setManualError(describeError(err));
     } finally {
       setSavingManual(false);
     }
@@ -129,7 +130,7 @@ export function KnowledgeBaseDashboard({ companyId }: { companyId: string }) {
       if (fileInputRef.current) fileInputRef.current.value = "";
       refreshDocuments();
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Upload failed.");
+      setUploadError(describeError(err));
     } finally {
       setUploading(false);
     }
@@ -152,7 +153,7 @@ export function KnowledgeBaseDashboard({ companyId }: { companyId: string }) {
       );
       refreshDocuments();
     } catch (err) {
-      setBlogIndexError(err instanceof Error ? err.message : "Blog indexing failed.");
+      setBlogIndexError(describeError(err));
     } finally {
       setIndexingBlog(false);
     }

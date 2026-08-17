@@ -52,6 +52,15 @@ class SendMessageRequest(BaseModel):
     content: str
 
 
+class ConfirmActionRequest(BaseModel):
+    # Only required when the proposed action itself demands it
+    # (`proposed_action["confirmation_phrase"]` is set — currently just
+    # `delete_content_item_post`) — every other action needs nothing
+    # beyond the normal Confirm click, so this stays optional/unused for
+    # them rather than becoming a required field on every confirm.
+    confirmation_text: str | None = None
+
+
 class AttachmentUploadResponse(BaseModel):
     url: str
     filename: str

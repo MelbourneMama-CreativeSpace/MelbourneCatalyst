@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import {
   createCollaboration,
   createContentPlan,
@@ -81,7 +82,7 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
       const plan = await createContentPlan(strategy.company_id, strategy.id, planDays);
       router.push(`/content-plan/${plan.id}`);
     } catch (err) {
-      setPlanError(err instanceof Error ? err.message : "Failed to generate content plan.");
+      setPlanError(describeError(err));
       setGeneratingPlan(false);
     }
   }
@@ -93,9 +94,7 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
       const collaboration = await createCollaboration(strategy.company_id, strategy.id);
       router.push(`/collaboration/${collaboration.id}`);
     } catch (err) {
-      setCollaborationError(
-        err instanceof Error ? err.message : "Failed to generate collaboration ideas.",
-      );
+      setCollaborationError(describeError(err));
       setGeneratingCollaboration(false);
     }
   }
@@ -106,7 +105,7 @@ export function StrategyView({ initialStrategy }: { initialStrategy: Strategy })
       const updated = await updateStrategyApproval(strategy.id, approvalStatus, approverName || undefined);
       setStrategy(updated);
     } catch (err) {
-      setApprovalError(err instanceof Error ? err.message : "Failed to update approval status.");
+      setApprovalError(describeError(err));
     }
   }
 

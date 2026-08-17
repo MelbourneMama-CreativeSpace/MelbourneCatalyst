@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { IntegrationsView } from "@/components/integrations-view";
+import { ApiError } from "@/lib/api-error";
 import { type Company } from "@/lib/api";
 import { getCompany } from "@/lib/api-server";
 
@@ -14,7 +15,7 @@ async function fetchCompanyOrNotFound(id: string): Promise<Company> {
   try {
     return await getCompany(id);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("404")) {
+    if (err instanceof ApiError && err.status === 404) {
       notFound();
     }
     throw err;

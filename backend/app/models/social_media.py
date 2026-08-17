@@ -61,6 +61,10 @@ class PublishResultOut(BaseModel):
     status: str  # "success" | "failed"
     status_error: str | None = None
     published_at: datetime | None = None
+    # Best-effort real link to the published post — null if the platform
+    # doesn't support one or the lookup itself failed, never a reason to
+    # fail the whole publish.
+    post_url: str | None = None
 
 
 class PublishAttemptOut(BaseModel):

@@ -345,6 +345,155 @@ async def test_run_content_plan_generation_marks_failed_on_generation_failure(
     assert items == []
 
 
+async def _stub_generate_content_item(context: str, user_input: str, platform: str, content_type: str):
+    return (
+        GeneratedContentItem(
+            title="Generated post",
+            description="A post.",
+            content_type=content_type,
+            platform=platform,
+            suggested_date=date.today(),
+            draft_copy="Ready-to-publish caption.",
+        ),
+        True,
+    )
+
+
+async def test_create_manual_item_includes_ambient_relevant_trends_in_context(
+    monkeypatch, test_session_factory
+):
+    """Regression test for a real bug: create_manual_item — the single-
+    post path both the chat agent's create_content_item tool and the
+    manual-item form use — hardcoded an empty trends list, even though
+    the exact same relevance-scored trend data was already being used for
+    the bulk content-plan generator. A chat-written post had zero trend
+    awareness as a result."""
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    captured = {}
+
+    async def _capture(context: str, user_input: str, platform: str, content_type: str):
+        captured["context"] = context
+        return await _stub_generate_content_item(context, user_input, platform, content_type)
+
+    monkeypatch.setattr(graph_module, "generate_content_item_from_input", _capture)
+
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete", name="Acme"))
+        session.add(
+            Trend(
+                id=uuid.uuid4(),
+                source="rss",
+                title="AI marketing tools trending",
+                insight="Marketers are automating campaign copy end to end.",
+                url="https://example.com/trend",
+                relevance_score=0.9,
+                raw_metadata={},
+                discovered_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    item, ok = await graph_module.create_manual_item(company_id, "a launch post", "linkedin", "post")
+
+    assert ok is True
+    assert "AI marketing tools trending" in captured["context"]
+    assert "Marketers are automating campaign copy end to end." in captured["context"]
+
+
+async def test_create_manual_item_with_explicit_trend_id_links_and_steers_generation(
+    monkeypatch, test_session_factory
+):
+    """A trend explicitly picked by the user (e.g. off list_trending_topics)
+    must actually center the generation, not just ride along as one of
+    several ambient trends, and the resulting item must stay linked back
+    to it — same linkage run_content_plan_generation already gives its
+    own trend-inspired items."""
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    captured = {}
+
+    async def _capture(context: str, user_input: str, platform: str, content_type: str):
+        captured["context"] = context
+        captured["user_input"] = user_input
+        return await _stub_generate_content_item(context, user_input, platform, content_type)
+
+    monkeypatch.setattr(graph_module, "generate_content_item_from_input", _capture)
+
+    company_id = uuid.uuid4()
+    trend_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete", name="Acme"))
+        session.add(
+            Trend(
+                id=trend_id,
+                source="rss",
+                title="Niche micro-trend nobody else covers",
+                insight="A small but highly engaged community is forming around this.",
+                url="https://example.com/trend",
+                # Deliberately low — must still be included/emphasized
+                # because it was explicitly requested, not because it
+                # would have made the ambient top-N cut on relevance
+                # alone.
+                relevance_score=0.01,
+                raw_metadata={},
+                discovered_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    item, ok = await graph_module.create_manual_item(
+        company_id, "write something viral", "linkedin", "post", trend_id=trend_id
+    )
+
+    assert ok is True
+    assert item.source_trend_id == trend_id
+    assert "Niche micro-trend nobody else covers" in captured["context"]
+    assert "specifically inspired by the trend" in captured["user_input"]
+    assert "A small but highly engaged community is forming around this." in captured["user_input"]
+
+
+async def test_create_manual_item_with_unknown_trend_id_degrades_gracefully(
+    monkeypatch, test_session_factory
+):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+    monkeypatch.setattr(graph_module, "generate_content_item_from_input", _stub_generate_content_item)
+
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete", name="Acme"))
+        await session.commit()
+
+    item, ok = await graph_module.create_manual_item(
+        company_id, "a post", "linkedin", "post", trend_id=uuid.uuid4()
+    )
+
+    assert ok is True
+    assert item.source_trend_id is None
+
+
+def test_format_context_includes_trend_insight_not_just_title():
+    """Regression test: `insight` (why a trend matters, not just its
+    title) used to be dropped entirely from generation context — the
+    actual substance worth writing content around."""
+    company = Company(id=uuid.uuid4(), url="https://example.com", name="Acme", status="complete")
+    trend = Trend(
+        id=uuid.uuid4(),
+        source="rss",
+        title="A trending topic",
+        insight="This matters because of X.",
+        url="https://example.com/trend",
+        raw_metadata={},
+        discovered_at=datetime.now(timezone.utc),
+    )
+
+    context = graph_module.format_context(company, None, [(trend, 0.8)], None)
+
+    assert "A trending topic" in context
+    assert "This matters because of X." in context
+
+
 async def test_regenerate_item_draft_copy_updates_the_item(monkeypatch, test_session_factory):
     monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
 

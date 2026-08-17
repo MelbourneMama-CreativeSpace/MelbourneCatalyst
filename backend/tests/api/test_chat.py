@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.agents.chat import agent as agent_module
 from app.api.v1.endpoints import chat as chat_module
-from app.db.models import Company, ContentItem, ContentPlan
+from app.db.models import ChatMessage, Company, ContentItem, ContentPlan
 from app.db.session import get_session
 from app.security.auth import CurrentUser, get_current_user
 
@@ -54,8 +55,16 @@ async def seeded_content_item(test_session_factory, seeded_company):
 
 @pytest_asyncio.fixture
 async def client(monkeypatch, test_session_factory):
-    async def _fake_run_chat_turn(history, company_id, session):
+    async def _fake_run_chat_turn(history, company_id, session, user):
         return ("Fake assistant reply.", ["list_trending_topics"], True, None, [])
+
+    async def _fake_run_chat_turn_stream(history, company_id, session, user):
+        for word in ["Fake ", "streamed ", "reply."]:
+            yield ("token", word)
+        yield (
+            "done",
+            {"tools_used": ["list_trending_topics"], "proposed_action": None, "cards": [], "ok": True},
+        )
 
     async def _fake_generate_conversation_title(user_message):
         if user_message == "trigger-title-failure":
@@ -63,6 +72,7 @@ async def client(monkeypatch, test_session_factory):
         return f"Title for: {user_message}"
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_run_chat_turn)
+    monkeypatch.setattr(chat_module, "run_chat_turn_stream", _fake_run_chat_turn_stream)
     monkeypatch.setattr(
         chat_module, "generate_conversation_title", _fake_generate_conversation_title
     )
@@ -186,6 +196,71 @@ async def test_send_message_does_not_rename_an_already_titled_conversation(clien
     assert conversation["title"] == "Title for: first"
 
 
+async def test_send_message_stream_persists_the_assistant_reply(client):
+    created = (await client.post("/conversations", json={})).json()
+
+    response = await client.post(
+        f"/conversations/{created['id']}/messages/stream",
+        json={"content": "What's trending?"},
+    )
+    assert response.status_code == 200
+    assert "Fake streamed reply." in response.text
+
+    conversation = (await client.get(f"/conversations/{created['id']}")).json()
+    assert len(conversation["messages"]) == 2
+    assert conversation["messages"][1]["content"] == "Fake streamed reply."
+
+
+async def test_send_message_stream_sets_title_from_generated_intent(client):
+    """Regression test for a real bug: `_get_conversation_or_404` loads
+    `conversation` using the request's injected `session`, but
+    `_event_generator` runs *after* `send_message_stream` returns —  by
+    which point FastAPI has already torn down that `Depends(get_session)`
+    dependency, detaching every object it had loaded (confirmed live via
+    `sqlalchemy.orm.object_session(conversation) is None` at that point).
+    A detached object's mutations are never flushed, so `conversation.title
+    = ...` was silently lost on every single streamed reply — the
+    conversation sidebar's `title is not None` filter meant this hid every
+    conversation ever created through the (exclusively-used-by-the-
+    frontend) streaming endpoint. Fixed by re-adding `conversation` to the
+    session before mutating it."""
+    created = (await client.post("/conversations", json={})).json()
+
+    await client.post(
+        f"/conversations/{created['id']}/messages/stream",
+        json={"content": "What's trending?"},
+    )
+
+    conversation = (await client.get(f"/conversations/{created['id']}")).json()
+    assert conversation["title"] == "Title for: What's trending?"
+
+
+async def test_send_message_stream_title_falls_back_to_raw_message_if_generation_fails(client):
+    created = (await client.post("/conversations", json={})).json()
+
+    await client.post(
+        f"/conversations/{created['id']}/messages/stream",
+        json={"content": "trigger-title-failure"},
+    )
+
+    conversation = (await client.get(f"/conversations/{created['id']}")).json()
+    assert conversation["title"] == "trigger-title-failure"
+
+
+async def test_send_message_stream_does_not_rename_an_already_titled_conversation(client):
+    created = (await client.post("/conversations", json={})).json()
+    await client.post(
+        f"/conversations/{created['id']}/messages/stream", json={"content": "first"}
+    )
+
+    await client.post(
+        f"/conversations/{created['id']}/messages/stream", json={"content": "second"}
+    )
+
+    conversation = (await client.get(f"/conversations/{created['id']}")).json()
+    assert conversation["title"] == "Title for: first"
+
+
 async def test_send_message_404_for_unknown_conversation(client):
     response = await client.post(
         f"/conversations/{uuid.uuid4()}/messages", json={"content": "hi"}
@@ -251,7 +326,7 @@ async def test_confirm_action_executes_the_proposed_tool(
         "description": "Approve the content item",
     }
 
-    async def _fake_with_proposal(history, company_id, session):
+    async def _fake_with_proposal(history, company_id, session, user):
         return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
@@ -285,6 +360,65 @@ async def test_confirm_action_executes_the_proposed_tool(
     assert conversation["messages"][-1]["content"] == "Approved content item 'Test post'."
 
 
+async def test_confirm_action_requires_the_exact_typed_phrase_when_the_proposal_needs_one(
+    client, monkeypatch, seeded_content_item
+):
+    """delete_content_item_post-style actions carry a confirmation_phrase
+    on the proposal — the endpoint must reject confirming without it (or
+    with the wrong text) regardless of what the frontend's own button
+    state does, since that's just UX, not the actual safety boundary."""
+    proposed_action = {
+        "tool_name": "approve_content_item",
+        "tool_input": {"content_item_id": str(seeded_content_item)},
+        "description": "Permanently delete that item",
+        "confirmation_phrase": "DELETE",
+    }
+
+    async def _fake_with_proposal(history, company_id, session, user):
+        return ("I'll delete that.", [], True, proposed_action, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
+
+    executed = False
+
+    async def _fake_approve(session, **kwargs):
+        nonlocal executed
+        executed = True
+        return "done"
+
+    monkeypatch.setitem(chat_module.WRITE_TOOL_IMPLEMENTATIONS, "approve_content_item", _fake_approve)
+
+    created = (await client.post("/conversations", json={})).json()
+    sent = (
+        await client.post(
+            f"/conversations/{created['id']}/messages", json={"content": "delete it"}
+        )
+    ).json()
+
+    # No body at all.
+    response = await client.post(
+        f"/conversations/{created['id']}/messages/{sent['id']}/confirm-action"
+    )
+    assert response.status_code == 400
+    assert executed is False
+
+    # Wrong text.
+    response = await client.post(
+        f"/conversations/{created['id']}/messages/{sent['id']}/confirm-action",
+        json={"confirmation_text": "delete"},  # wrong case
+    )
+    assert response.status_code == 400
+    assert executed is False
+
+    # Exact match — now it actually runs.
+    response = await client.post(
+        f"/conversations/{created['id']}/messages/{sent['id']}/confirm-action",
+        json={"confirmation_text": "DELETE"},
+    )
+    assert response.status_code == 200
+    assert executed is True
+
+
 async def test_confirm_action_404_when_message_has_no_proposal(client):
     created = (await client.post("/conversations", json={})).json()
     sent = (
@@ -297,6 +431,96 @@ async def test_confirm_action_404_when_message_has_no_proposal(client):
     assert response.status_code == 404
 
 
+async def _propose_and_confirm(client, monkeypatch, proposed_action: dict, message: str = "go"):
+    async def _fake_with_proposal(history, company_id, session, user):
+        return ("ok", [], True, proposed_action, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
+
+    created = (await client.post("/conversations", json={})).json()
+    sent = (
+        await client.post(f"/conversations/{created['id']}/messages", json={"content": message})
+    ).json()
+    return await client.post(f"/conversations/{created['id']}/messages/{sent['id']}/confirm-action")
+
+
+async def test_confirm_action_auto_resolves_company_when_omitted(
+    client, monkeypatch, seeded_company
+):
+    """create_content_plan is in _COMPANY_AUTO_RESOLVABLE_WRITE_TOOLS — with
+    exactly one accessible company, the security check should resolve it
+    the same way the tool implementation's own fallback would, not refuse
+    the whole action just because Claude left company_id out (this is the
+    normal case for a company-less conversation, the default kind in this
+    single-company-focused app)."""
+    executed_with: dict = {}
+
+    async def _fake_create_plan(session, **kwargs):
+        executed_with.update(kwargs)
+        return "Started generating a new content plan."
+
+    monkeypatch.setitem(chat_module.WRITE_TOOL_IMPLEMENTATIONS, "create_content_plan", _fake_create_plan)
+
+    proposed_action = {
+        "tool_name": "create_content_plan",
+        "tool_input": {},  # no company_id — exactly what Claude sends when none was named
+        "description": "Create a new content plan",
+    }
+    response = await _propose_and_confirm(client, monkeypatch, proposed_action)
+
+    assert response.status_code == 200
+    assert executed_with["company_id"] == str(seeded_company)
+
+
+async def test_confirm_action_400s_when_no_company_to_auto_resolve(client, monkeypatch):
+    proposed_action = {
+        "tool_name": "create_content_plan",
+        "tool_input": {},
+        "description": "Create a new content plan",
+    }
+    response = await _propose_and_confirm(client, monkeypatch, proposed_action)
+
+    assert response.status_code == 400
+    assert "No onboarded company" in response.json()["detail"]
+
+
+async def test_confirm_action_400s_when_multiple_companies_are_accessible(
+    client, monkeypatch, seeded_company, test_session_factory
+):
+    async with test_session_factory() as session:
+        session.add(Company(id=uuid.uuid4(), url="https://example.org", status="complete"))
+        await session.commit()
+
+    proposed_action = {
+        "tool_name": "create_content_plan",
+        "tool_input": {},
+        "description": "Create a new content plan",
+    }
+    response = await _propose_and_confirm(client, monkeypatch, proposed_action)
+
+    assert response.status_code == 400
+    assert "More than one company" in response.json()["detail"]
+
+
+async def test_confirm_action_still_refuses_a_tool_with_no_identifiable_target(
+    client, monkeypatch, seeded_company
+):
+    """Only tools explicitly opted into _COMPANY_AUTO_RESOLVABLE_WRITE_TOOLS
+    get the auto-resolve fallback — a real, registered write tool
+    (approve_content_item) with neither company_id nor content_item_id in
+    tool_input still hits the original hard refusal, unweakened. Guards
+    against silently loosening this for every write tool by accident."""
+    proposed_action = {
+        "tool_name": "approve_content_item",
+        "tool_input": {},  # malformed on purpose — no content_item_id
+        "description": "Approve something",
+    }
+    response = await _propose_and_confirm(client, monkeypatch, proposed_action)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "This action's target could not be authorized"
+
+
 async def test_confirm_action_409_when_already_resolved(
     client, monkeypatch, seeded_content_item
 ):
@@ -306,7 +530,7 @@ async def test_confirm_action_409_when_already_resolved(
         "description": "Approve the content item",
     }
 
-    async def _fake_with_proposal(history, company_id, session):
+    async def _fake_with_proposal(history, company_id, session, user):
         return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
@@ -330,6 +554,194 @@ async def test_confirm_action_409_when_already_resolved(
     assert response.status_code == 409
 
 
+async def _bump_created_at(test_session_factory, message_id: str, delta: timedelta) -> None:
+    """Forces a message's `created_at` forward by `delta`. The in-memory
+    SQLite test DB's `func.now()` only has second-level granularity (real
+    Postgres has microsecond precision), so two messages created moments
+    apart in a fast test can tie on `created_at` — this makes "is there a
+    newer message" deterministic in tests without depending on real wall-
+    clock gaps."""
+    async with test_session_factory() as session:
+        message = (
+            await session.execute(select(ChatMessage).where(ChatMessage.id == uuid.UUID(message_id)))
+        ).scalar_one()
+        message.created_at = datetime.now(timezone.utc) + delta
+        await session.commit()
+
+
+async def test_confirm_action_409_when_a_newer_message_exists(
+    client, monkeypatch, seeded_content_item, test_session_factory
+):
+    """A pending proposal stops being confirmable once the conversation has
+    moved on — otherwise a stale card left dangling (e.g. by an earlier
+    crash that never flipped its action_status) stays clickable forever,
+    and confirming it later can mean executing a duplicate of something
+    that's already effectively been handled. Confirmed against a real bug:
+    a crash mid-confirm left a message stuck `pending` even though the
+    underlying job had already succeeded; without this check that message
+    stayed re-confirmable indefinitely."""
+    proposed_action = {
+        "tool_name": "approve_content_item",
+        "tool_input": {"content_item_id": str(seeded_content_item)},
+        "description": "Approve the content item",
+    }
+
+    async def _fake_with_proposal(history, company_id, session, user):
+        return ("I'll approve that.", [], True, proposed_action, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
+
+    created = (await client.post("/conversations", json={})).json()
+    sent = (
+        await client.post(
+            f"/conversations/{created['id']}/messages", json={"content": "approve it"}
+        )
+    ).json()
+
+    # Conversation continues past the still-unresolved proposal.
+    async def _fake_no_proposal(history, company_id, session, user):
+        return ("Sure, what else?", [], True, None, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_no_proposal)
+    later = (
+        await client.post(
+            f"/conversations/{created['id']}/messages", json={"content": "something else"}
+        )
+    ).json()
+    await _bump_created_at(test_session_factory, later["id"], timedelta(seconds=5))
+
+    response = await client.post(
+        f"/conversations/{created['id']}/messages/{sent['id']}/confirm-action"
+    )
+    assert response.status_code == 409
+    assert "expired" in response.json()["detail"].lower()
+
+
+async def test_cancel_action_409_when_a_newer_message_exists(client, monkeypatch, test_session_factory):
+    """Same expiry rule applies to cancel, not just confirm — an expired
+    card is inert either way, not just non-executable."""
+    proposed_action = {
+        "tool_name": "approve_content_item",
+        "tool_input": {"content_item_id": "abc-123"},
+        "description": "Approve content item abc-123",
+    }
+
+    async def _fake_with_proposal(history, company_id, session, user):
+        return ("I'll approve that.", [], True, proposed_action, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
+
+    created = (await client.post("/conversations", json={})).json()
+    sent = (
+        await client.post(
+            f"/conversations/{created['id']}/messages", json={"content": "approve it"}
+        )
+    ).json()
+
+    async def _fake_no_proposal(history, company_id, session, user):
+        return ("Sure, what else?", [], True, None, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_no_proposal)
+    later = (
+        await client.post(
+            f"/conversations/{created['id']}/messages", json={"content": "something else"}
+        )
+    ).json()
+    await _bump_created_at(test_session_factory, later["id"], timedelta(seconds=5))
+
+    response = await client.post(
+        f"/conversations/{created['id']}/messages/{sent['id']}/cancel-action"
+    )
+    assert response.status_code == 409
+
+
+async def test_history_sent_to_claude_is_annotated_with_action_status(
+    client, monkeypatch, seeded_content_item
+):
+    """`_history_content` must tell the model what actually happened to its
+    own earlier proposal — otherwise a still-pending (or already-resolved)
+    proposal reads as an open question forever, which is what led Claude to
+    re-propose an already-uploaded video verbatim in a real conversation
+    instead of noticing the user had moved on to something new."""
+    proposed_action = {
+        "tool_name": "approve_content_item",
+        "tool_input": {"content_item_id": str(seeded_content_item)},
+        "description": "Approve the content item",
+    }
+
+    async def _fake_with_proposal(history, company_id, session, user):
+        return ("Here's the proposal.", [], True, proposed_action, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
+    created = (await client.post("/conversations", json={})).json()
+    await client.post(f"/conversations/{created['id']}/messages", json={"content": "approve it"})
+
+    seen_history: list[dict] = []
+
+    async def _fake_capture_history(history, company_id, session, user):
+        seen_history.extend(history)
+        return ("noted", [], True, None, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_capture_history)
+    await client.post(f"/conversations/{created['id']}/messages", json={"content": "anything else?"})
+
+    assistant_turn = next(m for m in seen_history if m["role"] == "assistant")
+    assert "still awaiting the user's confirmation" in assistant_turn["content"]
+
+
+def test_redact_internal_config_mentions_scrubs_env_var_names_and_env_file():
+    """Regression test for a real leak: two messages written before a
+    'not configured' error's wording was sanitized still had the raw old
+    text ("...set COMPOSIO_API_KEY ... in .env") sitting in the DB, and —
+    because every turn resends every prior message verbatim — Claude kept
+    paraphrasing that old text back to the user on much later, unrelated
+    turns, unprompted. This must catch it regardless of when the message
+    was originally written, not just prevent new ones."""
+    leaked = (
+        "Publishing 'Ghibli-style whimsical AI art post' failed: instagram "
+        "publishing is not configured — set COMPOSIO_API_KEY and its Composio "
+        "post tool slug in .env"
+    )
+    redacted = chat_module._redact_internal_config_mentions(leaked)
+
+    assert "COMPOSIO_API_KEY" not in redacted
+    assert ".env" not in redacted
+    assert "[internal config]" in redacted
+    # A real caption shouldn't get mangled just for containing an
+    # unrelated all-caps word or two.
+    normal = "SHIP IT — our MVP is live! #BuildInPublic"
+    assert chat_module._redact_internal_config_mentions(normal) == normal
+
+
+async def test_history_sent_to_claude_has_a_past_leak_redacted(client, monkeypatch):
+    """Same scenario as the unit test above, exercised end-to-end through
+    the actual history-building path a real conversation uses."""
+    leaked_text = (
+        "Publishing failed: instagram publishing is not configured — set "
+        "COMPOSIO_API_KEY and its Composio post tool slug in .env"
+    )
+
+    async def _fake_leaked_reply(history, company_id, session, user):
+        return (leaked_text, [], True, None, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_leaked_reply)
+    created = (await client.post("/conversations", json={})).json()
+    await client.post(f"/conversations/{created['id']}/messages", json={"content": "publish it"})
+
+    seen_history: list[dict] = []
+
+    async def _fake_capture_history(history, company_id, session, user):
+        seen_history.extend(history)
+        return ("noted", [], True, None, [])
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", _fake_capture_history)
+    await client.post(f"/conversations/{created['id']}/messages", json={"content": "try again"})
+
+    assistant_turn = next(m for m in seen_history if m["role"] == "assistant")
+    assert "COMPOSIO_API_KEY" not in assistant_turn["content"]
+    assert ".env" not in assistant_turn["content"]
+
+
 async def test_cancel_action_marks_cancelled_without_executing(client, monkeypatch):
     proposed_action = {
         "tool_name": "approve_content_item",
@@ -337,7 +749,7 @@ async def test_cancel_action_marks_cancelled_without_executing(client, monkeypat
         "description": "Approve content item abc-123",
     }
 
-    async def _fake_with_proposal(history, company_id, session):
+    async def _fake_with_proposal(history, company_id, session, user):
         return ("I'll approve that.", [], True, proposed_action, [])
 
     monkeypatch.setattr(chat_module, "run_chat_turn", _fake_with_proposal)
@@ -364,3 +776,85 @@ async def test_cancel_action_marks_cancelled_without_executing(client, monkeypat
     assert response.status_code == 200
     assert response.json()["action_status"] == "cancelled"
     assert executed is False
+
+
+class _FakeUploadBucket:
+    def __init__(self):
+        self.uploaded: list[tuple] = []
+
+    async def upload(self, path, data, file_options=None):
+        self.uploaded.append((path, data, file_options))
+
+    async def get_public_url(self, path):
+        return f"https://fake.supabase.co/{path}"
+
+
+def _mock_storage_client(monkeypatch) -> _FakeUploadBucket:
+    """Wires chat_module._client/_require_configured to a fake bucket so
+    /attachments can be tested without a real Supabase Storage account."""
+    bucket = _FakeUploadBucket()
+
+    class _FakeStorageClient:
+        def from_(self, bucket_name):
+            return bucket
+
+    class _FakeSupabaseClient:
+        storage = _FakeStorageClient()
+
+    async def _fake_client():
+        return _FakeSupabaseClient()
+
+    monkeypatch.setattr(chat_module, "_client", _fake_client)
+    monkeypatch.setattr(chat_module, "_require_configured", lambda: None)
+    return bucket
+
+
+async def test_upload_chat_attachment_converts_heic_to_jpeg(client, monkeypatch):
+    """Regression test for a real bug: a HEIC upload (an iPhone's default
+    photo format) rendered as a broken image in the chat UI — no browser
+    decodes HEIC natively. Confirmed live via a real chat attachment."""
+    bucket = _mock_storage_client(monkeypatch)
+    monkeypatch.setattr(chat_module, "convert_heic_to_jpeg", lambda content: b"converted-jpeg-bytes")
+
+    response = await client.post(
+        "/attachments",
+        files={"file": ("IMG_1762.HEIC", b"fake heic bytes", "image/heic")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["filename"] == "IMG_1762.jpg"
+    assert body["content_type"] == "image/jpeg"
+    assert body["size_bytes"] == len(b"converted-jpeg-bytes")
+    assert bucket.uploaded[0][2] == {"content-type": "image/jpeg"}
+
+
+async def test_upload_chat_attachment_leaves_ordinary_images_untouched(client, monkeypatch):
+    bucket = _mock_storage_client(monkeypatch)
+
+    response = await client.post(
+        "/attachments",
+        files={"file": ("photo.jpg", b"real jpeg bytes", "image/jpeg")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["filename"] == "photo.jpg"
+    assert body["content_type"] == "image/jpeg"
+    assert bucket.uploaded[0][1] == b"real jpeg bytes"
+
+
+async def test_upload_chat_attachment_422s_on_an_unreadable_heic_file(client, monkeypatch):
+    _mock_storage_client(monkeypatch)
+
+    def _raise(content):
+        raise ValueError("cannot identify image file")
+
+    monkeypatch.setattr(chat_module, "convert_heic_to_jpeg", _raise)
+
+    response = await client.post(
+        "/attachments",
+        files={"file": ("broken.heic", b"not really an image", "image/heic")},
+    )
+
+    assert response.status_code == 422

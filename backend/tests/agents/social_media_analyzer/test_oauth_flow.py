@@ -52,18 +52,12 @@ async def test_initiate_connection_raises_for_unknown_platform(monkeypatch):
 
 
 class _FakeConnectedAccounts:
-    def __init__(self, create_result=None, retrieve_result=None, raise_on_delete=False):
-        self._create_result = create_result
+    def __init__(self, retrieve_result=None, raise_on_delete=False):
         self._retrieve_result = retrieve_result
         self._raise_on_delete = raise_on_delete
-        self.create_kwargs = None
         self.retrieve_args = None
         self.delete_args = None
         self.delete_kwargs = None
-
-    def create(self, *, auth_config, connection):
-        self.create_kwargs = {"auth_config": auth_config, "connection": connection}
-        return self._create_result
 
     def retrieve(self, nanoid):
         self.retrieve_args = nanoid
@@ -76,15 +70,32 @@ class _FakeConnectedAccounts:
             raise RuntimeError("Composio API error")
 
 
+class _FakePostClient:
+    """Fakes the top-level `client.post(...)` used for
+    POST /api/v3/connected_accounts/link — `connected_accounts.create()`
+    is retired for Composio-managed OAuth (see oauth_flow.py's `_link`),
+    so this app now calls the SDK's raw `post()` primitive directly
+    rather than a resource-specific wrapper method."""
+
+    def __init__(self, post_result=None, connected_accounts=None):
+        self._post_result = post_result
+        self.connected_accounts = connected_accounts or _FakeConnectedAccounts()
+        self.post_args = None
+        self.post_kwargs = None
+
+    def post(self, path, *, body, cast_to):
+        self.post_args = path
+        self.post_kwargs = {"body": body, "cast_to": cast_to}
+        return self._post_result
+
+
 async def test_initiate_connection_returns_id_and_redirect_url(monkeypatch):
     _configure(monkeypatch, COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID="ac_instagram_123")
 
-    fake_accounts = _FakeConnectedAccounts(
-        create_result=SimpleNamespace(id="ca_abc123", redirect_url="https://composio.dev/auth/xyz")
+    fake_client = _FakePostClient(
+        post_result={"connected_account_id": "ca_abc123", "redirect_url": "https://composio.dev/auth/xyz"}
     )
-    monkeypatch.setattr(
-        oauth_flow, "_client", lambda: SimpleNamespace(connected_accounts=fake_accounts)
-    )
+    monkeypatch.setattr(oauth_flow, "_client", lambda: fake_client)
 
     company_id = uuid.uuid4()
     connected_account_id, redirect_url = await oauth_flow.initiate_connection(
@@ -93,22 +104,30 @@ async def test_initiate_connection_returns_id_and_redirect_url(monkeypatch):
 
     assert connected_account_id == "ca_abc123"
     assert redirect_url == "https://composio.dev/auth/xyz"
-    assert fake_accounts.create_kwargs["auth_config"] == {"id": "ac_instagram_123"}
-    assert fake_accounts.create_kwargs["connection"] == {
+    assert fake_client.post_args == "/api/v3/connected_accounts/link"
+    assert fake_client.post_kwargs["body"] == {
+        "auth_config_id": "ac_instagram_123",
         "user_id": str(company_id),
         "callback_url": "https://app.example.com/cb",
     }
+    assert fake_client.post_kwargs["cast_to"] is object
 
 
 async def test_initiate_connection_raises_when_composio_returns_no_redirect_url(monkeypatch):
     _configure(monkeypatch, COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID="ac_instagram_123")
 
-    fake_accounts = _FakeConnectedAccounts(
-        create_result=SimpleNamespace(id="ca_abc123", redirect_url=None)
-    )
-    monkeypatch.setattr(
-        oauth_flow, "_client", lambda: SimpleNamespace(connected_accounts=fake_accounts)
-    )
+    fake_client = _FakePostClient(post_result={"connected_account_id": "ca_abc123", "redirect_url": None})
+    monkeypatch.setattr(oauth_flow, "_client", lambda: fake_client)
+
+    with pytest.raises(oauth_flow.ComposioNotConfiguredError):
+        await oauth_flow.initiate_connection("instagram", uuid.uuid4(), "https://app.example.com/cb")
+
+
+async def test_initiate_connection_raises_when_composio_response_is_not_a_dict(monkeypatch):
+    _configure(monkeypatch, COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID="ac_instagram_123")
+
+    fake_client = _FakePostClient(post_result="not a dict")
+    monkeypatch.setattr(oauth_flow, "_client", lambda: fake_client)
 
     with pytest.raises(oauth_flow.ComposioNotConfiguredError):
         await oauth_flow.initiate_connection("instagram", uuid.uuid4(), "https://app.example.com/cb")

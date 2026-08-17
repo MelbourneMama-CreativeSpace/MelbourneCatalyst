@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { TrendReportView } from "@/components/trend-report-view";
+import { ApiError } from "@/lib/api-error";
 import { type TrendReport } from "@/lib/api";
 import { getTrendReport } from "@/lib/api-server";
 
@@ -13,7 +14,7 @@ async function fetchTrendReportOrNotFound(id: string): Promise<TrendReport> {
   try {
     return await getTrendReport(id);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("404")) {
+    if (err instanceof ApiError && err.status === 404) {
       notFound();
     }
     throw err;

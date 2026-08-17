@@ -6,12 +6,14 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
+  BarChart3,
   ChevronLeft,
   ChevronRight,
   LayoutDashboard,
   MessageSquare,
   Menu,
   Plug,
+  SquarePen,
   TrendingUp,
   Users,
   X,
@@ -35,6 +37,7 @@ const navItems: NavItem[] = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/companies", label: "Content Studio", icon: Users },
+  { href: "/analysis", label: "Analysis", icon: BarChart3 },
   { href: "/integrations", label: "Integrations", icon: Plug },
   { href: "/trends", label: "Trends", icon: TrendingUp },
 ];
@@ -166,9 +169,31 @@ function SidebarContent({
         })}
       </nav>
 
+      {/* New Chat — always visible/clickable, unlike the "Chat" nav item
+          above, which shows as active (and easy to assume does nothing)
+          while already inside a conversation. Goes to the plain /chat
+          index route, which is itself the empty-composer "start a new
+          conversation" screen. */}
+      <div className={`mt-3 ${collapsed ? "px-2" : "px-3"}`}>
+        <Link
+          href="/chat"
+          title={collapsed ? "New chat" : undefined}
+          className={`group relative flex items-center rounded-lg border border-sidebar-border text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors
+            ${collapsed ? "justify-center px-2 py-2.5" : "gap-2.5 px-3 py-2"}`}
+        >
+          <SquarePen className="h-4 w-4 shrink-0" />
+          {!collapsed && <span className="text-sm font-medium">New chat</span>}
+          {collapsed && (
+            <span className="pointer-events-none absolute left-full ml-2 z-50 whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-xs text-background opacity-0 shadow-md transition-opacity group-hover:opacity-100">
+              New chat
+            </span>
+          )}
+        </Link>
+      </div>
+
       {/* Conversations — hidden when collapsed */}
       {!collapsed && (
-        <div className="mt-6 flex-1 min-h-0 px-3">
+        <div className="mt-4 flex-1 min-h-0 px-3">
           <p className="px-3 pb-2 text-xs font-medium uppercase tracking-wide text-sidebar-foreground/50">
             Conversations
           </p>

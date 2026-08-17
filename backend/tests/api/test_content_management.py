@@ -125,7 +125,7 @@ async def client(monkeypatch, test_session_factory):
             True,
         )
 
-    async def _fake_create_manual_item(company_id, topic, platform, content_type):
+    async def _fake_create_manual_item(company_id, topic, platform, content_type, media_url=None, trend_id=None):
         # Replaces the real create_manual_item wholesale (same reason
         # _fake_regenerate_item_draft_copy below replaces the whole
         # function rather than just its inner Claude call): the real one

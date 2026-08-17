@@ -6,6 +6,7 @@ import { Suspense, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { describeError } from "@/lib/api-error";
 import { createCompany } from "@/lib/api";
 
 export default function OnboardingPage() {
@@ -39,7 +40,7 @@ function OnboardingForm() {
       const created = await createCompany(normalized, companyName.trim());
       router.push(`/companies/${created.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start onboarding");
+      setError(describeError(err));
       setSubmitting(false);
     }
   }

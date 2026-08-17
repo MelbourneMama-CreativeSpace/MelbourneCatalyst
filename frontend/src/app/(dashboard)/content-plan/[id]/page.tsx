@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ContentPlanView } from "@/components/content-plan-view";
+import { ApiError } from "@/lib/api-error";
 import { type ContentPlan } from "@/lib/api";
 import { getContentPlan, getTrendsByIds } from "@/lib/api-server";
 
@@ -13,7 +14,7 @@ async function fetchContentPlanOrNotFound(id: string): Promise<ContentPlan> {
   try {
     return await getContentPlan(id);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("404")) {
+    if (err instanceof ApiError && err.status === 404) {
       notFound();
     }
     throw err;

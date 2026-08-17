@@ -243,6 +243,20 @@
 .delay-700 { animation-delay: 700ms; }
 .delay-800 { animation-delay: 800ms; }
 
+/* Cursor blink for streaming text */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.animate-blink {
+  animation: blink 0.9s ease-in-out infinite;
+}
+
+/* Slow spin for tool-use wrench icon */
+.animate-spin-slow {
+  animation: rotate-slow 2s linear infinite;
+}
+
 /* ===== Gradient Text ===== */
 .gradient-text {
   background: linear-gradient(135deg, #00a6a6, #48d7ce);

@@ -33,6 +33,7 @@ from app.db.models import (
     ContentItemRevision,
     ContentPlan,
     Strategy,
+    Trend,
 )
 from app.db.session import async_session_factory
 
@@ -77,7 +78,15 @@ def format_context(
 
     lines.append("\n# Currently Relevant Trends")
     if trends:
-        lines.extend(f"- {trend.title} (relevance: {score:.2f})" for trend, score in trends)
+        # `insight` (why this trend matters, not just its title) is the
+        # actual substance worth writing content around — dropped
+        # entirely before, even though it's exactly what a caller asking
+        # for content "about this trend" needs to work from.
+        for trend, score in trends:
+            line = f"- {trend.title} (relevance: {score:.2f})"
+            if trend.insight:
+                line += f" — {trend.insight}"
+            lines.append(line)
     else:
         lines.append("None available.")
 
@@ -302,7 +311,12 @@ async def regenerate_item_draft_copy(item_id: uuid.UUID) -> tuple[ContentItem | 
 
 
 async def create_manual_item(
-    company_id: uuid.UUID, topic: str, platform: str, content_type: str
+    company_id: uuid.UUID,
+    topic: str,
+    platform: str,
+    content_type: str,
+    media_url: str | None = None,
+    trend_id: uuid.UUID | None = None,
 ) -> tuple[ContentItem | None, bool]:
     """Generate one ad-hoc ContentItem from a free-text brief and persist it
     into the company's manual plan — the single-post counterpart to
@@ -312,8 +326,24 @@ async def create_manual_item(
     form" produce identical results through one code path. Manages its own
     session, same pattern as `regenerate_item_draft_copy` — callers that
     already hold a session (e.g. an endpoint doing its own ownership check
-    first) are expected to, this never touches theirs. Returns
-    `(None, False)` if the company doesn't exist, isn't ready, or
+    first) are expected to, this never touches theirs. `media_url` carries
+    an image already attached elsewhere (e.g. a chat attachment) straight
+    onto the new item — the caller resolves it, this just persists it.
+
+    The company's own top-relevant current trends are always included as
+    ambient context now — this used to be hardcoded to an empty list, so
+    a manual/chat-written post had *zero* trend awareness even though the
+    exact same relevance-scored data already existed and was already used
+    for the bulk content-plan generator. `trend_id` goes further: it
+    explicitly centers generation on one specific trend (e.g. the user
+    picked one off `list_trending_topics`), guaranteed to be represented
+    in context regardless of whether it'd make the ambient top-N cut on
+    relevance alone, and the resulting item's `source_trend_id` is set to
+    it — the same linkage `run_content_plan_generation` already gives its
+    own trend-inspired items. An unknown/invalid `trend_id` degrades to
+    the ambient-only behavior rather than failing the whole generation.
+
+    Returns `(None, False)` if the company doesn't exist, isn't ready, or
     generation itself fails."""
     async with async_session_factory() as session:
         company = await session.get(Company, company_id)
@@ -340,10 +370,33 @@ async def create_manual_item(
             session.add(manual_plan)
             await session.flush()
 
-        kb_references = await fetch_kb_references(session, company_id, topic)
-        context = format_context(company, None, [], kb_references)
+        trends_with_scores = await fetch_scored_trends(
+            session, company_id, limit=settings.MANUAL_ITEM_MAX_TRENDS
+        )
 
-        generated, ok = await generate_content_item_from_input(context, topic, platform, content_type)
+        source_trend: Trend | None = None
+        if trend_id is not None:
+            source_trend = await session.get(Trend, trend_id)
+            if source_trend is not None and source_trend.id not in {
+                t.id for t, _ in trends_with_scores
+            }:
+                trends_with_scores = [
+                    (source_trend, source_trend.relevance_score or 0.0)
+                ] + trends_with_scores
+
+        kb_references = await fetch_kb_references(session, company_id, topic)
+        context = format_context(company, None, trends_with_scores, kb_references)
+
+        effective_topic = topic
+        if source_trend is not None:
+            steer = f'Write this specifically inspired by the trend "{source_trend.title}"'
+            if source_trend.insight:
+                steer += f" — {source_trend.insight}"
+            effective_topic = f"{steer}.\n\n{topic}"
+
+        generated, ok = await generate_content_item_from_input(
+            context, effective_topic, platform, content_type
+        )
         if not ok or generated is None:
             return None, False
 
@@ -358,6 +411,8 @@ async def create_manual_item(
             suggested_date=generated.suggested_date,
             draft_copy=generated.draft_copy,
             hashtags=generated.hashtags,
+            media_url=media_url,
+            source_trend_id=source_trend.id if source_trend is not None else None,
             approval_status="pending",
         )
         session.add(item)

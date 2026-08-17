@@ -36,7 +36,7 @@ from app.agents.social_media_analyzer.oauth_flow import (
 from app.agents.social_media_analyzer.insights import generate_performance_insights
 from app.agents.social_media_analyzer.metrics import MetricsNotConfiguredError, fetch_platform_metrics
 from app.agents.social_media_analyzer.oauth_providers import PLATFORM_CONFIGS
-from app.agents.social_media_analyzer.publish import publish_post
+from app.agents.social_media_analyzer.publish import get_post_url, publish_post
 from app.config import settings
 from app.db.models import (
     Company,
@@ -260,7 +260,7 @@ async def _publish_and_log(
     caller needs to show the user."""
     try:
         execution_id = await publish_post(
-            connection.platform, connection.composio_connected_account_id, item.draft_copy or ""
+            session, connection, item.draft_copy or "", media_url=item.media_url
         )
     except Exception as exc:
         error_message = str(exc)[:512]
@@ -289,8 +289,14 @@ async def _publish_and_log(
         )
     )
     await session.commit()
+    # Best-effort — get_post_url never raises, so a lookup failure just
+    # means no link, not a failed publish that genuinely succeeded.
+    post_url = await get_post_url(connection, execution_id)
     return PublishResultOut(
-        content_item_id=item.id, status="success", published_at=item.published_at
+        content_item_id=item.id,
+        status="success",
+        published_at=item.published_at,
+        post_url=post_url,
     )
 
 

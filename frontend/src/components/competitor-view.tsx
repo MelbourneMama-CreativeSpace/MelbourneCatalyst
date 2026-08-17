@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import { generateComparison, getCompetitor, type Competitor } from "@/lib/api";
 
 const TERMINAL_STATUSES: ReadonlySet<Competitor["status"]> = new Set([
@@ -41,7 +42,7 @@ export function CompetitorView({ initialCompetitor }: { initialCompetitor: Compe
       const updated = await generateComparison(competitor.id);
       setCompetitor(updated);
     } catch (err) {
-      setComparisonError(err instanceof Error ? err.message : "Failed to generate comparison.");
+      setComparisonError(describeError(err));
     } finally {
       setGeneratingComparison(false);
     }

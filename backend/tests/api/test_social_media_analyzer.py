@@ -434,9 +434,9 @@ async def test_publish_now_succeeds(client, test_session_factory, monkeypatch):
     connection_id = await _seed_connected_platform(test_session_factory, company_id)
     item_id = await _seed_content_item(test_session_factory, company_id)
 
-    async def _fake_publish_post(platform, connected_account_id, text):
-        assert platform == "linkedin"
-        assert connected_account_id == "conn-real-123"
+    async def _fake_publish_post(session, connection, text, media_url=None):
+        assert connection.platform == "linkedin"
+        assert connection.composio_connected_account_id == "conn-real-123"
         return "exec-live-1"
 
     monkeypatch.setattr(social_media_analyzer_module, "publish_post", _fake_publish_post)
@@ -458,7 +458,7 @@ async def test_publish_now_returns_failed_status_on_composio_error(
     connection_id = await _seed_connected_platform(test_session_factory, company_id)
     item_id = await _seed_content_item(test_session_factory, company_id)
 
-    async def _failing_publish_post(platform, connected_account_id, text):
+    async def _failing_publish_post(session, connection, text, media_url=None):
         raise RuntimeError("Composio: not configured")
 
     monkeypatch.setattr(social_media_analyzer_module, "publish_post", _failing_publish_post)
@@ -582,7 +582,7 @@ async def test_retry_publish_attempt_succeeds(client, test_session_factory, monk
         test_session_factory, company_id
     )
 
-    async def _fake_publish_post(platform, connected_account_id, text):
+    async def _fake_publish_post(session, connection, text, media_url=None):
         return "exec-retry-1"
 
     monkeypatch.setattr(social_media_analyzer_module, "publish_post", _fake_publish_post)

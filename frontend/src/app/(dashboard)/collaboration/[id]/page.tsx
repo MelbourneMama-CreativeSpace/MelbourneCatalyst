@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { CollaborationView } from "@/components/collaboration-view";
+import { ApiError } from "@/lib/api-error";
 import { type Collaboration } from "@/lib/api";
 import { getCollaboration } from "@/lib/api-server";
 
@@ -13,7 +14,7 @@ async function fetchCollaborationOrNotFound(id: string): Promise<Collaboration> 
   try {
     return await getCollaboration(id);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("404")) {
+    if (err instanceof ApiError && err.status === 404) {
       notFound();
     }
     throw err;

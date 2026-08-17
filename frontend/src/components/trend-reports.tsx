@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import { createTrendReport, listTrendReports, type TrendReport } from "@/lib/api";
 
 function formatDateTime(iso: string): string {
@@ -35,7 +36,7 @@ export function TrendReports({ companyId }: { companyId: string }) {
       await createTrendReport(companyId);
       refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to generate trend report.");
+      setError(describeError(err));
     } finally {
       setGenerating(false);
     }

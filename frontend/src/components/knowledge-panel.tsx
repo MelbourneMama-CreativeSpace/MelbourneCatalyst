@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import {
   createAuditReport,
   getKnowledgeFreshness,
@@ -45,7 +46,7 @@ export function KnowledgePanel({ companyId }: { companyId: string }) {
       await createAuditReport(companyId);
       refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to generate audit report.");
+      setError(describeError(err));
     } finally {
       setGenerating(false);
     }

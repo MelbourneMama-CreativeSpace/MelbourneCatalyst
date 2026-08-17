@@ -3,10 +3,16 @@
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Mic, Paperclip, ChevronDown, AudioLines, Send, Square, X, FileIcon } from "lucide-react";
+import { Mic, Paperclip, ChevronDown, AudioLines, Send, Square, X } from "lucide-react";
 
+import { AttachmentThumbnail } from "@/components/chat-attachment-media";
 import { createClient } from "@/lib/supabase/client";
-import { createConversation, uploadChatAttachment, type ChatAttachment } from "@/lib/api";
+import { describeError } from "@/lib/api-error";
+import {
+  createConversation,
+  uploadChatAttachmentWithProgress,
+  type ChatAttachment,
+} from "@/lib/api";
 import { useReadAloud, useVoiceInput } from "@/hooks/use-speech";
 import { cn } from "@/lib/utils";
 
@@ -17,7 +23,10 @@ export default function ChatIndexPage() {
   const [input, setInput] = useState("");
   const [creating, setCreating] = useState(false);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
-  const [uploading, setUploading] = useState(false);
+  const [pendingUploads, setPendingUploads] = useState<
+    { id: string; filename: string; progress: number; cancel: () => void }[]
+  >([]);
+  const uploading = pendingUploads.length > 0;
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -45,19 +54,25 @@ export default function ChatIndexPage() {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
-    setUploading(true);
     setUploadError(null);
+
+    const id = `upload-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const { promise, cancel } = uploadChatAttachmentWithProgress(file, (fraction) => {
+      setPendingUploads((prev) =>
+        prev.map((u) => (u.id === id ? { ...u, progress: fraction } : u)),
+      );
+    });
+    setPendingUploads((prev) => [...prev, { id, filename: file.name, progress: 0, cancel }]);
+
     try {
-      const attachment = await uploadChatAttachment(file);
+      const attachment = await promise;
       setAttachments((prev) => [...prev, attachment]);
     } catch (err) {
-      setUploadError(
-        err instanceof Error && err.message.includes("409")
-          ? "Media storage isn't configured on the backend."
-          : "Couldn't upload that file — try again.",
-      );
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        setUploadError(describeError(err));
+      }
     } finally {
-      setUploading(false);
+      setPendingUploads((prev) => prev.filter((u) => u.id !== id));
     }
   }
 
@@ -118,27 +133,20 @@ export default function ChatIndexPage() {
           </h1>
         </div>
 
-        {/* Input box */}
+          <p className="text-sm text-muted-foreground max-w-md text-center">
+            Your AI content team — write posts, plan campaigns, find trends, and manage your pipeline.
+          </p>
         <div className="w-full max-w-2xl bg-card border border-border shadow-md rounded-2xl p-4 flex flex-col gap-3 focus-within:ring-2 focus-within:ring-ring/25 focus-within:border-border/90 transition-all duration-200">
 
           {/* Attachment previews */}
-          {attachments.length > 0 && (
+          {(attachments.length > 0 || pendingUploads.length > 0) && (
             <div className="flex flex-wrap gap-2">
               {attachments.map((a) => (
                 <div
                   key={a.url}
                   className="group relative flex items-center gap-1.5 rounded-lg border border-border bg-muted/50 px-2 py-1"
                 >
-                  {a.content_type.startsWith("image/") ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={a.url}
-                      alt={a.filename}
-                      className="h-8 w-8 rounded object-cover"
-                    />
-                  ) : (
-                    <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  )}
+                  <AttachmentThumbnail media={a} />
                   <span className="max-w-[120px] truncate text-xs text-foreground">
                     {a.filename}
                   </span>
@@ -147,6 +155,32 @@ export default function ChatIndexPage() {
                     onClick={() => removeAttachment(a.url)}
                     className="ml-0.5 rounded p-0.5 text-muted-foreground hover:text-destructive"
                     aria-label="Remove attachment"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              {pendingUploads.map((u) => (
+                <div
+                  key={u.id}
+                  className="flex items-center gap-2 rounded-lg border border-border bg-muted/50 px-2 py-1"
+                >
+                  <div className="flex flex-col gap-1">
+                    <span className="max-w-[140px] truncate text-xs text-foreground">
+                      {u.filename}
+                    </span>
+                    <div className="h-1 w-24 overflow-hidden rounded-full bg-border">
+                      <div
+                        className="h-full rounded-full bg-primary transition-[width] duration-150"
+                        style={{ width: `${Math.round(u.progress * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={u.cancel}
+                    className="rounded p-0.5 text-muted-foreground hover:text-destructive"
+                    aria-label={`Cancel uploading ${u.filename}`}
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -164,7 +198,7 @@ export default function ChatIndexPage() {
                 handleStartChat(input);
               }
             }}
-            placeholder="Type / for skills"
+            placeholder="Write a post, plan content, find trends…"
             rows={3}
             disabled={creating}
             className="w-full resize-none bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground/75"

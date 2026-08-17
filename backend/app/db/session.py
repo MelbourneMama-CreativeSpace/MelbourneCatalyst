@@ -24,7 +24,20 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,
+    # `pool_pre_ping` only catches a connection that's already dead *at
+    # checkout* — it can't catch one Supavisor's own server-side idle
+    # reaping kills in the gap between that ping succeeding and the real
+    # query landing, which is exactly what
+    # `ConnectionDoesNotExistError: connection was closed in the middle of
+    # operation` looks like (confirmed live). Recycling anything older than
+    # 30 minutes discards connections proactively, well under Supavisor's
+    # own idle timeout, so the pool never hands out one old enough to have
+    # been reaped server-side in the first place.
+    pool_recycle=1800,
+)
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 

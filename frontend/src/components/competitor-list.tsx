@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { describeError } from "@/lib/api-error";
 import {
   createCompetitor,
   listCompetitors,
@@ -50,7 +51,7 @@ export function CompetitorList({ companyId }: { companyId: string }) {
       setUrl("");
       refresh();
     } catch (err) {
-      setAddError(err instanceof Error ? err.message : "Failed to add competitor.");
+      setAddError(describeError(err));
     } finally {
       setSubmitting(false);
     }
@@ -66,7 +67,7 @@ export function CompetitorList({ companyId }: { companyId: string }) {
       }
       setSuggestions(names);
     } catch (err) {
-      setSuggestError(err instanceof Error ? err.message : "Failed to get suggestions.");
+      setSuggestError(describeError(err));
     } finally {
       setSuggesting(false);
     }
