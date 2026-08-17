@@ -102,7 +102,7 @@ export default async function AnalysisPage({ searchParams }: AnalysisPageProps) 
             </CardContent>
           </Card>
         ) : (
-          <AnalysisContent overview={overview} companyName={company.name ?? company.url} />
+          <AnalysisContent overview={overview} companyName={company.name ?? company.url ?? "this company"} />
         )}
       </div>
     </div>

@@ -1,7 +1,7 @@
 """youtube upload privacy status
 
-Revision ID: 0031
-Revises: 0030
+Revision ID: 0032
+Revises: 0031
 Create Date: 2026-08-09
 
 `privacy_status` was hardcoded to "unlisted" everywhere upstream even
@@ -17,8 +17,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0031"
-down_revision = "0030"
+revision = "0032"
+down_revision = "0031"
 branch_labels = None
 depends_on = None
 

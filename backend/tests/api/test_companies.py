@@ -23,7 +23,7 @@ from app.security.auth import CurrentUser, get_current_user
 
 @pytest_asyncio.fixture
 async def client(monkeypatch, test_session_factory):
-    async def _noop_run_onboarding(company_id, url):
+    async def _noop_run_onboarding(company_id, url, description=None):
         pass
 
     monkeypatch.setattr(companies_module, "run_onboarding", _noop_run_onboarding)
@@ -66,6 +66,58 @@ async def test_create_company_returns_pending_and_persists_row(client, test_sess
 async def test_create_company_rejects_invalid_url(client):
     response = await client.post("/", json={"url": "not-a-url"})
     assert response.status_code == 422
+
+
+async def test_create_company_accepts_description_without_url(client, test_session_factory):
+    """A business with no website onboards from its own description."""
+    response = await client.post(
+        "/", json={"description": "We run weekly pottery workshops in Brunswick."}
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["url"] is None
+    assert body["status"] == "pending"
+
+    async with test_session_factory() as session:
+        company = await session.get(Company, uuid.UUID(body["id"]))
+    assert company.url is None
+    assert company.description == "We run weekly pottery workshops in Brunswick."
+
+
+async def test_create_company_rejects_neither_url_nor_description(client):
+    # Nothing to extract a profile from — rejected at the edge rather than
+    # left as a row stuck at `pending`.
+    assert (await client.post("/", json={})).status_code == 422
+    assert (await client.post("/", json={"description": "   "})).status_code == 422
+
+
+async def test_description_only_companies_are_never_deduplicated(client, test_session_factory):
+    """Two businesses can describe themselves identically; only a URL
+    identifies a company well enough to re-onboard rather than create."""
+    payload = {"description": "Independent bookshop."}
+    first = await client.post("/", json=payload)
+    second = await client.post("/", json=payload)
+
+    assert first.json()["id"] != second.json()["id"]
+    async with test_session_factory() as session:
+        total = len((await session.execute(select(Company))).scalars().all())
+    assert total == 2
+
+
+async def test_re_onboarding_without_description_keeps_the_stored_one(
+    client, test_session_factory
+):
+    created = await client.post(
+        "/", json={"url": "https://example.com", "description": "Ceramics studio."}
+    )
+    company_id = uuid.UUID(created.json()["id"])
+
+    await client.post("/", json={"url": "https://example.com"})
+
+    async with test_session_factory() as session:
+        company = await session.get(Company, company_id)
+    assert company.description == "Ceramics studio."
 
 
 async def test_create_company_re_onboards_existing_url(client, test_session_factory):

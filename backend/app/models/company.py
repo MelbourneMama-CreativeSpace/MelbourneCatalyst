@@ -5,14 +5,15 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator, model_validator
 
 
 class CompanyOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    url: str
+    url: str | None
+    description: str | None
     name: str | None
     status: str
     status_error: str | None
@@ -34,18 +35,36 @@ class CompanyListResponse(BaseModel):
 
 
 class CompanyCreateRequest(BaseModel):
-    """Onboarding input. `url` is required; the agent extracts everything
-    else. `name` is optional — when given (e.g. typed at signup) it seeds
-    the row immediately instead of waiting on extraction, which still
-    overwrites it if the scrape finds a different name."""
+    """Onboarding input. The agent extracts everything else.
 
-    url: HttpUrl
+    Either `url` or `description` must be given — not every business has a
+    website, and one that doesn't can still describe itself in a sentence or
+    two. When both are present the site is scraped and the description is
+    passed alongside it as extra context rather than being discarded.
+
+    `name` is optional — when given (e.g. typed at signup) it seeds the row
+    immediately instead of waiting on extraction, which still overwrites it
+    if the scrape finds a different name.
+    """
+
+    url: HttpUrl | None = None
+    description: str | None = None
     name: str | None = None
+
+    @model_validator(mode="after")
+    def _needs_a_source(self) -> CompanyCreateRequest:
+        # Without one of these there is nothing to extract a profile from,
+        # and the row would sit at `pending` forever. Rejected at the edge
+        # so the failure is a 422 the caller can act on, not a background
+        # task that quietly marks itself failed.
+        if self.url is None and not (self.description or "").strip():
+            raise ValueError("Provide either a website URL or a description of the business")
+        return self
 
 
 class CompanyCreatedResponse(BaseModel):
     id: uuid.UUID
-    url: str
+    url: str | None
     name: str | None
     status: str
 

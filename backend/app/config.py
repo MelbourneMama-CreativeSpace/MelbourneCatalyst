@@ -57,19 +57,22 @@ class Settings(BaseSettings):
     # format than the old trending_searches()'s `pn` param used (full
     # country names) — that method is no longer used (see google_trends.py).
     GOOGLE_TRENDS_REGION: str = ""
-    # NOTE: what each collector searches for is NOT configured here. The
-    # niche is resolved at collection time from the onboarded companies'
-    # extracted `niche_keywords` (website, typed description, or connected
-    # social accounts — see app/agents/trend_analyzer/niche.py). The two
-    # caps below only bound how much of that niche is used per run.
+    # What each collector searches for is NOT configured here — it is
+    # resolved at collection time from the onboarded companies' extracted
+    # `niche_keywords` (see `trend_analyzer/niche.py`). These two only bound
+    # how much of that resolved niche gets used per run, so adding companies
+    # can't grow external API spend without limit.
     TREND_NICHE_MAX_KEYWORDS: int = 12
-    # Keep low: Meta caps an Instagram account at 30 unique hashtags per 7 days
+    # Deliberately far lower: Meta caps an Instagram account at 30 unique
+    # hashtags per rolling 7 days, shared across every run in that window.
     TREND_NICHE_MAX_HASHTAGS: int = 5
     # Reddit — read-only OAuth (a free "script" app registration), not the
     # public JSON endpoints (those return 403 Blocked in practice now).
     REDDIT_CLIENT_ID: str = ""
     REDDIT_CLIENT_SECRET: str = ""
-    # Subreddits are discovered per niche keyword via Reddit's own search
+    # How many subreddits to discover per niche keyword via Reddit's own
+    # subreddit search — keywords like "handmade ceramics" are not subreddit
+    # names, so they can't be used as one directly.
     REDDIT_SUBREDDITS_PER_KEYWORD: int = 2
     # Optional supplemental static feeds, still supported alongside the
     # dynamic per-niche-keyword Google News search RSSCollector now also

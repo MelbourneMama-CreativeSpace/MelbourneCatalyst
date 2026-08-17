@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.agents.company_analyzer import graph as graph_module
 from app.agents.company_analyzer.schemas import CompanyProfile, ScrapedPage
-from app.db.models import Company, Document
+from app.db.models import Company, Document, PlatformConnection
 
 
 async def _stub_discover_and_scrape(base_url: str, *, max_pages: int):
@@ -51,6 +51,92 @@ async def _stub_extract_profile(content: str) -> tuple[CompanyProfile, bool]:
 
 async def _stub_extract_profile_skipped(content: str) -> tuple[CompanyProfile, bool]:
     return CompanyProfile(), False
+
+
+async def _failing_discover_and_scrape(base_url: str, *, max_pages: int):
+    raise AssertionError("scraping must not be attempted when there is no URL")
+
+
+async def test_run_onboarding_uses_description_when_there_is_no_website(
+    monkeypatch, test_session_factory
+):
+    """A business with no site still gets profiled — from its own words."""
+    captured: dict[str, str] = {}
+
+    async def _capture(content: str):
+        captured["content"] = content
+        return await _stub_extract_profile(content)
+
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+    monkeypatch.setattr(graph_module, "discover_and_scrape", _failing_discover_and_scrape)
+    monkeypatch.setattr(graph_module, "embed_documents", _stub_embed_documents)
+    monkeypatch.setattr(graph_module, "extract_company_profile", _capture)
+
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url=None, status="pending"))
+        await session.commit()
+
+    await graph_module.run_onboarding(
+        company_id, None, "We run weekly pottery workshops in Brunswick."
+    )
+
+    async with test_session_factory() as session:
+        company = await session.get(Company, company_id)
+        docs = (
+            await session.execute(select(Document).where(Document.company_id == company_id))
+        ).scalars().all()
+
+    assert company.status == "complete"
+    assert company.niche_keywords == ["widgets", "small business", "marketing tools"]
+    assert "pottery workshops in Brunswick" in captured["content"]
+    # The description is embedded like any other source, so it's searchable
+    # in the knowledge base rather than being extraction-only input.
+    assert [doc.source_type for doc in docs] == ["description"]
+
+
+async def test_run_onboarding_feeds_connected_social_accounts_into_extraction(
+    monkeypatch, test_session_factory
+):
+    captured: dict[str, str] = {}
+
+    async def _capture(content: str):
+        captured["content"] = content
+        return await _stub_extract_profile(content)
+
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+    monkeypatch.setattr(graph_module, "discover_and_scrape", _failing_discover_and_scrape)
+    monkeypatch.setattr(graph_module, "embed_documents", _stub_embed_documents)
+    monkeypatch.setattr(graph_module, "extract_company_profile", _capture)
+
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url=None, status="pending"))
+        session.add(
+            PlatformConnection(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                platform="instagram",
+                status="connected",
+                external_account_name="@brunswickclay",
+            )
+        )
+        # A half-finished connection carries no reliable identity yet.
+        session.add(
+            PlatformConnection(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                platform="tiktok",
+                status="pending",
+                external_account_name="@notconnectedyet",
+            )
+        )
+        await session.commit()
+
+    await graph_module.run_onboarding(company_id, None, "Ceramics studio.")
+
+    assert "@brunswickclay" in captured["content"]
+    assert "@notconnectedyet" not in captured["content"]
 
 
 async def test_run_onboarding_persists_company_profile_and_documents(

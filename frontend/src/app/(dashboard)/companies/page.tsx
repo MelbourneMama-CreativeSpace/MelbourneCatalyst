@@ -240,7 +240,7 @@ export default function ContentStudioPage() {
                 href={`/companies/${company.id}`}
                 className="inline-flex h-9 items-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/80"
               >
-                About {company.name ?? company.url}
+                About {company.name ?? company.url ?? "this company"}
               </Link>
             )}
           </div>

@@ -179,7 +179,7 @@ async def test_user_b_cannot_hijack_a_company_by_reonboarding_its_url(
     """POST /companies with an existing URL takes the re-onboard branch,
     which wipes documents and restarts onboarding — without an ownership
     check that's a hijack needing no company id at all."""
-    async def _noop(company_id, url):
+    async def _noop(company_id, url, description=None):
         pass
 
     monkeypatch.setattr(companies_module, "run_onboarding", _noop)
@@ -197,7 +197,7 @@ async def test_user_b_cannot_hijack_a_company_by_reonboarding_its_url(
 async def test_creating_a_company_records_the_creator_as_owner(
     monkeypatch, test_session_factory, signer
 ):
-    async def _noop(company_id, url):
+    async def _noop(company_id, url, description=None):
         pass
 
     monkeypatch.setattr(companies_module, "run_onboarding", _noop)

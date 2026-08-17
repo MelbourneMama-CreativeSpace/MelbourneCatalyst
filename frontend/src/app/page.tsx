@@ -10,15 +10,12 @@ import {
   ChevronRight,
   Globe,
   LineChart,
-  MessageSquare,
   Rocket,
   Search,
   Shield,
   Sparkles,
   Star,
   TrendingUp,
-  Users,
-  Zap,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────
@@ -430,7 +427,7 @@ export default function LandingPage() {
                     <Star key={i} size={14} className="lv-star" />
                   ))}
                 </div>
-                <p className="lv-testimonial-quote">"{t.quote}"</p>
+                <p className="lv-testimonial-quote">&quot;{t.quote}&quot;</p>
                 <div className="lv-testimonial-author">
                   <div className="lv-testimonial-avatar">{t.avatar}</div>
                   <div>

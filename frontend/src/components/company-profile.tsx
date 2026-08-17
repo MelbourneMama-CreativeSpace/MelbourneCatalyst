@@ -62,15 +62,21 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
     <div className="mt-6 flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold">{company.name ?? company.url}</h1>
-          <a
-            href={company.url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm text-muted-foreground hover:underline"
-          >
-            {company.url}
-          </a>
+          <h1 className="text-3xl font-bold">{company.name ?? company.url ?? "Untitled company"}</h1>
+          {company.url ? (
+            <a
+              href={company.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm text-muted-foreground hover:underline"
+            >
+              {company.url}
+            </a>
+          ) : (
+            // Onboarded from a description rather than a website — there's
+            // no link to offer, so show where the profile came from instead.
+            <p className="text-sm text-muted-foreground">Profiled from a description</p>
+          )}
         </div>
         <Badge variant={statusVariant}>{company.status}</Badge>
       </div>

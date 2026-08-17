@@ -1,6 +1,12 @@
 """LangGraph onboarding pipeline for the Company Analyzer.
 
-    START → scrape_pages → chunk_and_embed → persist_documents → extract_profile → persist_profile → END
+    START → scrape_pages → gather_owned_context → chunk_and_embed → persist_documents → extract_profile → persist_profile → END
+
+A company's niche can come from three places, and `gather_owned_context` is
+what makes them interchangeable: the website (scraped), a description the
+operator typed, and the social accounts they've connected. `scrape_pages`
+is a no-op when there's no URL, so a business without a website still
+reaches extraction with real content behind it.
 
 One-shot pipeline (unlike the Trend Analyzer's recurring schedule). Kicked
 off by `POST /api/v1/companies` via FastAPI's `BackgroundTasks` — no
@@ -29,7 +35,7 @@ from app.agents.knowledge_base.chunker import chunk_text
 from app.agents.knowledge_base.embeddings import embed_documents
 from app.agents.knowledge_base.schemas import EmbeddedChunk
 from app.config import settings
-from app.db.models import Company, Document
+from app.db.models import Company, Document, PlatformConnection
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -39,9 +45,18 @@ logger = logging.getLogger(__name__)
 _TERMINAL_STATUSES = {"failed", "complete_no_profile"}
 
 
+# Synthetic source URLs for the two non-web inputs. `Document.source_url`
+# is NOT NULL and these rows are real Documents (searchable in the
+# knowledge base like any scraped page), so they need a stable, obviously
+# non-http identifier rather than an empty string.
+_DESCRIPTION_SOURCE_URL = "internal:description"
+_SOCIAL_SOURCE_URL = "internal:connected-social-accounts"
+
+
 class CompanyGraphState(TypedDict):
     company_id: uuid.UUID
-    url: str
+    url: str | None
+    description: str | None
     pages: list[ScrapedPage]
     embedded_chunks: list[EmbeddedChunk]
     profile: CompanyProfile
@@ -50,10 +65,81 @@ class CompanyGraphState(TypedDict):
 
 
 async def _scrape_pages_node(state: CompanyGraphState) -> dict:
+    """Scrape the website, if there is one.
+
+    A company onboarding from a typed description or its connected social
+    accounts has no URL — that's a normal path, not a failure, so this
+    returns no pages and lets `gather_owned_context` supply the content.
+    """
+    if not state["url"]:
+        return {"pages": [], "status": "extracting"}
     pages = await discover_and_scrape(
         state["url"], max_pages=settings.COMPANY_ONBOARDING_MAX_PAGES
     )
     return {"pages": pages, "status": "scraping"}
+
+
+async def _connected_social_summary(company_id: uuid.UUID) -> str | None:
+    """What the company's connected social accounts say about its niche.
+
+    Only the account identities are used. This app stores no post content
+    and `metrics.py` deliberately refuses to guess at unverified platform
+    response shapes, so inventing a bio/post fetcher here would produce
+    code that looks done and breaks on the first real connection. Account
+    names are thin but true, and they arrive without a network call.
+    """
+    async with async_session_factory() as session:
+        rows = (
+            await session.execute(
+                select(PlatformConnection.platform, PlatformConnection.external_account_name)
+                .where(
+                    PlatformConnection.company_id == company_id,
+                    PlatformConnection.status == "connected",
+                )
+                .order_by(PlatformConnection.platform.asc())
+            )
+        ).all()
+
+    lines = [
+        f"- {platform}: {name}" if name else f"- {platform}"
+        for platform, name in rows
+    ]
+    if not lines:
+        return None
+    return "This business operates the following social media accounts:\n" + "\n".join(lines)
+
+
+async def _gather_owned_context_node(state: CompanyGraphState) -> dict:
+    """Fold the operator's description and connected social accounts into
+    `pages`, so extraction, chunking and embedding stay one code path
+    regardless of which niche signal a company actually has."""
+    extra: list[ScrapedPage] = []
+
+    description = (state.get("description") or "").strip()
+    if description:
+        extra.append(
+            ScrapedPage(
+                url=_DESCRIPTION_SOURCE_URL,
+                title="Business description (provided by the operator)",
+                content=description,
+                source_type="description",
+            )
+        )
+
+    social = await _connected_social_summary(state["company_id"])
+    if social:
+        extra.append(
+            ScrapedPage(
+                url=_SOCIAL_SOURCE_URL,
+                title="Connected social accounts",
+                content=social,
+                source_type="social_profile",
+            )
+        )
+
+    if not extra:
+        return {}
+    return {"pages": state["pages"] + extra}
 
 
 async def _chunk_and_embed_node(state: CompanyGraphState) -> dict:
@@ -74,7 +160,7 @@ async def _chunk_and_embed_node(state: CompanyGraphState) -> dict:
         for i, chunk in enumerate(chunks):
             embedded.append(
                 EmbeddedChunk(
-                    source_type=classify_source_type(page.url),
+                    source_type=page.source_type or classify_source_type(page.url),
                     source_url=page.url,
                     chunk_index=i,
                     content=chunk,
@@ -112,12 +198,17 @@ async def _persist_documents_node(state: CompanyGraphState) -> dict:
 
 async def _extract_profile_node(state: CompanyGraphState) -> dict:
     if not state["pages"]:
-        # No content scraped at all — mark failed rather than sending
-        # empty input to the LLM and pretending we succeeded.
+        # No content from any source — mark failed rather than sending
+        # empty input to the LLM and pretending we succeeded. Reachable
+        # only when a URL was given and scraping yielded nothing: the API
+        # layer rejects a request with neither URL nor description.
         return {
             "profile": CompanyProfile(),
             "status": "failed",
-            "status_error": "No pages could be scraped from the provided URL",
+            "status_error": (
+                "No content could be gathered — the provided URL yielded no pages, "
+                "and no description or connected social account was available."
+            ),
         }
     aggregated = "\n\n---\n\n".join(
         f"# {page.title or page.url}\n{page.content}" for page in state["pages"]
@@ -132,7 +223,7 @@ async def _extract_profile_node(state: CompanyGraphState) -> dict:
             "profile": profile,
             "status": "complete_no_profile",
             "status_error": (
-                "Website was scraped successfully, but no profile could be "
+                "Content was gathered successfully, but no profile could be "
                 "generated (check ANTHROPIC_API_KEY / Claude API availability)."
             ),
         }
@@ -178,13 +269,15 @@ async def _persist_profile_node(state: CompanyGraphState) -> dict:
 def _build_graph():
     graph = StateGraph(CompanyGraphState)
     graph.add_node("scrape_pages", _scrape_pages_node)
+    graph.add_node("gather_owned_context", _gather_owned_context_node)
     graph.add_node("chunk_and_embed", _chunk_and_embed_node)
     graph.add_node("persist_documents", _persist_documents_node)
     graph.add_node("extract_profile", _extract_profile_node)
     graph.add_node("persist_profile", _persist_profile_node)
 
     graph.add_edge(START, "scrape_pages")
-    graph.add_edge("scrape_pages", "chunk_and_embed")
+    graph.add_edge("scrape_pages", "gather_owned_context")
+    graph.add_edge("gather_owned_context", "chunk_and_embed")
     graph.add_edge("chunk_and_embed", "persist_documents")
     graph.add_edge("persist_documents", "extract_profile")
     graph.add_edge("extract_profile", "persist_profile")
@@ -196,14 +289,22 @@ def _build_graph():
 _onboarding_graph = _build_graph()
 
 
-async def run_onboarding(company_id: uuid.UUID, url: str) -> None:
+async def run_onboarding(
+    company_id: uuid.UUID, url: str | None, description: str | None = None
+) -> None:
     """Run the onboarding pipeline for one Company. Called via FastAPI's
     BackgroundTasks after `POST /companies` has created the pending row.
     Failures are captured onto the Company row rather than raised — the
-    caller is fire-and-forget."""
+    caller is fire-and-forget.
+
+    At least one of `url` / `description` should be set (the API layer
+    enforces it); a company with neither and no connected social account
+    ends at status `failed` with nothing to extract from.
+    """
     initial_state: CompanyGraphState = {
         "company_id": company_id,
         "url": url,
+        "description": description,
         "pages": [],
         "embedded_chunks": [],
         "profile": CompanyProfile(),

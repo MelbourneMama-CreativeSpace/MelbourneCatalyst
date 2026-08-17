@@ -1,7 +1,7 @@
 """youtube upload jobs
 
-Revision ID: 0030
-Revises: 0029
+Revision ID: 0031
+Revises: 0030
 Create Date: 2026-08-09
 
 Queues a real YouTube video upload as a retryable row instead of a
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY
 
-revision = "0030"
-down_revision = "0029"
+revision = "0031"
+down_revision = "0030"
 branch_labels = None
 depends_on = None
 
