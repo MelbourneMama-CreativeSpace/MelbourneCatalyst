@@ -565,6 +565,11 @@ export interface ContentItemCard {
   approval_status: ApprovalStatus;
   scheduled_at: string | null;
   published_at: string | null;
+  // "preview" — just surfacing a draft that was created/found; no
+  // publish/schedule controls, since nothing was actually asked to post.
+  // "action" — this card is the preview attached to an actual
+  // publish/schedule proposal, so publish/schedule controls belong here.
+  card_context: "preview" | "action";
 }
 
 export interface TrendCard {

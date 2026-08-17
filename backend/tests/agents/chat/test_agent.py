@@ -326,6 +326,88 @@ async def test_a_write_tool_call_ends_the_turn_as_a_proposal_not_an_execution(mo
     assert cards == []
 
 
+async def _seed_item_with_plan(test_session_factory) -> tuple[uuid.UUID, uuid.UUID]:
+    from app.db.models import Company
+
+    item_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete"))
+        session.add(ContentPlan(id=plan_id, company_id=company_id, status="complete", is_manual=True))
+        session.add(
+            ContentItem(
+                id=item_id,
+                content_plan_id=plan_id,
+                title="A real item",
+                description="",
+                content_type="post",
+                platform="linkedin",
+                suggested_date=date.today(),
+                approval_status="pending",
+            )
+        )
+        await session.commit()
+    return item_id, company_id
+
+
+async def _run_write_tool_proposal(
+    monkeypatch, tool_name: str, item_id: uuid.UUID, test_session_factory
+) -> list[dict]:
+    monkeypatch.setattr(agent.settings, "ANTHROPIC_API_KEY", "test-key")
+    write_tool_block = SimpleNamespace(
+        type="tool_use", id="tool-1", name=tool_name, input={"content_item_id": str(item_id)}
+    )
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            return SimpleNamespace(stop_reason="tool_use", content=[write_tool_block])
+
+    class _FakeClient:
+        messages = _FakeMessages()
+
+    monkeypatch.setattr(agent, "_client", lambda: _FakeClient())
+
+    async with test_session_factory() as session:
+        _, _, _, _, cards = await agent.run_chat_turn(
+            [{"role": "user", "content": "do the thing"}], None, session, _USER
+        )
+    return cards
+
+
+async def test_publish_proposal_card_has_action_context(monkeypatch, test_session_factory):
+    """Publishing is literally what's being proposed — the card must carry
+    publish/schedule controls, since that's exactly what the user's own
+    request implied."""
+    item_id, _ = await _seed_item_with_plan(test_session_factory)
+    cards = await _run_write_tool_proposal(
+        monkeypatch, "publish_content_item", item_id, test_session_factory
+    )
+    assert len(cards) == 1
+    assert cards[0]["card_context"] == "action"
+
+
+async def test_schedule_proposal_card_has_action_context(monkeypatch, test_session_factory):
+    item_id, _ = await _seed_item_with_plan(test_session_factory)
+    cards = await _run_write_tool_proposal(
+        monkeypatch, "schedule_content_item", item_id, test_session_factory
+    )
+    assert len(cards) == 1
+    assert cards[0]["card_context"] == "action"
+
+
+async def test_approve_proposal_card_has_preview_context_not_action(monkeypatch, test_session_factory):
+    """Approving isn't posting — this card is informational, so it must
+    NOT carry publish/schedule controls just because it happens to be
+    attached to a write-tool proposal."""
+    item_id, _ = await _seed_item_with_plan(test_session_factory)
+    cards = await _run_write_tool_proposal(
+        monkeypatch, "approve_content_item", item_id, test_session_factory
+    )
+    assert len(cards) == 1
+    assert cards[0]["card_context"] == "preview"
+
+
 async def test_describe_action_uses_item_title_not_raw_id(test_session_factory, db_session):
     item_id = uuid.uuid4()
     plan_id = uuid.uuid4()
