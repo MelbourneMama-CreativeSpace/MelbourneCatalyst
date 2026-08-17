@@ -206,6 +206,10 @@ async def test_create_content_item_with_explicit_company_id(
     assert str(item_id) in text
     assert len(cards) == 1
     assert cards[0]["company_id"] == str(company_id)
+    # A freshly-drafted item is a preview, not a publish proposal — no one
+    # asked to post anything yet, so the frontend must not show publish/
+    # schedule controls on it.
+    assert cards[0]["card_context"] == "preview"
 
 
 async def test_create_content_item_passes_through_a_real_trend_id(

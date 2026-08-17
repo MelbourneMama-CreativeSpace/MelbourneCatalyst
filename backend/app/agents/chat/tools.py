@@ -75,7 +75,21 @@ from app.security.auth import CurrentUser
 from app.security.ownership import accessible_company_clause
 
 
-def _content_item_card(item: ContentItem, company_id: uuid.UUID) -> dict:
+def _content_item_card(
+    item: ContentItem, company_id: uuid.UUID, *, card_context: str = "preview"
+) -> dict:
+    """`card_context` tells the frontend why this card is showing up, since
+    the same item can be shown for very different reasons:
+
+    - "preview" (the default) — just surfacing a draft that was created or
+      found. No publish/schedule controls: the user hasn't asked to post
+      anything, so a card that appeared because they said "write me a
+      post" has no business offering a one-click Publish button.
+    - "action" — this card is the preview attached to an actual
+      publish/schedule/approve/reject/regenerate/delete *proposal* (see
+      `_preview_card_for_write_tool` in agent.py), i.e. the user's own
+      request already implies posting/scheduling. Only here does the
+      frontend render publish/schedule controls."""
     return {
         "type": "content_item",
         "id": str(item.id),
@@ -89,6 +103,7 @@ def _content_item_card(item: ContentItem, company_id: uuid.UUID) -> dict:
         "approval_status": item.approval_status,
         "scheduled_at": item.scheduled_at.isoformat() if item.scheduled_at else None,
         "published_at": item.published_at.isoformat() if item.published_at else None,
+        "card_context": card_context,
     }
 
 

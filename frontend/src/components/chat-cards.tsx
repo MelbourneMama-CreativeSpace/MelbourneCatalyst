@@ -73,7 +73,13 @@ function ContentItemFlashcard({ card }: { card: ContentItemCard }) {
       )}
 
       {card.draft_copy && (
-        <p className="mt-2 line-clamp-5 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+        // Full content, not clamped — this is often the only place the
+        // actual copy is visible before it's posted, so cutting it off
+        // with a fade/ellipsis just hides content the user needs to
+        // review. Capped with a scrollable max-height rather than an
+        // unbounded card only so one very long draft can't push the rest
+        // of the conversation off-screen.
+        <p className="mt-2 max-h-80 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
           {card.draft_copy}
         </p>
       )}
@@ -84,9 +90,16 @@ function ContentItemFlashcard({ card }: { card: ContentItemCard }) {
         </p>
       )}
 
-      <div className="mt-3 border-t border-border/60 pt-2.5">
-        <PublishPanel item={card} />
-      </div>
+      {/* Publish/schedule controls only belong on a card when posting is
+          literally what's being proposed (card_context: "action") — a
+          card that's just showing a newly-drafted or found item
+          ("preview") shouldn't invite a one-click publish nobody asked
+          for yet. */}
+      {card.card_context === "action" && (
+        <div className="mt-3 border-t border-border/60 pt-2.5">
+          <PublishPanel item={card} />
+        </div>
+      )}
     </div>
   );
 }

@@ -459,7 +459,12 @@ async def _preview_card_for_write_tool(
     content_plan = await session.get(ContentPlan, item.content_plan_id)
     if content_plan is None:
         return []
-    return [_content_item_card(item, content_plan.company_id)]
+    # Publish/schedule controls only belong on a card when *posting* is
+    # literally what's being proposed — approve/reject/regenerate/delete
+    # previews are informational, not an invitation to also publish from
+    # right here.
+    card_context = "action" if tool_name in {"publish_content_item", "schedule_content_item"} else "preview"
+    return [_content_item_card(item, content_plan.company_id, card_context=card_context)]
 
 
 async def run_chat_turn(
