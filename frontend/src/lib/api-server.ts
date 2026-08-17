@@ -25,6 +25,7 @@ import {
   type DashboardSummary,
   type KnowledgeAuditReport,
   type ListTrendsParams,
+  type SourceStatus,
   type Strategy,
   type TrendListResponse,
   type TrendReport,
@@ -96,8 +97,17 @@ export function listTrends(params: ListTrendsParams = {}): Promise<TrendListResp
   return serverApiFetch<TrendListResponse>(`/trend-analyzer/${toQueryString({ ...params })}`);
 }
 
-export function listRecommendedTrends(limit?: number): Promise<TrendListResponse> {
-  return serverApiFetch<TrendListResponse>(`/trend-analyzer/recommended${toQueryString({ limit })}`);
+export function listRecommendedTrends(
+  limit?: number,
+  companyId?: string,
+): Promise<TrendListResponse> {
+  return serverApiFetch<TrendListResponse>(
+    `/trend-analyzer/recommended${toQueryString({ limit, company_id: companyId })}`,
+  );
+}
+
+export function getSourceStatus(): Promise<SourceStatus[]> {
+  return serverApiFetch<SourceStatus[]>("/trend-analyzer/sources");
 }
 
 export function getTrendsByIds(ids: string[]): Promise<TrendListResponse> {

@@ -637,6 +637,9 @@ export interface ListTrendsParams {
   category?: string;
   since?: string;
   min_relevance?: number;
+  // Scores `min_relevance` against this company's own relevance scores
+  // instead of the legacy global score — omit for the global view.
+  company_id?: string;
   limit?: number;
   offset?: number;
 }
@@ -657,9 +660,12 @@ export function getTrendsByIds(ids: string[]): Promise<TrendListResponse> {
   return apiFetch<TrendListResponse>(`/trend-analyzer/?${query.toString()}`);
 }
 
-export function listRecommendedTrends(limit?: number): Promise<TrendListResponse> {
+export function listRecommendedTrends(
+  limit?: number,
+  companyId?: string,
+): Promise<TrendListResponse> {
   return apiFetch<TrendListResponse>(
-    `/trend-analyzer/recommended${toQueryString({ limit })}`,
+    `/trend-analyzer/recommended${toQueryString({ limit, company_id: companyId })}`,
   );
 }
 
