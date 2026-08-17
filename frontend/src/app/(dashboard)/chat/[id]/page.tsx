@@ -4,6 +4,7 @@ import { notFound, useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { ChatPanel } from "@/components/chat-panel";
+import { ApiError } from "@/lib/api-error";
 import { getConversation, type ConversationDetail } from "@/lib/api";
 
 export default function ChatConversationPage() {
@@ -19,7 +20,7 @@ export default function ChatConversationPage() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(err instanceof Error && err.message.includes("404") ? "not-found" : "unknown");
+        setError(err instanceof ApiError && err.status === 404 ? "not-found" : "unknown");
       });
     return () => {
       cancelled = true;

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { CompetitorView } from "@/components/competitor-view";
+import { ApiError } from "@/lib/api-error";
 import { type Competitor } from "@/lib/api";
 import { getCompetitor } from "@/lib/api-server";
 
@@ -13,7 +14,7 @@ async function fetchCompetitorOrNotFound(id: string): Promise<Competitor> {
   try {
     return await getCompetitor(id);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("404")) {
+    if (err instanceof ApiError && err.status === 404) {
       notFound();
     }
     throw err;

@@ -74,10 +74,10 @@ class Settings(BaseSettings):
     # subreddit search — keywords like "handmade ceramics" are not subreddit
     # names, so they can't be used as one directly.
     REDDIT_SUBREDDITS_PER_KEYWORD: int = 2
-    RSS_FEED_URLS: list[str] = [
-        "https://feeds.feedburner.com/TechCrunch",
-        "https://www.socialmediatoday.com/feeds/news/",
-    ]
+    # Optional supplemental static feeds, still supported alongside the
+    # dynamic per-niche-keyword Google News search RSSCollector now also
+    # does — leave empty to rely on the dynamic feeds only.
+    RSS_FEED_URLS: list[str] = []
     YOUTUBE_API_KEY: str = ""
 
     # X / Twitter — API v2 recent search needs a paid developer tier
@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     TIKTOK_CLIENT_KEY: str = ""
     TIKTOK_CLIENT_SECRET: str = ""
 
+    # Shared secret for the unauthenticated POST /internal/trend-collection
+    # endpoint — lets an external scheduler (a GitHub Actions cron workflow,
+    # see .github/workflows/trend-collection.yml) trigger a collection run
+    # over plain HTTP, which has no way to hold a real user session. Leave
+    # blank to disable the endpoint entirely (503s with an explanation).
+    CRON_SECRET: str = ""
+
     # Knowledge Base — Voyage AI embeddings (voyage-3-lite is 1024-dim)
     VOYAGE_API_KEY: str = ""
     VOYAGE_MODEL: str = "voyage-3-lite"
@@ -102,6 +109,10 @@ class Settings(BaseSettings):
     STRATEGY_MAX_TRENDS: int = 10
     CONTENT_PLAN_MAX_TRENDS: int = 10
     CONTENT_PLAN_DAYS: int = 14
+    # A single ad-hoc post (create_manual_item — the chat/manual-item-form
+    # path) doesn't need as much ambient trend context as a whole
+    # calendar does; smaller than CONTENT_PLAN_MAX_TRENDS on purpose.
+    MANUAL_ITEM_MAX_TRENDS: int = 5
 
     # Content Management — Campaign Manager + Brand Collaboration
     COLLABORATION_MAX_IDEAS: int = 5
@@ -144,6 +155,21 @@ class Settings(BaseSettings):
     COMPOSIO_YOUTUBE_POST_TOOL_SLUG: str = ""
     # How often the scheduler checks for due scheduled posts.
     PUBLISH_SCHEDULER_INTERVAL_MINUTES: int = 5
+
+    # Real YouTube video uploads (youtube_upload.py) are queued rather than
+    # one-shot — a transient failure (a stalled network hop, a Composio
+    # 5xx) retries automatically instead of just failing once. Capped so a
+    # permanently-broken upload (bad config, a deleted video source)
+    # doesn't retry forever.
+    YOUTUBE_UPLOAD_SCHEDULER_INTERVAL_MINUTES: int = 15
+    MAX_YOUTUBE_UPLOAD_ATTEMPTS: int = 5
+
+    # Real per-post metrics (post_metrics.py) — the data layer under
+    # LoomVerse's Analysis. Every run re-syncs every published item, so
+    # this is deliberately not aggressive: matches trend collection's own
+    # 6-hour cadence rather than something tighter that would risk
+    # rate limits across every connected platform at once.
+    POST_METRICS_SYNC_INTERVAL_MINUTES: int = 360
 
     # Same "you look it up in Composio's catalog, we don't guess it"
     # deal as the post tool slugs above, for whichever "get account/post
@@ -202,6 +228,15 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+
+    # Temporary pre-launch access gate — see require_allowlisted_user in
+    # app/security/auth.py. Empty (the default) means unrestricted, i.e.
+    # identical to today's behavior (any valid Supabase session). Once
+    # populated, every /api/v1 route additionally requires the signed-in
+    # user's email to appear here. Meant to be deleted entirely once
+    # Stripe billing becomes the real access gate — same JSON-array-in-.env
+    # format as CORS_ORIGINS, e.g. ALLOWED_USER_IDS=["you@example.com"].
+    ALLOWED_USER_IDS: list[str] = []
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 

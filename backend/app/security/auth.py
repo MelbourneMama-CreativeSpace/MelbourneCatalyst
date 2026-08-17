@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import jwt
-from fastapi import HTTPException, Query, Request
+from fastapi import Depends, HTTPException, Query, Request
 
 from app.config import settings
 
@@ -104,3 +104,26 @@ async def get_current_user(
         return _decode(token)
     except AuthNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def require_allowlisted_user(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Temporary pre-launch gate, layered on top of `get_current_user` —
+    a valid Supabase session is no longer sufficient on its own; the
+    session's own email must also appear in `settings.ALLOWED_USER_IDS`.
+
+    Deliberately a separate dependency rather than folded into
+    `get_current_user` itself: this is a short-lived restriction meant to
+    come out the moment Stripe billing becomes the real access gate, and
+    keeping it as its own function means removing it later is deleting
+    one `Depends(...)` in main.py, not untangling it back out of session
+    verification.
+
+    Inert (identical to plain `get_current_user`) whenever
+    `ALLOWED_USER_IDS` is empty — the default — so this never accidentally
+    locks anyone out until it's deliberately configured.
+    """
+    if not settings.ALLOWED_USER_IDS:
+        return user
+    if user.email not in settings.ALLOWED_USER_IDS:
+        raise HTTPException(status_code=403, detail="Access is currently restricted.")
+    return user

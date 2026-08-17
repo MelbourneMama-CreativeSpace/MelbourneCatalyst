@@ -90,6 +90,7 @@ class ContentItemOut(BaseModel):
     description: str
     draft_copy: str | None
     hashtags: list[str] | None
+    media_url: str | None
     repurposed_from_id: uuid.UUID | None
     content_type: str
     platform: str

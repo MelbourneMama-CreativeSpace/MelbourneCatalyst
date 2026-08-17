@@ -1,0 +1,46 @@
+name: Trend collection (every 6 hours)
+
+# Wall-clock-scheduled trigger for the Trend Discovery pipeline, independent
+# of whether the backend process itself has been continuously running long
+# enough for its in-process APScheduler job to have fired (that job's timer
+# only starts counting from process start — a backend that restarts often in
+# dev may never reach its 6-hour mark on its own). Hits the dedicated
+# POST /internal/trend-collection endpoint (see backend/app/main.py), which
+# is deliberately outside the normal Supabase-session-gated API — a
+# workflow run has no user session to send — and is instead gated on a
+# shared secret sent as the X-Cron-Secret header.
+#
+# Required repo secrets (Settings > Secrets and variables > Actions):
+#   BACKEND_URL   e.g. https://your-deployed-backend.example.com
+#                 (no trailing slash; must be reachable from GitHub's
+#                 runners, so not a bare http://localhost:8000)
+#   CRON_SECRET   must match CRON_SECRET in the backend's own .env exactly
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {} # manual "Run workflow" button, for on-demand testing
+
+jobs:
+  trigger-collection:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call POST /internal/trend-collection
+        run: |
+          if [ -z "${{ secrets.BACKEND_URL }}" ] || [ -z "${{ secrets.CRON_SECRET }}" ]; then
+            echo "::error::BACKEND_URL and/or CRON_SECRET repo secrets are not set — see this workflow's header comment."
+            exit 1
+          fi
+
+          http_status=$(curl -sS -o response.json -w "%{http_code}" -X POST \
+            "${{ secrets.BACKEND_URL }}/internal/trend-collection" \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}")
+
+          echo "HTTP status: $http_status"
+          cat response.json
+          echo
+
+          if [ "$http_status" -ge 300 ]; then
+            echo "::error::Trend collection trigger failed with HTTP $http_status"
+            exit 1
+          fi

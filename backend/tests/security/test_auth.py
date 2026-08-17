@@ -221,3 +221,78 @@ async def test_a_protected_route_200s_with_a_valid_bearer_token(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+# --- require_allowlisted_user — the temporary pre-launch access gate -------
+
+
+async def test_require_allowlisted_user_is_inert_when_list_is_empty(monkeypatch):
+    monkeypatch.setattr(auth.settings, "ALLOWED_USER_IDS", [])
+    user = auth.CurrentUser(id="user-123", email="person@example.com")
+
+    result = auth.require_allowlisted_user(user)
+
+    assert result is user
+
+
+async def test_require_allowlisted_user_allows_a_listed_email(monkeypatch):
+    monkeypatch.setattr(auth.settings, "ALLOWED_USER_IDS", ["person@example.com"])
+    user = auth.CurrentUser(id="user-123", email="person@example.com")
+
+    result = auth.require_allowlisted_user(user)
+
+    assert result is user
+
+
+async def test_require_allowlisted_user_403s_for_an_unlisted_email(monkeypatch):
+    monkeypatch.setattr(auth.settings, "ALLOWED_USER_IDS", ["allowed@example.com"])
+    user = auth.CurrentUser(id="user-123", email="someone-else@example.com")
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.require_allowlisted_user(user)
+
+    assert exc_info.value.status_code == 403
+
+
+async def test_require_allowlisted_user_403s_when_email_is_none(monkeypatch):
+    monkeypatch.setattr(auth.settings, "ALLOWED_USER_IDS", ["allowed@example.com"])
+    user = auth.CurrentUser(id="user-123", email=None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.require_allowlisted_user(user)
+
+    assert exc_info.value.status_code == 403
+
+
+def _build_allowlisted_app() -> FastAPI:
+    app = FastAPI()
+
+    @app.get("/protected", dependencies=[Depends(auth.require_allowlisted_user)])
+    async def protected():
+        return {"ok": True}
+
+    return app
+
+
+async def test_a_route_403s_end_to_end_for_a_valid_but_unlisted_session(monkeypatch):
+    monkeypatch.setattr(auth.settings, "SUPABASE_JWT_SECRET", _SECRET)
+    monkeypatch.setattr(auth.settings, "ALLOWED_USER_IDS", ["allowed@example.com"])
+    token = _sign(_SECRET, email="not-on-the-list@example.com")
+
+    transport = ASGITransport(app=_build_allowlisted_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/protected", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 403
+
+
+async def test_a_route_200s_end_to_end_for_a_listed_session(monkeypatch):
+    monkeypatch.setattr(auth.settings, "SUPABASE_JWT_SECRET", _SECRET)
+    monkeypatch.setattr(auth.settings, "ALLOWED_USER_IDS", ["person@example.com"])
+    token = _sign(_SECRET)  # signed with email=person@example.com, see _sign()
+
+    transport = ASGITransport(app=_build_allowlisted_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/protected", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200

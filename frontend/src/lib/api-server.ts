@@ -13,9 +13,11 @@ import "server-only";
  * server-side token source.
  */
 
+import { API_TIMEOUT_MS, apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
 import { createClient } from "@/lib/supabase/server";
 import {
   toQueryString,
+  type AnalysisOverview,
   type Campaign,
   type Collaboration,
   type Company,
@@ -40,21 +42,36 @@ async function serverApiFetch<T>(path: string): Promise<T> {
     data: { session },
   } = await supabase.auth.getSession();
 
-  const response = await fetch(`${API_BASE_URL}${API_V1}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}),
-    },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${API_V1}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    });
+  } catch (cause) {
+    throw apiErrorFromNetworkFailure(cause);
+  }
   if (!response.ok) {
-    throw new Error(`API error ${response.status}: ${await response.text()}`);
+    throw await apiErrorFromResponse(response);
   }
   return response.json() as Promise<T>;
 }
 
 export function getDashboardSummary(): Promise<DashboardSummary> {
   return serverApiFetch<DashboardSummary>("/dashboard/summary");
+}
+
+export function getAnalysisOverview(
+  companyId: string,
+  periodDays?: number,
+): Promise<AnalysisOverview> {
+  return serverApiFetch<AnalysisOverview>(
+    `/analysis/overview${toQueryString({ company_id: companyId, period_days: periodDays })}`,
+  );
 }
 
 export function listCompanies(): Promise<CompanyListResponse> {

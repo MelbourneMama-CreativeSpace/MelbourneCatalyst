@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { KnowledgeAuditView } from "@/components/knowledge-audit-view";
+import { ApiError } from "@/lib/api-error";
 import { type KnowledgeAuditReport } from "@/lib/api";
 import { getAuditReport } from "@/lib/api-server";
 
@@ -13,7 +14,7 @@ async function fetchAuditReportOrNotFound(id: string): Promise<KnowledgeAuditRep
   try {
     return await getAuditReport(id);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("404")) {
+    if (err instanceof ApiError && err.status === 404) {
       notFound();
     }
     throw err;

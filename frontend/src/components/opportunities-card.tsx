@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import { generateContentOpportunities, type Opportunity } from "@/lib/api";
 
 const PRIORITY_BADGE_STYLES: Record<Opportunity["priority"], string> = {
@@ -25,11 +26,7 @@ export function OpportunitiesCard({ companyId }: { companyId: string }) {
       const res = await generateContentOpportunities(companyId);
       setOpportunities(res.items);
     } catch (err) {
-      setError(
-        err instanceof Error && err.message.includes("502")
-          ? "Couldn't find opportunities — check ANTHROPIC_API_KEY / Claude API availability."
-          : "Couldn't find opportunities — try again.",
-      );
+      setError(describeError(err));
     } finally {
       setGenerating(false);
     }

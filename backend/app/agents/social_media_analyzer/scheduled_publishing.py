@@ -61,7 +61,7 @@ async def _attempt_publish(item_id: uuid.UUID) -> None:
 
         try:
             execution_id = await publish_post(
-                item.platform, connection.composio_connected_account_id, item.draft_copy or ""
+                session, connection, item.draft_copy or "", media_url=item.media_url
             )
         except Exception as exc:
             logger.exception("Scheduled publish failed for item %s", item.id)

@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Send } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, ImagePlus, Send, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { describeError } from "@/lib/api-error";
 import {
   listConnections,
   publishNow,
+  removeContentItemMedia,
   scheduleContentItem,
+  uploadContentItemMedia,
   type ContentItemWithCompany,
   type PlatformConnection,
   type PublishResult,
@@ -19,7 +22,7 @@ import {
 // carries.
 type PublishableItem = Pick<
   ContentItemWithCompany,
-  "id" | "company_id" | "platform" | "scheduled_at" | "published_at"
+  "id" | "company_id" | "platform" | "scheduled_at" | "published_at" | "media_url"
 >;
 
 // The one common publish/schedule surface every content item uses,
@@ -34,6 +37,25 @@ export function PublishPanel({ item }: { item: PublishableItem }) {
   const [scheduleValue, setScheduleValue] = useState("");
   const [scheduling, setScheduling] = useState(false);
   const [scheduledAt, setScheduledAt] = useState(item.scheduled_at);
+  // Mirrors `item.published_at` locally so a successful publish collapses
+  // this panel into the "Published" view immediately — `item` itself is
+  // an immutable prop (a chat flashcard's snapshot from when the tool
+  // call ran, or Content Studio's own list state), neither of which
+  // re-fetches on its own just because *this* panel's own publish call
+  // succeeded. Without this the card kept showing live "Publish now" /
+  // "Attach image" / "Schedule" controls for an item that had, in fact,
+  // already gone out.
+  const [publishedAt, setPublishedAt] = useState(item.published_at);
+
+  // Instagram's real API has no text-only post at all — every publish
+  // there needs an actual image/video attached first (checked
+  // server-side too; this is just so the user finds out before clicking
+  // Publish, not after). Every other platform treats this as optional.
+  const [mediaUrl, setMediaUrl] = useState(item.media_url);
+  const [mediaUploading, setMediaUploading] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const needsMedia = item.platform === "instagram";
 
   useEffect(() => {
     if (!open || connections !== null) return;
@@ -50,8 +72,38 @@ export function PublishPanel({ item }: { item: PublishableItem }) {
     try {
       const res = await publishNow(connection.id, item.id);
       setResult(res);
+      if (res.status === "success") setPublishedAt(new Date().toISOString());
     } finally {
       setPublishing(false);
+    }
+  }
+
+  async function handleMediaSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setMediaError(null);
+    setMediaUploading(true);
+    try {
+      const updated = await uploadContentItemMedia(item.id, file);
+      setMediaUrl(updated.media_url);
+    } catch (err) {
+      setMediaError(describeError(err));
+    } finally {
+      setMediaUploading(false);
+    }
+  }
+
+  async function handleRemoveMedia() {
+    setMediaError(null);
+    setMediaUploading(true);
+    try {
+      const updated = await removeContentItemMedia(item.id);
+      setMediaUrl(updated.media_url);
+    } catch (err) {
+      setMediaError(describeError(err));
+    } finally {
+      setMediaUploading(false);
     }
   }
 
@@ -77,11 +129,11 @@ export function PublishPanel({ item }: { item: PublishableItem }) {
     }
   }
 
-  if (item.published_at) {
+  if (publishedAt) {
     return (
       <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
-        Published {new Date(item.published_at).toLocaleString()}
+        Published {new Date(publishedAt).toLocaleString()}
       </p>
     );
   }
@@ -105,8 +157,61 @@ export function PublishPanel({ item }: { item: PublishableItem }) {
             </p>
           ) : (
             <>
+              {needsMedia && (
+                <div className="flex flex-col gap-1.5 border-b border-border/60 pb-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*,video/*"
+                    onChange={handleMediaSelected}
+                    disabled={mediaUploading}
+                    className="hidden"
+                  />
+                  {mediaUrl ? (
+                    <div className="flex items-center gap-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={mediaUrl}
+                        alt="Attached media"
+                        className="h-10 w-10 rounded object-cover"
+                      />
+                      <span className="flex-1 text-muted-foreground">Image attached</span>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={handleRemoveMedia}
+                        disabled={mediaUploading}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={mediaUploading}
+                    >
+                      <ImagePlus className="h-3.5 w-3.5" />
+                      {mediaUploading ? "Uploading…" : "Attach image"}
+                    </Button>
+                  )}
+                  {!mediaUrl && (
+                    <p className="flex items-center gap-1.5 text-muted-foreground">
+                      <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+                      Instagram needs an image or video attached before this can publish.
+                    </p>
+                  )}
+                  {mediaError && <p className="text-destructive">{mediaError}</p>}
+                </div>
+              )}
+
               <div className="flex items-center gap-2">
-                <Button size="xs" onClick={handlePublishNow} disabled={publishing}>
+                <Button
+                  size="xs"
+                  onClick={handlePublishNow}
+                  disabled={publishing || (needsMedia && !mediaUrl)}
+                >
                   {publishing ? "Publishing…" : "Publish now"}
                 </Button>
               </div>
@@ -148,7 +253,19 @@ export function PublishPanel({ item }: { item: PublishableItem }) {
             >
               {result.status === "success" ? (
                 <>
-                  <CheckCircle2 className="h-3.5 w-3.5" /> Published.
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                  {result.post_url ? (
+                    <a
+                      href={result.post_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="truncate underline hover:no-underline"
+                    >
+                      Published — view it live
+                    </a>
+                  ) : (
+                    "Published."
+                  )}
                 </>
               ) : (
                 <>

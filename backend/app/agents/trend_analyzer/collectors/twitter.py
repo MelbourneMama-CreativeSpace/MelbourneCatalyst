@@ -1,5 +1,5 @@
-"""X (Twitter) collector — recent posts matching configured search queries
-via the X API v2 recent-search endpoint.
+"""X (Twitter) collector — recent posts matching the active niche via the X
+API v2 recent-search endpoint.
 
 Requires `TWITTER_BEARER_TOKEN` from a paid X API developer tier — the free
 tier cannot search. Skips collection (with a warning, not an error) when

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import {
   getCampaign,
   updateCampaignLifecycle,
@@ -60,7 +61,7 @@ export function CampaignView({ initialCampaign }: { initialCampaign: Campaign })
       const updated = await updateCampaignLifecycle(campaign.id, stage);
       setCampaign(updated);
     } catch (err) {
-      setStageError(err instanceof Error ? err.message : "Failed to update lifecycle stage.");
+      setStageError(describeError(err));
     } finally {
       setUpdatingStage(false);
     }

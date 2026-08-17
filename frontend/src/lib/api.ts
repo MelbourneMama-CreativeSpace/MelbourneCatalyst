@@ -2,6 +2,17 @@
  * Typed client for the backend API (`backend/app/api/v1/**`).
  */
 
+import {
+  ApiError,
+  API_CONFIRM_ACTION_TIMEOUT_MS,
+  API_STREAM_IDLE_TIMEOUT_MS,
+  API_TIMEOUT_MS,
+  API_UPLOAD_TIMEOUT_MS,
+  apiErrorFromNetworkFailure,
+  apiErrorFromResponse,
+  describeError,
+} from "@/lib/api-error";
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const API_V1 = "/api/v1";
 
@@ -203,6 +214,12 @@ export interface ContentItem {
   description: string;
   draft_copy: string | null;
   hashtags: string[] | null;
+  // A user-attached image/video URL — Instagram's real API has no
+  // text-only post at all, so this is required before an Instagram item
+  // can publish. Nothing in this app generates one; it's uploaded by hand
+  // via uploadContentItemMedia(). Every other platform treats it as
+  // optional decoration.
+  media_url: string | null;
   repurposed_from_id: string | null;
   content_type: ContentType;
   platform: Platform;
@@ -524,6 +541,12 @@ export interface ProposedAction {
   tool_name: string;
   tool_input: Record<string, unknown>;
   description: string;
+  // Set only for the handful of write tools severe/irreversible enough
+  // to need more than a single Confirm click (currently just deleting a
+  // live post) — when present, the UI must require the user to type this
+  // exact phrase before Confirm is even enabled. The real enforcement is
+  // server-side in confirmAction; this is just what drives the UI gate.
+  confirmation_phrase: string | null;
 }
 
 // Small structured snapshots a tool call surfaced this turn — the
@@ -538,6 +561,7 @@ export interface ContentItemCard {
   content_type: ContentType;
   draft_copy: string | null;
   hashtags: string[] | null;
+  media_url: string | null;
   approval_status: ApprovalStatus;
   scheduled_at: string | null;
   published_at: string | null;
@@ -611,13 +635,28 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!isFormData) baseHeaders["Content-Type"] = "application/json";
   if (token) baseHeaders["Authorization"] = `Bearer ${token}`;
 
-  const response = await fetch(`${API_BASE_URL}${API_V1}${path}`, {
-    ...init,
-    headers: { ...baseHeaders, ...init?.headers },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${API_V1}${path}`, {
+      ...init,
+      headers: { ...baseHeaders, ...init?.headers },
+      cache: "no-store",
+      // Caller-supplied signal wins if one's ever passed in — none of
+      // today's call sites do, but this stays correct if that changes.
+      // Uploads get a longer budget than a plain JSON request (see
+      // API_UPLOAD_TIMEOUT_MS) so a slow-but-genuine upload in progress
+      // isn't misreported as a hung backend.
+      signal:
+        init?.signal ?? AbortSignal.timeout(isFormData ? API_UPLOAD_TIMEOUT_MS : API_TIMEOUT_MS),
+    });
+  } catch (cause) {
+    // fetch() itself threw — the request never reached the server at all
+    // (backend down, wrong NEXT_PUBLIC_API_URL, CORS, offline). Distinct
+    // from the server responding with an error status below.
+    throw apiErrorFromNetworkFailure(cause);
+  }
   if (!response.ok) {
-    throw new Error(`API error ${response.status}: ${await response.text()}`);
+    throw await apiErrorFromResponse(response);
   }
   return response.json() as Promise<T>;
 }
@@ -845,6 +884,24 @@ export function updateContentItem(
       hashtags: updates.hashtags,
       reviewer: updates.reviewer,
     }),
+  });
+}
+
+/** Attaches an image/video to a content item — required before an
+ * Instagram item can publish (Instagram's real API has no text-only
+ * post). Nothing in this app generates the image; the user supplies it. */
+export function uploadContentItemMedia(itemId: string, file: File): Promise<ContentItem> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return apiFetch<ContentItem>(`/content-management/content-items/${itemId}/media`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export function removeContentItemMedia(itemId: string): Promise<ContentItem> {
+  return apiFetch<ContentItem>(`/content-management/content-items/${itemId}/media`, {
+    method: "DELETE",
   });
 }
 
@@ -1088,6 +1145,10 @@ export interface PublishResult {
   status: "success" | "failed";
   status_error: string | null;
   published_at: string | null;
+  // Best-effort real link to the published post — null if the platform
+  // has no permalink concept (e.g. this app couldn't resolve one) or the
+  // lookup itself failed; never a sign the publish itself failed.
+  post_url: string | null;
 }
 
 export function publishNow(
@@ -1285,10 +1346,24 @@ export function sendMessage(conversationId: string, content: string): Promise<Ch
   });
 }
 
-export function confirmAction(conversationId: string, messageId: string): Promise<ChatMessage> {
+export function confirmAction(
+  conversationId: string,
+  messageId: string,
+  confirmationText?: string,
+): Promise<ChatMessage> {
   return apiFetch<ChatMessage>(
     `/chat/conversations/${conversationId}/messages/${messageId}/confirm-action`,
-    { method: "POST" },
+    {
+      method: "POST",
+      // Only sent for the handful of actions that need it
+      // (proposed_action.confirmation_phrase set) — omitted entirely for
+      // every normal single-click confirm, matching the backend's own
+      // optional body.
+      body: confirmationText !== undefined ? JSON.stringify({ confirmation_text: confirmationText }) : undefined,
+      // Longer budget than a normal request — this is where a write
+      // tool's real work actually runs (see API_CONFIRM_ACTION_TIMEOUT_MS).
+      signal: AbortSignal.timeout(API_CONFIRM_ACTION_TIMEOUT_MS),
+    },
   );
 }
 
@@ -1313,6 +1388,146 @@ export function uploadChatAttachment(file: File): Promise<ChatAttachment> {
     method: "POST",
     body: formData,
   });
+}
+
+/**
+ * Same upload as `uploadChatAttachment`, but via `XMLHttpRequest` instead
+ * of `fetch` — the Fetch API has no upload-progress event at all, so a
+ * real progress bar (and a cancel button that actually stops the bytes
+ * mid-transfer, not just the UI pretending to) needs XHR specifically.
+ * Returns an object exposing a `promise` to await and a `cancel()` to
+ * abort the in-flight request.
+ */
+export function uploadChatAttachmentWithProgress(
+  file: File,
+  onProgress: (fractionComplete: number) => void,
+): { promise: Promise<ChatAttachment>; cancel: () => void } {
+  const xhr = new XMLHttpRequest();
+  const promise = new Promise<ChatAttachment>((resolve, reject) => {
+    (async () => {
+      const token = await getAccessToken();
+      xhr.open("POST", `${API_BASE_URL}${API_V1}/chat/attachments`);
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(event.loaded / event.total);
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText) as ChatAttachment);
+          } catch {
+            reject(new ApiError("Upload response wasn't valid JSON", xhr.status, xhr.responseText));
+          }
+        } else {
+          apiErrorFromResponse(
+            new Response(xhr.responseText, { status: xhr.status }),
+          ).then(reject);
+        }
+      };
+      xhr.onerror = () => reject(apiErrorFromNetworkFailure(new Error("Upload failed")));
+      xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
+
+      const formData = new FormData();
+      formData.append("file", file);
+      xhr.send(formData);
+    })().catch(reject);
+  });
+
+  return { promise, cancel: () => xhr.abort() };
+}
+
+/** Streaming send — calls the SSE endpoint and yields events via callbacks. */
+export async function sendMessageStream(
+  conversationId: string,
+  content: string,
+  callbacks: {
+    onToken: (text: string) => void;
+    onTool: (name: string) => void;
+    onDone: (message: ChatMessage) => void;
+    onError: (text: string) => void;
+  },
+): Promise<void> {
+  const token = await getAccessToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  // An *idle*-gap timeout, not a fixed deadline on the whole request:
+  // `AbortSignal.timeout()` aborts a fetch — including a readable stream
+  // it's already mid-read on — after a fixed absolute duration whether or
+  // not new chunks are still arriving. A real turn can run several tool
+  // calls (each its own full Claude round trip) before the first token
+  // streams, easily past any fixed ceiling under ordinary latency
+  // variance — confirmed live via a genuine "BodyStreamBuffer was
+  // aborted" abort mid-turn, with the backend's own log showing that
+  // exact request cancelled server-side at the same moment. Resetting the
+  // timer on every chunk means a stream that's actively doing visible
+  // work never times out — only a genuinely stuck one does.
+  const controller = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const resetIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(), API_STREAM_IDLE_TIMEOUT_MS);
+  };
+  resetIdleTimer();
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE_URL}${API_V1}/chat/conversations/${conversationId}/messages/stream`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ content }),
+        signal: controller.signal,
+      },
+    );
+  } catch (cause) {
+    clearTimeout(idleTimer);
+    callbacks.onError(describeError(apiErrorFromNetworkFailure(cause)));
+    return;
+  }
+
+  if (!response.ok || !response.body) {
+    clearTimeout(idleTimer);
+    callbacks.onError(describeError(await apiErrorFromResponse(response)));
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      resetIdleTimer();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE lines: "data: {...}\n\n"
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data: ")) continue;
+        try {
+          const event = JSON.parse(line.slice(6));
+          if (event.type === "token") callbacks.onToken(event.text);
+          else if (event.type === "tool") callbacks.onTool(event.name);
+          else if (event.type === "done") callbacks.onDone(event.message as ChatMessage);
+          else if (event.type === "error") callbacks.onError(event.text);
+        } catch {
+          // malformed chunk — skip
+        }
+      }
+    }
+  } catch (cause) {
+    callbacks.onError(describeError(apiErrorFromNetworkFailure(cause)));
+  } finally {
+    clearTimeout(idleTimer);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1357,4 +1572,62 @@ export function listMediaAssets(
 
 export function deleteMediaAsset(assetId: string): Promise<MediaAsset> {
   return apiFetch<MediaAsset>(`/media-library/assets/${assetId}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Analysis — the "5 questions" performance overview, built on real per-post
+// metrics (see backend/app/agents/social_media_analyzer/analysis.py). Every
+// number here is real; `null` means a platform genuinely doesn't expose that
+// metric (e.g. LinkedIn has no comments/shares/views anywhere in Composio's
+// current toolkit), never a fabricated zero.
+// ---------------------------------------------------------------------------
+
+export interface MetricTotals {
+  posts: number;
+  reach: number | null;
+  engagement: number;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  saves: number | null;
+  views: number | null;
+}
+
+export interface BreakdownRow {
+  key: string;
+  posts: number;
+  total_engagement: number;
+  avg_engagement: number;
+}
+
+export interface AnalysisOverview {
+  company_id: string;
+  period_days: number;
+  posts_published: number;
+  posts_failed: number;
+  current_totals: MetricTotals;
+  previous_totals: MetricTotals;
+  reach_change_pct: number | null;
+  engagement_change_pct: number | null;
+  by_platform: BreakdownRow[];
+  by_content_type: BreakdownRow[];
+  by_topic: BreakdownRow[];
+  best_platform: string | null;
+  worst_platform: string | null;
+  best_content_type: string | null;
+  worst_content_type: string | null;
+  best_topic: string | null;
+  worst_topic: string | null;
+  metrics_available: boolean;
+  ai_why: string | null;
+  ai_recommendations: string[];
+}
+
+export function getAnalysisOverview(
+  companyId: string,
+  periodDays?: number,
+): Promise<AnalysisOverview> {
+  return apiFetch<AnalysisOverview>(
+    `/analysis/overview${toQueryString({ company_id: companyId, period_days: periodDays })}`,
+  );
 }

@@ -63,9 +63,16 @@ async def fetch_platform_metrics(
     other failure (a real Composio/platform-side error) propagates as-is
     so the caller can log the real reason, same as `publish_post`."""
     if not is_metrics_configured(platform):
+        # User-safe message — never name internal env vars/config files
+        # here, the specific gap is logged for whoever manages the
+        # deployment instead.
+        logger.warning(
+            "%s metrics aren't configured (COMPOSIO_API_KEY / its metrics tool slug "
+            "missing in .env)",
+            platform,
+        )
         raise MetricsNotConfiguredError(
-            f"{platform} metrics aren't configured — set COMPOSIO_API_KEY and "
-            f"its Composio metrics tool slug in .env"
+            f"{platform.capitalize()} metrics aren't set up yet."
         )
 
     tool_slug = get_metrics_tool_slug(platform)

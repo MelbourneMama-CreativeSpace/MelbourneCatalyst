@@ -1,5 +1,5 @@
-"""TikTok collector — recent public videos matching configured keywords via
-the TikTok Research API.
+"""TikTok collector — recent public videos matching the active niche via the
+TikTok Research API.
 
 Requires `TIKTOK_CLIENT_KEY`/`TIKTOK_CLIENT_SECRET`. Note: the Research API
 is gated behind academic/institutional approval, not a standard developer

@@ -17,6 +17,7 @@ setting expects.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 
 from composio_client import Composio
@@ -27,6 +28,8 @@ from app.agents.social_media_analyzer.oauth_providers import (
     is_platform_configured,
 )
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Composio's own connection-status vocabulary, mapped to this app's
 # simpler status column. INITIALIZING/INITIATED both mean "the user
@@ -68,28 +71,72 @@ async def initiate_connection(
     `COMPOSIO_API_KEY` or this platform's auth config id isn't set."""
     _require_known_platform(platform)
     if not is_platform_configured(platform):
+        # The exception message here is what a user ends up seeing
+        # directly (surfaced through a 409 response, or via chat) — it
+        # must never name internal env vars or config files. The actual
+        # missing piece goes to the log instead, for whoever manages the
+        # deployment to fix.
+        logger.warning(
+            "%s isn't configured for connecting (COMPOSIO_API_KEY / its auth config "
+            "id missing in .env)",
+            platform,
+        )
         raise ComposioNotConfiguredError(
-            f"{platform} is not configured — set COMPOSIO_API_KEY and "
-            f"its Composio auth config id in .env"
+            f"{platform.capitalize()} isn't set up yet — ask whoever manages this "
+            "workspace to finish connecting it."
         )
 
     config = get_platform_config(platform)
     auth_config_id = get_auth_config_id(platform)
     client = _client()
 
-    def _create():
-        return client.connected_accounts.create(
-            auth_config={"id": auth_config_id},
-            connection={"user_id": str(company_id), "callback_url": callback_url},
+    def _link():
+        # `connected_accounts.create()` (the call this used before) is
+        # Composio's now-deprecated path for Composio-managed OAuth auth
+        # configs — confirmed live: it 400s today for this app's YouTube
+        # auth config with "Creating connections on this endpoint for
+        # Composio-managed OAuth auth configs is no longer supported. Use
+        # POST /api/v3/connected_accounts/link instead," matching
+        # `create()`'s own docstring (retiring 2026-05-08 for new orgs,
+        # 2026-07-03 for all). Neither the installed `composio-client`
+        # 1.42.0 nor the latest published 1.43.0 wraps `/link` yet — this
+        # calls it directly via the SDK's own `client.post()` primitive
+        # (the same one `create()` uses internally), which every
+        # `SyncAPIResource` exposes. `cast_to=object` skips the SDK's
+        # pydantic response validation (there's no released model for a
+        # shape the SDK doesn't know about yet) and just returns the
+        # parsed JSON dict — same "don't guess a schema nobody's
+        # confirmed" discipline as this app's Composio metrics handling.
+        # Field names (`auth_config_id`, `user_id`, `callback_url` in;
+        # `connected_account_id`, `redirect_url` out) confirmed against
+        # Composio's public docs and the not-yet-released `composio`
+        # SDK's own `link()` implementation, since the endpoint predates
+        # any wrapped method in what's actually installable today.
+        return client.post(
+            "/api/v3/connected_accounts/link",
+            body={
+                "auth_config_id": auth_config_id,
+                "user_id": str(company_id),
+                "callback_url": callback_url,
+            },
+            cast_to=object,
         )
 
-    response = await asyncio.to_thread(_create)
-    if not response.redirect_url:
+    response = await asyncio.to_thread(_link)
+    if not isinstance(response, dict):
         raise ComposioNotConfiguredError(
-            f"Composio did not return a redirect URL for {platform} — check that its "
-            f"auth config ({config.toolkit_slug}) is set up correctly in the Composio dashboard"
+            f"Composio returned an unexpected response shape for {platform} — expected a "
+            f"JSON object from POST /api/v3/connected_accounts/link, got {type(response).__name__}"
         )
-    return response.id, response.redirect_url
+    connected_account_id = response.get("connected_account_id")
+    redirect_url = response.get("redirect_url")
+    if not connected_account_id or not redirect_url:
+        raise ComposioNotConfiguredError(
+            f"Composio did not return a connected_account_id/redirect_url for {platform} — "
+            f"check that its auth config ({config.toolkit_slug}) is set up correctly in the "
+            f"Composio dashboard. Raw response: {response!r}"
+        )
+    return connected_account_id, redirect_url
 
 
 async def get_connection_status(composio_connected_account_id: str) -> str:

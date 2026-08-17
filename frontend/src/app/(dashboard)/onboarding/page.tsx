@@ -6,6 +6,7 @@ import { Suspense, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { describeError } from "@/lib/api-error";
 import { Textarea } from "@/components/ui/textarea";
 import { createCompany } from "@/lib/api";
 
@@ -54,7 +55,7 @@ function OnboardingForm() {
       });
       router.push(`/companies/${created.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start onboarding");
+      setError(describeError(err));
       setSubmitting(false);
     }
   }

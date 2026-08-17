@@ -14,6 +14,7 @@ import { ManualDraftForm } from "@/components/manual-draft-form";
 import { MembersPanel } from "@/components/members-panel";
 import { OpportunitiesCard } from "@/components/opportunities-card";
 import { TrendReports } from "@/components/trend-reports";
+import { describeError } from "@/lib/api-error";
 import { createStrategy, getCompany, type Company } from "@/lib/api";
 
 const TERMINAL_STATUSES: ReadonlySet<Company["status"]> = new Set([
@@ -50,7 +51,7 @@ export function CompanyProfile({ initialCompany }: { initialCompany: Company }) 
       const strategy = await createStrategy(company.id);
       router.push(`/strategy/${strategy.id}`);
     } catch (err) {
-      setStrategyError(err instanceof Error ? err.message : "Failed to generate strategy.");
+      setStrategyError(describeError(err));
       setGeneratingStrategy(false);
     }
   }

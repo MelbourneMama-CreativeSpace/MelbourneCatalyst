@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { describeError } from "@/lib/api-error";
 import {
   inviteCompanyMember,
   listCompanyMembers,
@@ -56,7 +57,7 @@ export function MembersPanel({ companyId }: { companyId: string }) {
       setEmail("");
       refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to invite.");
+      setError(describeError(err));
     } finally {
       setInviting(false);
     }
@@ -68,7 +69,7 @@ export function MembersPanel({ companyId }: { companyId: string }) {
       await removeCompanyMember(companyId, memberId);
       refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to remove.");
+      setError(describeError(err));
     }
   }
 

@@ -1,5 +1,5 @@
-"""Instagram collector — top media for configured hashtags via the Instagram
-Graph API's hashtag search + top_media endpoints.
+"""Instagram collector — top media for hashtags derived from the active
+niche, via the Instagram Graph API's hashtag search + top_media endpoints.
 
 Requires a Business/Creator Instagram account behind a Meta app with hashtag
 search permissions: `INSTAGRAM_ACCESS_TOKEN` (long-lived token) and

@@ -6,6 +6,7 @@ import { FileIcon, Trash2, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import { deleteMediaAsset, listMediaAssets, uploadMediaAsset, type MediaAsset } from "@/lib/api";
 
 export function MediaLibraryView({ companyId }: { companyId: string }) {
@@ -37,11 +38,7 @@ export function MediaLibraryView({ companyId }: { companyId: string }) {
       setTagsInput("");
       load();
     } catch (err) {
-      setError(
-        err instanceof Error && err.message.includes("409")
-          ? "Media library isn't configured yet — set SUPABASE_SERVICE_ROLE_KEY."
-          : "Couldn't upload that file — try again.",
-      );
+      setError(describeError(err));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";

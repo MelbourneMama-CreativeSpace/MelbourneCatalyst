@@ -1,5 +1,5 @@
-"""YouTube collector — recent high-view videos matching configured search
-queries via the YouTube Data API v3 REST endpoint.
+"""YouTube collector — recent high-view videos matching the active niche via
+the YouTube Data API v3 REST endpoint.
 
 Calls the REST API directly with `httpx` rather than depending on
 `google-api-python-client`, which is sync-only and pulls in a heavy transitive

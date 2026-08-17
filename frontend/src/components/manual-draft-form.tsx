@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import {
   createManualContentItem,
   type ContentItem,
@@ -50,11 +51,7 @@ export function ManualDraftForm({ companyId }: { companyId: string }) {
       setResult(item);
       setTopic("");
     } catch (err) {
-      setError(
-        err instanceof Error && err.message.includes("502")
-          ? "Couldn't generate a draft — check ANTHROPIC_API_KEY / Claude API availability."
-          : "Couldn't generate a draft — try again.",
-      );
+      setError(describeError(err));
     } finally {
       setSubmitting(false);
     }

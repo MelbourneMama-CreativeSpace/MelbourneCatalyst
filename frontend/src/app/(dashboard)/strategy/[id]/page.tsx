@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { StrategyView } from "@/components/strategy-view";
+import { ApiError } from "@/lib/api-error";
 import { type Strategy } from "@/lib/api";
 import { getStrategy } from "@/lib/api-server";
 
@@ -13,7 +14,7 @@ async function fetchStrategyOrNotFound(id: string): Promise<Strategy> {
   try {
     return await getStrategy(id);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("404")) {
+    if (err instanceof ApiError && err.status === 404) {
       notFound();
     }
     throw err;

@@ -9,9 +9,10 @@ poll pattern company onboarding needs for its ~30s scrape+embed pipeline.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -30,6 +31,17 @@ from app.agents.content_management.quality_check import check_content_quality
 from app.agents.content_management.repurposing import repurpose_content_item
 from app.agents.content_management.strategy_graph import run_strategy_generation
 from app.agents.knowledge_base.generated_content_indexing import index_on_approval
+from app.agents.media_library.image_conversion import (
+    convert_heic_to_jpeg,
+    heic_safe_filename,
+    is_heic,
+)
+from app.agents.media_library.storage import (
+    MediaLibraryNotConfiguredError,
+    _client as _media_client,
+    _require_configured as _require_media_configured,
+)
+from app.config import settings
 from app.db.models import (
     Campaign,
     Collaboration,
@@ -501,6 +513,78 @@ async def update_content_item(
                 item.draft_copy or item.description,
             )
 
+    await session.commit()
+    await session.refresh(item)
+    return ContentItemOut.model_validate(item)
+
+
+# Instagram's real API has no text-only post (every publish there needs an
+# actual image/video, checked in publish.py) — this is how one gets
+# attached. Nothing in this app generates an image; it's supplied by hand,
+# same upload-to-Supabase-Storage pattern chat attachments already use
+# (`upload_chat_attachment` in chat.py), just scoped to a content item
+# instead of a conversation.
+_CONTENT_MEDIA_MAX_BYTES = 20_000_000  # 20 MB, same cap as chat attachments
+
+
+@router.post("/content-items/{item_id}/media", response_model=ContentItemOut)
+async def upload_content_item_media(
+    item_id: uuid.UUID,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> ContentItemOut:
+    item, _content_plan = await _get_item_and_plan_or_404(session, item_id, user)
+
+    try:
+        _require_media_configured()
+    except MediaLibraryNotConfiguredError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    content_bytes = await file.read()
+    if len(content_bytes) > _CONTENT_MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds maximum upload size (20 MB)")
+
+    safe_filename = file.filename or f"upload-{uuid.uuid4()}"
+    content_type = file.content_type or "application/octet-stream"
+
+    # HEIC (an iPhone's default photo format) renders as a broken image
+    # in every major browser and isn't accepted by Facebook/Instagram's
+    # own photo-post APIs either — converted to JPEG here so both the
+    # Content Studio preview and a later publish just work.
+    if is_heic(safe_filename, content_type):
+        try:
+            content_bytes = await asyncio.to_thread(convert_heic_to_jpeg, content_bytes)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422, detail=f"Couldn't read that HEIC image: {exc}"
+            ) from None
+        safe_filename = heic_safe_filename(safe_filename)
+        content_type = "image/jpeg"
+
+    storage_path = f"content-items/{item.id}/{uuid.uuid4()}-{safe_filename}"
+
+    client = await _media_client()
+    bucket = client.storage.from_(settings.SUPABASE_STORAGE_BUCKET)
+    await bucket.upload(storage_path, content_bytes, file_options={"content-type": content_type})
+    item.media_url = await bucket.get_public_url(storage_path)
+
+    await session.commit()
+    await session.refresh(item)
+    return ContentItemOut.model_validate(item)
+
+
+@router.delete("/content-items/{item_id}/media", response_model=ContentItemOut)
+async def remove_content_item_media(
+    item_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> ContentItemOut:
+    """Detaches the item's media (doesn't delete the underlying storage
+    object — same "don't hard-delete on a simple UI action" stance as the
+    rest of this app)."""
+    item, _content_plan = await _get_item_and_plan_or_404(session, item_id, user)
+    item.media_url = None
     await session.commit()
     await session.refresh(item)
     return ContentItemOut.model_validate(item)

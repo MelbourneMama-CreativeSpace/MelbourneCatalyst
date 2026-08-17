@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import {
   disconnectPlatform,
   generatePerformanceInsights,
@@ -55,7 +56,7 @@ export function IntegrationsView({
   function refresh() {
     listConnections(companyId)
       .then(({ items }) => setConnections(items))
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load connections."))
+      .catch((err) => setError(describeError(err)))
       .finally(() => setLoading(false));
   }
 
@@ -71,7 +72,7 @@ export function IntegrationsView({
       await disconnectPlatform(connectionId);
       refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to disconnect.");
+      setError(describeError(err));
     } finally {
       setDisconnectingId(null);
     }
@@ -128,11 +129,7 @@ function InsightsCard({ companyId }: { companyId: string }) {
       const res = await generatePerformanceInsights(companyId);
       setInsights(res.insights);
     } catch (err) {
-      setError(
-        err instanceof Error && err.message.includes("502")
-          ? "Couldn't generate insights — check ANTHROPIC_API_KEY / Claude API availability."
-          : "Couldn't generate insights — try again.",
-      );
+      setError(describeError(err));
     } finally {
       setGenerating(false);
     }
@@ -272,7 +269,7 @@ function ConnectionMetrics({ connectionId }: { connectionId: string }) {
   function load() {
     getConnectionMetrics(connectionId)
       .then(({ items }) => setSnapshots(items))
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load metrics."));
+      .catch((err) => setError(describeError(err)));
   }
 
   useEffect(() => {
@@ -291,11 +288,7 @@ function ConnectionMetrics({ connectionId }: { connectionId: string }) {
       await syncConnectionMetrics(connectionId);
       load();
     } catch (err) {
-      setError(
-        err instanceof Error && err.message.includes("409")
-          ? "Metrics aren't configured yet for this platform — set the Composio metrics tool slug."
-          : "Couldn't sync metrics — try again.",
-      );
+      setError(describeError(err));
     } finally {
       setSyncing(false);
     }

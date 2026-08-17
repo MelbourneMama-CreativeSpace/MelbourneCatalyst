@@ -32,6 +32,7 @@ here is publishing/scheduling — `publish_content_item` and
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -45,7 +46,18 @@ from app.agents.content_management.content_plan_graph import (
 )
 from app.agents.knowledge_base.generated_content_indexing import index_on_approval
 from app.agents.knowledge_base.search import similarity_search
-from app.agents.social_media_analyzer.publish import publish_post
+from app.agents.social_media_analyzer.publish import (
+    DeleteNotSupportedError,
+    delete_post,
+    get_post_url,
+    publish_post,
+)
+from app.agents.social_media_analyzer.youtube_upload import (
+    delete_youtube_video,
+    enqueue_youtube_upload,
+    fetch_video_analytics,
+    get_video_url,
+)
 from app.agents.trend_analyzer.relevance import fetch_scored_trends
 from app.config import settings
 from app.db.models import (
@@ -57,7 +69,10 @@ from app.db.models import (
     PublishAttempt,
     Strategy,
     Trend,
+    YouTubeUploadJob,
 )
+from app.security.auth import CurrentUser
+from app.security.ownership import accessible_company_clause
 
 
 def _content_item_card(item: ContentItem, company_id: uuid.UUID) -> dict:
@@ -70,6 +85,7 @@ def _content_item_card(item: ContentItem, company_id: uuid.UUID) -> dict:
         "content_type": item.content_type,
         "draft_copy": item.draft_copy,
         "hashtags": item.hashtags,
+        "media_url": item.media_url,
         "approval_status": item.approval_status,
         "scheduled_at": item.scheduled_at.isoformat() if item.scheduled_at else None,
         "published_at": item.published_at.isoformat() if item.published_at else None,
@@ -90,6 +106,19 @@ def _trend_card(trend: Trend) -> dict:
 
 
 TOOL_SCHEMAS = [
+    {
+        "name": "list_companies",
+        "description": (
+            "List all companies the user has onboarded, with their names, IDs, "
+            "and status. Use this to resolve a company name to its UUID before "
+            "calling other tools that need a company_id, or when the user asks "
+            "what companies or clients are in the system."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
     {
         "name": "list_trending_topics",
         "description": (
@@ -112,17 +141,18 @@ TOOL_SCHEMAS = [
         "description": (
             "Get a company's onboarded profile — industry, business model, target "
             "audience, brand voice, and summary. Use this when the user asks about "
-            "a specific client/company by name or id."
+            "a specific client/company by name or id. company_id is OPTIONAL — omit "
+            "it to use the one company on the account (or ask which one, if there's "
+            "more than one). Never ask the user for a UUID directly."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "company_id": {
                     "type": "string",
-                    "description": "The company's UUID.",
+                    "description": "The company's UUID — OPTIONAL, resolved automatically if omitted.",
                 },
             },
-            "required": ["company_id"],
         },
     },
     {
@@ -152,17 +182,19 @@ TOOL_SCHEMAS = [
         "description": (
             "Get counts of a company's strategies, content plans, and campaigns by "
             "status (pending/complete/failed, approval status). Use this when the "
-            "user asks what's in progress or what's ready for review for a client."
+            "user asks what's in progress or what's ready for review for a client. "
+            "company_id is OPTIONAL — omit it to use the one company on the account "
+            "(or ask which one, if there's more than one). Never ask the user for a "
+            "UUID directly."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "company_id": {
                     "type": "string",
-                    "description": "The company's UUID.",
+                    "description": "The company's UUID — OPTIONAL, resolved automatically if omitted.",
                 },
             },
-            "required": ["company_id"],
         },
     },
     {
@@ -173,12 +205,17 @@ TOOL_SCHEMAS = [
             "filtered by platform. Use this whenever the user refers to a post "
             "they've already created, asks what's in the pipeline, or asks to "
             "see something specific, so it can be shown to them directly rather "
-            "than described in words."
+            "than described in words. company_id is OPTIONAL — omit it to use "
+            "the one company on the account (or ask which one, if there's more "
+            "than one). Never ask the user for a UUID directly."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "company_id": {"type": "string", "description": "The company's UUID."},
+                "company_id": {
+                    "type": "string",
+                    "description": "The company's UUID — OPTIONAL, resolved automatically if omitted.",
+                },
                 "query": {
                     "type": "string",
                     "description": "Text to search for in the title (optional).",
@@ -193,7 +230,6 @@ TOOL_SCHEMAS = [
                     "description": "Max results (default 5, max 10).",
                 },
             },
-            "required": ["company_id"],
         },
     },
     {
@@ -202,20 +238,42 @@ TOOL_SCHEMAS = [
             "Write ONE ready-to-publish post right now — the single-post "
             "counterpart to create_content_plan (which builds a whole "
             "calendar of several). Use this once you have enough to go on: "
-            "what it's about and, ideally, which platform. If the user's "
-            "request is vague (no topic, or content that clearly wants a "
-            "photo/video they haven't attached), ask a clarifying question "
-            "first instead of guessing — don't call this speculatively. Any "
-            "attached file appears in the conversation as a markdown link/ "
-            "image; include it verbatim in `topic` so it's part of the "
-            "brief. The result is shown to the user as a card with its own "
-            "Post/Schedule actions — you don't need to ask them what to do "
-            "with it next."
+            "what it's about and, ideally, which platform. "
+            "company_id is OPTIONAL — only include it if the user has "
+            "specifically mentioned a company or client by name (resolve "
+            "the name to a UUID with list_companies first). If no company "
+            "is mentioned, write a high-quality generic post without one. "
+            "Never ask the user for a company UUID — resolve it yourself "
+            "or omit it. "
+            "Every post already gets the company's own currently-relevant "
+            "trends as ambient context automatically — you don't need to "
+            "restate them. If the user is asking for content built around "
+            "one SPECIFIC trend they saw from list_trending_topics (e.g. "
+            "\"write something about that YC one\", \"make a post out of "
+            "the top trend\"), pass its real id as trend_id — always quote "
+            "the id verbatim from list_trending_topics' own result text "
+            "(never invent one), the same rule as content_item_id "
+            "elsewhere. This guarantees that trend is actually the center "
+            "of the post rather than just background noise, and properly "
+            "links the resulting item back to it. "
+            "If the user's request is vague (no topic at all), ask a "
+            "clarifying question first instead of guessing. Any attached "
+            "file appears in the conversation as a markdown link/image; "
+            "include it verbatim in `topic`. The result is shown to the "
+            "user as a card with its own Post/Schedule actions."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "company_id": {"type": "string", "description": "The company's UUID."},
+                "company_id": {
+                    "type": "string",
+                    "description": (
+                        "The company's UUID — OPTIONAL. Only supply this when the user "
+                        "has explicitly mentioned a specific company/client. Resolve "
+                        "names to UUIDs using list_companies. Never ask the user for "
+                        "a UUID directly."
+                    ),
+                },
                 "topic": {
                     "type": "string",
                     "description": (
@@ -233,8 +291,49 @@ TOOL_SCHEMAS = [
                     "enum": ["post", "video", "article", "carousel", "story", "newsletter", "podcast"],
                     "description": "Infer from what the user said; default to post if genuinely unclear.",
                 },
+                "trend_id": {
+                    "type": "string",
+                    "description": (
+                        "OPTIONAL — a specific trend's real UUID from "
+                        "list_trending_topics' own result text, when the user wants "
+                        "content built around ONE particular trend. Omit for a regular "
+                        "post; ambient trend context is already included either way."
+                    ),
+                },
             },
-            "required": ["company_id", "topic"],
+            "required": ["topic"],
+        },
+    },
+    {
+        "name": "get_youtube_video_analytics",
+        "description": (
+            "Get real view/like/comment counts for a video this app has "
+            "already uploaded to YouTube, straight from YouTube's own API. "
+            "Use this whenever the user asks how a video is doing, its "
+            "views/likes, or its analytics/stats. This is view/like/comment "
+            "counts only — NOT full YouTube Studio-grade analytics (no "
+            "watch time, audience retention, or traffic sources; no such "
+            "data is available through this app). If the user wants that "
+            "deeper level, say plainly that only view/like/comment counts "
+            "are available here and point them to YouTube Studio directly "
+            "for the rest — never fabricate numbers you don't have. `title` "
+            "is OPTIONAL — narrows to one video by a substring of what it "
+            "was uploaded as (e.g. \"the YC video\", \"birthday wish\"); "
+            "omit it to see the most recently uploaded few. company_id is "
+            "OPTIONAL — omit it to use the one company on the account."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "company_id": {
+                    "type": "string",
+                    "description": "The company's UUID — OPTIONAL, resolved automatically if omitted.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Substring to match against the video's uploaded title (optional).",
+                },
+            },
         },
     },
 ]
@@ -245,6 +344,23 @@ def _parse_uuid(value: str, label: str) -> uuid.UUID | None:
         return uuid.UUID(value)
     except (ValueError, AttributeError, TypeError):
         return None
+
+
+# Matches the exact markdown an image attachment is appended to a message
+# as (see frontend chat-panel.tsx's handleSend / chat-attachments.ts):
+# `![filename](url)` — the leading `!` is what marks it an image rather
+# than a generic file attachment (`[filename](url)`), so this only ever
+# matches a real image, not any attachment.
+_IMAGE_MARKDOWN_PATTERN = re.compile(r"!\[[^\]]*\]\((https?://[^\s)]+)\)")
+
+
+def _extract_first_image_url(text: str) -> str | None:
+    """The first attached image's URL already present in `text`, if any —
+    lets a new content item pick up an image the user already attached in
+    chat automatically, rather than requiring it be re-uploaded through a
+    separate step once the draft exists."""
+    match = _IMAGE_MARKDOWN_PATTERN.search(text)
+    return match.group(1) if match else None
 
 
 async def list_trending_topics(
@@ -269,18 +385,55 @@ async def list_trending_topics(
     )
     if not scored:
         return "No trending topics meet the recommendation bar right now.", []
+    # `id` has to be in the text Claude actually reads, not just the card
+    # data — cards are a UI-only side-channel never fed back into the
+    # model's context. Without it here, "write a post about the second
+    # one" has no real trend id to pass to create_content_item's
+    # trend_id, the same "Invalid content item id" class of bug already
+    # fixed for find_content_items/create_content_item. `insight`
+    # (why it matters) is included too — the actual substance worth
+    # writing content around, not just a bare title.
     lines = [
-        f"- {trend.title} (source: {trend.source}, relevance: {score:.2f})"
+        f"- {trend.title} (source: {trend.source}, relevance: {score:.2f}, id: {trend.id})"
+        + (f" — {trend.insight}" if trend.insight else "")
         for trend, score in scored
     ]
     text = "Trending topics:\n" + "\n".join(lines)
     return text, [_trend_card(trend) for trend, _score in scored]
 
 
-async def get_company_summary(session: AsyncSession, *, company_id: str) -> str:
-    parsed = _parse_uuid(company_id, "company_id")
-    if parsed is None:
-        return f"'{company_id}' isn't a valid company id."
+async def _resolve_company_id(
+    session: AsyncSession, user: CurrentUser, company_id: str | None
+) -> tuple[uuid.UUID | None, str | None]:
+    """Resolve a tool's `company_id`, tolerating the case where Claude's
+    tool call omits it even though the JSON schema marks it "required" —
+    `tool_choice: auto` doesn't hard-enforce that, so any tool written
+    assuming Claude always supplies one crashes exactly the way
+    `create_content_item` and `find_content_items` both did in practice.
+    Returns `(uuid, None)` on success, or `(None, message)` with a message
+    ready to hand straight back to Claude as the tool result — same
+    resolve-to-the-one-accessible-company-or-ask shape as
+    `create_content_item`'s own fallback."""
+    if company_id:
+        parsed = _parse_uuid(company_id, "company_id")
+        if parsed is None:
+            return None, f"'{company_id}' isn't a valid company id."
+        return parsed, None
+    companies = await _accessible_complete_companies(session, user)
+    if not companies:
+        return None, "No onboarded company found — finish onboarding a company first."
+    if len(companies) > 1:
+        names = ", ".join(f"{c.name or c.url} ({c.id})" for c in companies)
+        return None, f"Which company did you mean? You have access to: {names}."
+    return companies[0].id, None
+
+
+async def get_company_summary(
+    session: AsyncSession, *, user: CurrentUser, company_id: str | None = None
+) -> str:
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error
     company = await session.get(Company, parsed)
     if company is None:
         return f"No company found with id {company_id}."
@@ -314,10 +467,12 @@ async def search_knowledge_base(
     return "Knowledge base search results:\n" + "\n".join(lines)
 
 
-async def get_content_pipeline_status(session: AsyncSession, *, company_id: str) -> str:
-    parsed = _parse_uuid(company_id, "company_id")
-    if parsed is None:
-        return f"'{company_id}' isn't a valid company id."
+async def get_content_pipeline_status(
+    session: AsyncSession, *, user: CurrentUser, company_id: str | None = None
+) -> str:
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error
     company = await session.get(Company, parsed)
     if company is None:
         return f"No company found with id {company_id}."
@@ -355,14 +510,15 @@ async def get_content_pipeline_status(session: AsyncSession, *, company_id: str)
 async def find_content_items(
     session: AsyncSession,
     *,
-    company_id: str,
+    user: CurrentUser,
+    company_id: str | None = None,
     query: str | None = None,
     platform: str | None = None,
     limit: int | None = None,
 ) -> tuple[str, list[dict]]:
-    parsed = _parse_uuid(company_id, "company_id")
-    if parsed is None:
-        return f"'{company_id}' isn't a valid company id.", []
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error, []
 
     stmt = (
         select(ContentItem, ContentPlan.company_id)
@@ -380,47 +536,199 @@ async def find_content_items(
     if not rows:
         return "No matching content items found.", []
 
-    summary = "; ".join(f"{item.title} ({item.platform}, {item.approval_status})" for item, _ in rows)
+    # `id` has to be in the text Claude actually reads, not just the card
+    # data — cards are a UI-only side-channel never fed back into the
+    # model's context. Without it here, a follow-up approve/reject/
+    # regenerate/publish/schedule call has no real id to quote and either
+    # hallucinates one or fails with "Invalid content item id in proposed
+    # action" — exactly the bug this fixes.
+    summary = "; ".join(
+        f"{item.title} ({item.platform}, {item.approval_status}, id: {item.id})" for item, _ in rows
+    )
     return f"Found {len(rows)} matching item(s): {summary}", [
         _content_item_card(item, item_company_id) for item, item_company_id in rows
     ]
 
 
+async def _accessible_complete_companies(session: AsyncSession, user: CurrentUser) -> list[Company]:
+    """Every fully-onboarded company `user` can see — the same ownership
+    predicate the `/companies` list endpoint uses, so a chat tool can never
+    surface a company this person doesn't actually have access to."""
+    rows = (
+        await session.execute(
+            select(Company).where(accessible_company_clause(user), Company.status == "complete")
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+async def list_companies(session: AsyncSession, *, user: CurrentUser) -> str:
+    companies = await _accessible_complete_companies(session, user)
+    if not companies:
+        return "No companies onboarded yet."
+    lines = [f"{c.name or c.url} (id: {c.id})" for c in companies]
+    return f"{len(companies)} companies:\n" + "\n".join(lines)
+
+
 async def create_content_item(
     session: AsyncSession,
     *,
-    company_id: str,
+    user: CurrentUser,
+    company_id: str | None = None,
     topic: str,
     platform: str | None = None,
     content_type: str | None = None,
+    trend_id: str | None = None,
 ) -> tuple[str, list[dict]]:
-    parsed = _parse_uuid(company_id, "company_id")
-    if parsed is None:
-        return f"'{company_id}' isn't a valid company id.", []
-    company = await session.get(Company, parsed)
-    if company is None:
-        return f"No company found with id {company_id}.", []
-    if company.status != "complete":
-        return (
-            f"{company.name or company.url}'s profile isn't ready yet — finish onboarding "
-            "before generating content.",
-            [],
-        )
+    if company_id:
+        parsed = _parse_uuid(company_id, "company_id")
+        if parsed is None:
+            return f"'{company_id}' isn't a valid company id.", []
+        company = await session.get(Company, parsed)
+        if company is None:
+            return f"No company found with id {company_id}.", []
+        if company.status != "complete":
+            return (
+                f"{company.name or company.url}'s profile isn't ready yet — finish onboarding "
+                "before generating content.",
+                [],
+            )
+    else:
+        # No company named — per this tool's own instructions, resolve it
+        # rather than ask for a UUID. A `ContentItem` always belongs to a
+        # real company (it lives on that company's manual `ContentPlan`),
+        # so "a company-less generic post" was never actually something
+        # the data model could represent; auto-picking the one company
+        # this person has when there's exactly one is the honest version
+        # of that promise, not a guess.
+        companies = await _accessible_complete_companies(session, user)
+        if not companies:
+            return (
+                "No onboarded company to write this for yet — finish onboarding a company first.",
+                [],
+            )
+        if len(companies) > 1:
+            names = ", ".join(f"{c.name or c.url} ({c.id})" for c in companies)
+            return (
+                f"Which company is this for? You have access to: {names}.",
+                [],
+            )
+        parsed = companies[0].id
 
-    item, ok = await create_manual_item(parsed, topic, platform or "linkedin", content_type or "post")
+    # `topic` carries the user's own words verbatim, attachment markdown
+    # included (see this tool's own schema description) — an attached
+    # image should land on the new item directly, not require a separate
+    # re-upload once the draft already exists.
+    media_url = _extract_first_image_url(topic)
+    # An invalid/hallucinated trend_id degrades to "no specific trend" —
+    # create_manual_item itself already treats an unknown id the same
+    # way, so a bad UUID string here isn't worth refusing the whole post
+    # over.
+    parsed_trend_id = _parse_uuid(trend_id, "trend_id") if trend_id else None
+    item, ok = await create_manual_item(
+        parsed,
+        topic,
+        platform or "linkedin",
+        content_type or "post",
+        media_url=media_url,
+        trend_id=parsed_trend_id,
+    )
     if not ok or item is None:
         return "Content generation failed (check ANTHROPIC_API_KEY / Claude API availability).", []
-    text = f"Created \"{item.title}\" — a {item.platform} {item.content_type} draft, ready to review."
+    # id included in the text itself (not just the card) so a follow-up
+    # approve/reject/regenerate/publish/schedule call in the same
+    # conversation has a real id to quote — see find_content_items for the
+    # same fix and why it matters.
+    text = (
+        f"Created \"{item.title}\" (id: {item.id}) — a {item.platform} {item.content_type} "
+        "draft, ready to review."
+    )
     return text, [_content_item_card(item, parsed)]
 
 
+async def get_youtube_video_analytics(
+    session: AsyncSession,
+    *,
+    user: CurrentUser,
+    company_id: str | None = None,
+    title: str | None = None,
+) -> str:
+    """Real view/like/comment counts for a video this app uploaded to
+    YouTube, resolved from this company's own `YouTubeUploadJob` rows (so
+    only videos this app actually put up are ever looked up — never an
+    arbitrary id Claude might otherwise guess). `title` narrows to one
+    upload by substring; omitted, returns the most recent few, letting
+    Claude report on whichever the user actually means from the results."""
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error
+
+    connection = (
+        await session.execute(
+            select(PlatformConnection).where(
+                PlatformConnection.company_id == parsed,
+                PlatformConnection.platform == "youtube",
+            )
+        )
+    ).scalar_one_or_none()
+    if connection is None or connection.composio_connected_account_id is None:
+        return "YouTube isn't connected for this company yet — connect it from Integrations first."
+
+    stmt = (
+        select(YouTubeUploadJob)
+        .where(
+            YouTubeUploadJob.platform_connection_id == connection.id,
+            YouTubeUploadJob.status == "success",
+        )
+        .order_by(YouTubeUploadJob.created_at.desc())
+        .limit(10)
+    )
+    if title:
+        stmt = stmt.where(YouTubeUploadJob.title.ilike(f"%{title}%"))
+    jobs = (await session.execute(stmt)).scalars().all()
+    if not jobs:
+        return (
+            f"No successfully uploaded video matching '{title}' found."
+            if title
+            else "No successfully uploaded YouTube videos found for this company yet."
+        )
+
+    video_ids = [j.composio_execution_id for j in jobs if j.composio_execution_id]
+    if not video_ids:
+        return "Found the upload record, but no YouTube video id was saved for it."
+
+    try:
+        items = await fetch_video_analytics(connection, video_ids)
+    except Exception as exc:
+        return f"Couldn't fetch YouTube analytics: {exc}"
+    if not items:
+        return "YouTube didn't return statistics for that video (it may have been deleted or made private)."
+
+    lines = []
+    for item in items:
+        snippet = item.get("snippet") or {}
+        stats = item.get("statistics") or {}
+        lines.append(
+            f"- \"{snippet.get('title', 'Untitled')}\" (video id: {item.get('id')}): "
+            f"{stats.get('viewCount', '0')} views, {stats.get('likeCount', '0')} likes, "
+            f"{stats.get('commentCount', '0')} comments — published "
+            f"{snippet.get('publishedAt', 'an unknown date')}."
+        )
+    return (
+        "YouTube video stats (views/likes/comments only — not full watch-time "
+        "analytics, which isn't available here):\n" + "\n".join(lines)
+    )
+
+
 TOOL_IMPLEMENTATIONS = {
+    "list_companies": list_companies,
     "list_trending_topics": list_trending_topics,
     "get_company_summary": get_company_summary,
     "search_knowledge_base": search_knowledge_base,
     "get_content_pipeline_status": get_content_pipeline_status,
     "find_content_items": find_content_items,
     "create_content_item": create_content_item,
+    "get_youtube_video_analytics": get_youtube_video_analytics,
 }
 
 
@@ -476,19 +784,23 @@ WRITE_TOOL_SCHEMAS = [
         "description": (
             "Generate a brand-new content calendar (a set of content items) "
             "for a company. Only call it when the user has clearly asked to "
-            "create or generate a new content plan/calendar for a specific "
-            "company."
+            "create or generate a new content plan/calendar. company_id is "
+            "OPTIONAL — omit it to use the one company on the account (or ask "
+            "which one, if there's more than one). Never ask the user for a "
+            "UUID directly."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "company_id": {"type": "string", "description": "The company's UUID."},
+                "company_id": {
+                    "type": "string",
+                    "description": "The company's UUID — OPTIONAL, resolved automatically if omitted.",
+                },
                 "days": {
                     "type": "integer",
                     "description": "Number of days the plan should cover (optional).",
                 },
             },
-            "required": ["company_id"],
         },
     },
     {
@@ -499,6 +811,26 @@ WRITE_TOOL_SCHEMAS = [
             "only call it when the user has clearly confirmed they want it "
             "posted now (e.g. \"post it\", \"publish that\"), whether that's "
             "in reply to you asking or as their original request."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content_item_id": {"type": "string", "description": "The content item's UUID."},
+            },
+            "required": ["content_item_id"],
+        },
+    },
+    {
+        "name": "delete_content_item_post",
+        "description": (
+            "Permanently deletes an already-published post from its real "
+            "platform (LinkedIn, Facebook, or YouTube — Instagram has no "
+            "delete capability at all, say so plainly if asked). Genuinely "
+            "irreversible and public-facing — only call this when the user "
+            "has clearly and explicitly asked to delete/remove/take down/"
+            "unpublish a SPECIFIC already-published item. Never call this "
+            "speculatively or as a suggestion. Requires content_item_id — "
+            "use find_content_items first if you don't already have it."
         ),
         "input_schema": {
             "type": "object",
@@ -525,6 +857,52 @@ WRITE_TOOL_SCHEMAS = [
                 },
             },
             "required": ["content_item_id", "scheduled_at"],
+        },
+    },
+    {
+        "name": "upload_youtube_video",
+        "description": (
+            "Upload an actual video file — attached earlier in this conversation — as "
+            "a real YouTube video. This is completely different from a YouTube text/"
+            "community post, which is impossible (YouTube's API has no such action, "
+            "and never will via a config change — don't suggest one). Only call this "
+            "when the user has explicitly asked to upload a specific attached video to "
+            "YouTube. video_url must be the exact attachment URL already present in "
+            "this conversation — never invent, guess, or reuse a URL from a different "
+            "attachment. privacy_status defaults to 'unlisted' (reachable only by "
+            "direct link, not publicly searchable) so nothing goes fully public by "
+            "accident — only set it to 'public' or 'private' when the user has "
+            "explicitly asked for that. A real, irreversible action: always propose "
+            "it, never assume consent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "video_url": {
+                    "type": "string",
+                    "description": "The exact attachment URL from this conversation.",
+                },
+                "title": {"type": "string", "description": "The video's title."},
+                "description": {"type": "string", "description": "The video's description."},
+                "company_id": {
+                    "type": "string",
+                    "description": "The company's UUID — OPTIONAL, resolved automatically if omitted.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional keyword tags for discoverability.",
+                },
+                "privacy_status": {
+                    "type": "string",
+                    "enum": ["unlisted", "public", "private"],
+                    "description": (
+                        "Defaults to 'unlisted' if omitted. Only set to 'public' or "
+                        "'private' when the user has explicitly said so."
+                    ),
+                },
+            },
+            "required": ["video_url", "title", "description"],
         },
     },
 ]
@@ -585,11 +963,11 @@ async def regenerate_content_item_draft(session: AsyncSession, *, content_item_i
 
 
 async def create_content_plan(
-    session: AsyncSession, *, company_id: str, days: int | None = None
+    session: AsyncSession, *, user: CurrentUser, company_id: str | None = None, days: int | None = None
 ) -> str:
-    parsed = _parse_uuid(company_id, "company_id")
-    if parsed is None:
-        return f"'{company_id}' isn't a valid company id."
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error
     company = await session.get(Company, parsed)
     if company is None:
         return f"No company found with id {company_id}."
@@ -632,9 +1010,7 @@ async def publish_content_item(session: AsyncSession, *, content_item_id: str) -
         )
 
     try:
-        execution_id = await publish_post(
-            connection.platform, connection.composio_connected_account_id, item.draft_copy
-        )
+        execution_id = await publish_post(session, connection, item.draft_copy, media_url=item.media_url)
     except Exception as exc:
         error_message = str(exc)[:512]
         session.add(
@@ -660,7 +1036,63 @@ async def publish_content_item(session: AsyncSession, *, content_item_id: str) -
         )
     )
     await session.commit()
-    return f"Published '{item.title}' to {item.platform}."
+    # Best-effort — get_post_url never raises, so a lookup failure just
+    # means no link in the confirmation, not a broken/misleading success
+    # message about a publish that genuinely succeeded.
+    post_url = await get_post_url(connection, execution_id)
+    link_suffix = f" {post_url}" if post_url else ""
+    return f"Published '{item.title}' to {item.platform}.{link_suffix}"
+
+
+async def delete_content_item_post(session: AsyncSession, *, content_item_id: str) -> str:
+    """Permanently deletes a previously-published post from its real
+    platform — genuinely irreversible, which is why this tool is gated
+    behind a typed confirmation in the UI on top of the normal Confirm/
+    Cancel (see agent.py's `_TYPED_CONFIRMATION_PHRASE_BY_TOOL`), not just
+    a single click like every other write tool here."""
+    parsed = _parse_uuid(content_item_id, "content_item_id")
+    if parsed is None:
+        return f"'{content_item_id}' isn't a valid content item id."
+    item = await session.get(ContentItem, parsed)
+    if item is None:
+        return f"No content item found with id {content_item_id}."
+    if item.published_at is None:
+        return f"'{item.title}' hasn't been published, so there's nothing to delete."
+
+    connection = (
+        await session.execute(
+            select(PublishAttempt, PlatformConnection)
+            .join(PlatformConnection, PublishAttempt.platform_connection_id == PlatformConnection.id)
+            .where(PublishAttempt.content_item_id == item.id, PublishAttempt.status == "success")
+            .order_by(PublishAttempt.attempted_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if connection is None:
+        return (
+            f"Couldn't find a record of where '{item.title}' was actually posted — "
+            "can't delete it through this app."
+        )
+    attempt, platform_connection = connection
+    if not attempt.composio_execution_id:
+        return (
+            f"'{item.title}' has no real post id on file — can't delete it through "
+            "this app."
+        )
+
+    try:
+        if item.platform == "youtube":
+            await delete_youtube_video(platform_connection, attempt.composio_execution_id)
+        else:
+            await delete_post(platform_connection, attempt.composio_execution_id)
+    except DeleteNotSupportedError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"Deleting '{item.title}' failed: {str(exc)[:300]}"
+
+    item.published_at = None
+    await session.commit()
+    return f"Deleted '{item.title}' from {item.platform}. It's no longer live."
 
 
 async def schedule_content_item(
@@ -688,11 +1120,75 @@ async def schedule_content_item(
     return f"Scheduled '{item.title}' for {when.isoformat()}."
 
 
+_YOUTUBE_PRIVACY_STATUSES = {"unlisted", "public", "private"}
+
+
+async def upload_youtube_video_tool(
+    session: AsyncSession,
+    *,
+    user: CurrentUser,
+    video_url: str,
+    title: str,
+    description: str,
+    company_id: str | None = None,
+    tags: list[str] | None = None,
+    privacy_status: str = "unlisted",
+) -> str:
+    if privacy_status not in _YOUTUBE_PRIVACY_STATUSES:
+        return (
+            f"'{privacy_status}' isn't a valid YouTube privacy setting — "
+            "use unlisted, public, or private."
+        )
+
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error
+
+    connection = (
+        await session.execute(
+            select(PlatformConnection).where(
+                PlatformConnection.company_id == parsed,
+                PlatformConnection.platform == "youtube",
+            )
+        )
+    ).scalar_one_or_none()
+    if connection is None or connection.status != "connected" or connection.composio_connected_account_id is None:
+        return "YouTube isn't connected for this company yet — connect it from Integrations first."
+
+    # Queued rather than a single synchronous attempt — a real upload is
+    # three sequential network hops (fetch the video, a presigned S3
+    # upload, Composio's own YouTube call), any of which can fail
+    # transiently without the upload itself being wrong. This makes one
+    # immediate attempt and, if that doesn't succeed outright,
+    # `run_scheduled_youtube_uploads` keeps retrying it in the background
+    # rather than the user having to notice a failure and re-ask.
+    job = await enqueue_youtube_upload(
+        session, connection, video_url, title, description, tags=tags, privacy_status=privacy_status
+    )
+    if job.status == "success":
+        video_url = get_video_url(job.composio_execution_id) if job.composio_execution_id else None
+        return (
+            f'Uploaded "{title}" to YouTube as {privacy_status} — {video_url}'
+            if video_url
+            else f'Uploaded "{title}" to YouTube as {privacy_status} — execution id {job.composio_execution_id}.'
+        )
+    if job.status == "failed":
+        return f"YouTube upload failed permanently: {job.status_error}"
+    return (
+        f'"{title}" is queued for YouTube — the first attempt hit a snag '
+        f"({job.status_error}), retrying automatically every "
+        f"{settings.YOUTUBE_UPLOAD_SCHEDULER_INTERVAL_MINUTES} minutes for up to "
+        f"{settings.MAX_YOUTUBE_UPLOAD_ATTEMPTS} attempts. No need to re-ask."
+    )
+
+
 WRITE_TOOL_IMPLEMENTATIONS = {
     "approve_content_item": approve_content_item,
     "reject_content_item": reject_content_item,
     "regenerate_content_item_draft": regenerate_content_item_draft,
     "create_content_plan": create_content_plan,
     "publish_content_item": publish_content_item,
+    "delete_content_item_post": delete_content_item_post,
     "schedule_content_item": schedule_content_item,
+    "upload_youtube_video": upload_youtube_video_tool,
 }

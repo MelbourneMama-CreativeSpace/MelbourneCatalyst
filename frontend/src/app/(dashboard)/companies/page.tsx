@@ -412,9 +412,13 @@ export default function ContentStudioPage() {
           schedule content defaults to this company_id, so nothing here has
           to ask which client something is for. Fixed to the bottom of the
           viewport, not the page — it stays put while the content above
-          scrolls. */}
+          scrolls. Sized to its own content (a slim bar at rest, growing
+          — capped, then scrolling internally — once there's an actual
+          exchange) rather than a fixed height, so an idle/empty
+          conversation doesn't crowd out the dashboard above it with mostly
+          empty space. */}
       {company && (
-        <div className="h-[420px] shrink-0 border-t border-border bg-background">
+        <div className="shrink-0 border-t border-border bg-background">
           {chatError && (
             <p className="px-6 py-4 text-sm text-destructive">
               Couldn&apos;t start a chat session — try refreshing.
@@ -429,6 +433,7 @@ export default function ContentStudioPage() {
               conversationId={conversationId}
               initialMessages={conversationMessages}
               onActionConfirmed={refetchItems}
+              compact
             />
           )}
         </div>

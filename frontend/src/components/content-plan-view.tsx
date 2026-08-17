@@ -6,6 +6,7 @@ import { useEffect, useState, type DragEvent } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { describeError } from "@/lib/api-error";
 import {
   createCampaign,
   regenerateContentItemDraft,
@@ -127,7 +128,7 @@ export function ContentPlanView({
       });
       setItems((prev) => prev.map((item) => (item.id === itemId ? updated : item)));
     } catch (err) {
-      setItemError(err instanceof Error ? err.message : "Failed to update content item.");
+      setItemError(describeError(err));
     }
   }
 
@@ -138,7 +139,7 @@ export function ContentPlanView({
       const updated = await regenerateContentItemDraft(itemId);
       setItems((prev) => prev.map((item) => (item.id === itemId ? updated : item)));
     } catch (err) {
-      setItemError(err instanceof Error ? err.message : "Failed to regenerate draft.");
+      setItemError(describeError(err));
     } finally {
       setRegeneratingId(null);
     }
@@ -162,7 +163,7 @@ export function ContentPlanView({
       });
       router.push(`/campaign/${campaign.id}`);
     } catch (err) {
-      setCampaignError(err instanceof Error ? err.message : "Failed to generate campaign.");
+      setCampaignError(describeError(err));
       setGeneratingCampaign(false);
     }
   }

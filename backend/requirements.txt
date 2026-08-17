@@ -53,3 +53,13 @@ composio-client==1.42.0
 # async client API was introspected against this exact installed version
 # before writing any code, same discipline as composio-client above).
 supabase==2.31.0
+
+# HEIC/HEIF (Apple's default iPhone photo format) -> JPEG conversion at
+# upload time — no browser renders HEIC in an <img> tag at all, and
+# Meta's own photo-post APIs only accept JPG/PNG (confirmed against
+# Instagram's real tool schema). Pillow was already present transitively
+# (via python-docx/pypdf) but unpinned; pillow-heif is the actual new
+# dependency, a prebuilt wheel bundling libheif — no system-level
+# compilation needed, verified live on this exact platform.
+pillow==12.3.0
+pillow-heif==1.5.0
