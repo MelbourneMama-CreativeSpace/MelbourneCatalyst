@@ -122,9 +122,15 @@ TOOL_SCHEMAS = [
     {
         "name": "list_trending_topics",
         "description": (
-            "List currently trending topics that are highly relevant and recently "
-            "discovered. Use this when the user asks what's trending, what's "
-            "happening, or for content ideas grounded in current trends."
+            "List the company's best available trending topics, ranked by relevance "
+            "— always returns whatever exists, even if nothing clears the 'strongly "
+            "relevant' bar, so there's always real trend context to reference. Each "
+            "result's relevance score says how strong the match actually is; treat "
+            "anything below ~0.5 as weak and say so plainly rather than presenting it "
+            "as a genuine trend. Use this when the user asks what's trending, what's "
+            "happening, or wants content grounded in current trends — and also before "
+            "writing content the user wants tied to 'the trends' in general, so you "
+            "have real ids/insights to reference instead of inventing one."
         ),
         "input_schema": {
             "type": "object",
@@ -375,16 +381,27 @@ async def list_trending_topics(
     Uses `fetch_scored_trends` rather than the plain recommendation list so
     the relevance number shown is the same one the ranking used — printing
     `Trend.relevance_score` next to a per-company ordering would quietly
-    report a different company's score."""
+    report a different company's score.
+
+    Deliberately unfiltered (no min_score/max_age_days), unlike
+    `get_recommended_trends`'s dashboard-facing "genuinely great, don't
+    show anything weaker" bar. This tool feeds the conversation, not a UI
+    badge: a niche with no trend clearing that bar this week isn't a niche
+    with *zero* real trend context, and this used to hand Claude an empty
+    list either way — indistinguishable from "trend collection hasn't run
+    yet" — which meant every piece of content built from it silently
+    dropped trend grounding instead of citing the closest real match with
+    an honest confidence caveat. The relevance score is still printed per
+    trend precisely so Claude (and, downstream, the user) can tell a 0.81
+    match from a 0.12 one instead of both reading as unqualified "trending."
+    """
     scored = await fetch_scored_trends(
         session,
         _parse_uuid(company_id, "company_id") if company_id else None,
         limit=limit or 10,
-        min_score=settings.TREND_RECOMMENDATION_MIN_RELEVANCE,
-        max_age_days=settings.TREND_RECOMMENDATION_MAX_AGE_DAYS,
     )
     if not scored:
-        return "No trending topics meet the recommendation bar right now.", []
+        return "No trending topics have been discovered yet — trend collection may not have run for this company's niche.", []
     # `id` has to be in the text Claude actually reads, not just the card
     # data — cards are a UI-only side-channel never fed back into the
     # model's context. Without it here, "write a post about the second

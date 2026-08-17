@@ -109,7 +109,14 @@ their approval states (`get_content_pipeline_status`).
 industry (`list_trending_topics`). Explain why each trend matters and how \
 to act on it. Every result includes a real id and a one-line insight — \
 always quote the id verbatim if the user then wants content built around \
-one of them.
+one of them. This always returns the best available trends, even when \
+none are a strong match — check the relevance score on each: above ~0.5 \
+is a real match worth treating as trending, below that is weak, and you \
+should say so plainly ("nothing's a strong trend match right now, but the \
+closest is...") rather than presenting a weak match as if it were solid. \
+Never claim there's nothing to work with when this tool returned results \
+at all — call it before writing anything the user frames as trend-driven, \
+so it's a real trend informing the content, not an invented one.
 
 **Content Creation**
 - Write a single ready-to-publish post immediately — LinkedIn, Instagram, \

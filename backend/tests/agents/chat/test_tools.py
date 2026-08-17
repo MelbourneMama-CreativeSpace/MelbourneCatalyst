@@ -82,7 +82,7 @@ async def test_list_trending_topics_handles_empty_state(db_session):
 
 
 async def test_list_trending_topics_includes_real_id_and_insight_in_text(
-    test_session_factory, db_session, monkeypatch
+    test_session_factory, db_session
 ):
     """Regression test: the id has to be in the text Claude actually
     reads, not just the card data (cards are a UI-only side-channel never
@@ -110,13 +110,47 @@ async def test_list_trending_topics_includes_real_id_and_insight_in_text(
         )
         await session.commit()
 
-    monkeypatch.setattr(tools.settings, "TREND_RECOMMENDATION_MIN_RELEVANCE", 0.0)
-    monkeypatch.setattr(tools.settings, "TREND_RECOMMENDATION_MAX_AGE_DAYS", 3650)
-
     result, cards = await tools.list_trending_topics(db_session)
 
     assert str(trend_id) in result
     assert "This matters because of a real reason." in result
+    assert len(cards) == 1
+
+
+async def test_list_trending_topics_returns_weak_matches_instead_of_hiding_them(
+    test_session_factory, db_session
+):
+    """Regression test for a real bug: this tool used to apply the same
+    strict bar as the dashboard's "genuinely great" recommendation list
+    (min relevance 0.75, discovered within 7 days) — so a niche with real,
+    discovered trends that just weren't a *strong* match read to Claude as
+    having no trend data at all, indistinguishable from trend collection
+    never having run. A weak/old trend should still come back; the
+    relevance score is what tells Claude (and the user) how much to trust
+    it, not a hard cutoff that erases it from the conversation entirely."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.db.models import Trend
+
+    trend_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(
+            Trend(
+                id=trend_id,
+                source="rss",
+                title="A weakly-related, older topic",
+                url="https://example.com/weak-trend",
+                relevance_score=0.12,  # well below the old 0.75 recommendation bar
+                raw_metadata={},
+                discovered_at=datetime.now(timezone.utc) - timedelta(days=30),  # older than 7 days
+            )
+        )
+        await session.commit()
+
+    result, cards = await tools.list_trending_topics(db_session)
+
+    assert str(trend_id) in result
+    assert "0.12" in result
     assert len(cards) == 1
 
 
@@ -751,7 +785,7 @@ async def test_get_youtube_video_analytics_handles_fetch_failure(
 async def _seed_published_item_with_attempt(
     test_session_factory, company_id, *, platform="linkedin", execution_id="urn:li:share:123"
 ):
-    from datetime import date, datetime, timezone
+    from datetime import datetime, timezone
 
     from app.db.models import PublishAttempt
 
