@@ -61,7 +61,7 @@ from app.agents.social_media_analyzer.youtube_upload import (
     fetch_video_analytics,
     get_video_url,
 )
-from app.agents.trend_analyzer.relevance import fetch_scored_trends
+from app.agents.trend_analyzer.relevance import fetch_scored_trends, score_trends_for_niche
 from app.config import settings
 from app.db.models import (
     Campaign,
@@ -158,6 +158,35 @@ TOOL_SCHEMAS = [
                     "description": "Max number of trends to return (default 10).",
                 },
             },
+        },
+    },
+    {
+        "name": "find_trending_topics_for_niche",
+        "description": (
+            "Find trending topics matched against a niche/topic/style description "
+            "instead of an onboarded company — use this for a handle just looked up "
+            "with analyze_social_profile, a niche described manually because that "
+            "lookup couldn't reach it, or any other account/topic with no onboarded "
+            "company behind it yet. list_trending_topics needs a company_id; this "
+            "doesn't — pass whatever you know about the niche (bio, recent-post "
+            "topics, a plain description) as free text and it scores real trends "
+            "against it fresh, same relevance mechanic, just without requiring "
+            "onboarding first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "niche": {
+                    "type": "string",
+                    "description": (
+                        "Free-text description of the niche/topic/style to match trends "
+                        "against — e.g. an account's bio plus what its recent posts are "
+                        "actually about, or a plain description like 'Melbourne indie "
+                        "coffee roaster, sustainability-focused'."
+                    ),
+                },
+            },
+            "required": ["niche"],
         },
     },
     {
@@ -521,6 +550,37 @@ async def list_trending_topics(
         for trend, score in scored
     ]
     text = "Trending topics:\n" + "\n".join(lines)
+    return text, [_trend_card(trend) for trend, _score in scored]
+
+
+async def find_trending_topics_for_niche(session: AsyncSession, *, niche: str) -> tuple[str, list[dict]]:
+    """Trending topics matched against arbitrary free text — a niche/
+    style/topic description, not a company_id — for exactly the case
+    list_trending_topics can't help with: a handle just looked up via
+    analyze_social_profile (or one that lookup couldn't reach, described
+    manually instead), a client being scoped out before onboarding them,
+    or any other niche with no onboarded company behind it yet. Scored
+    fresh via score_trends_for_niche, same relevance mechanic as a
+    company's own niche_keywords, just computed on demand instead of
+    requiring a prior collection run to have scored it for a persisted
+    company."""
+    niche = niche.strip()
+    if not niche:
+        return "Give me a niche or topic description to match trends against.", []
+
+    scored = await score_trends_for_niche(session, niche)
+    if not scored:
+        return (
+            f"No trending topics found for \"{niche}\" — either trend collection hasn't "
+            "run recently, or trend matching isn't configured (no embedding API key).",
+            [],
+        )
+    lines = [
+        f"- {trend.title} (source: {trend.source}, relevance: {score:.2f}, id: {trend.id})"
+        + (f" — {trend.insight}" if trend.insight else "")
+        for trend, score in scored
+    ]
+    text = f'Trending topics matched to "{niche}":\n' + "\n".join(lines)
     return text, [_trend_card(trend) for trend, _score in scored]
 
 
@@ -990,6 +1050,7 @@ async def analyze_social_profile(
 TOOL_IMPLEMENTATIONS = {
     "list_companies": list_companies,
     "list_trending_topics": list_trending_topics,
+    "find_trending_topics_for_niche": find_trending_topics_for_niche,
     "get_company_summary": get_company_summary,
     "search_knowledge_base": search_knowledge_base,
     "save_to_knowledge_base": save_to_knowledge_base,

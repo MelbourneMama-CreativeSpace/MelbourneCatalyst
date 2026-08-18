@@ -13,7 +13,12 @@ from datetime import datetime, timedelta, timezone
 import pytest_asyncio
 
 from app.db.models import Company, CompanyTrendRelevance, Trend
-from app.agents.trend_analyzer.relevance import fetch_scored_trends, get_recommended_trends
+from app.agents.trend_analyzer import relevance as relevance_module
+from app.agents.trend_analyzer.relevance import (
+    fetch_scored_trends,
+    get_recommended_trends,
+    score_trends_for_niche,
+)
 
 
 def _trend(title: str, *, global_score: float | None, age_days: int = 0) -> Trend:
@@ -151,3 +156,80 @@ async def test_trends_with_no_score_at_all_are_excluded_from_the_global_path(db_
 
     rows = await fetch_scored_trends(db_session, company, limit=10)
     assert [t.title for t, _ in rows] == ["Scored"]
+
+
+# --- score_trends_for_niche: on-demand, no company required ---------------
+
+
+async def test_score_trends_for_niche_ranks_by_similarity_to_free_text(monkeypatch, db_session):
+    """A handle's niche described as free text (e.g. from
+    analyze_social_profile, with no company onboarded for it) still gets
+    a real, differentiated ranking — not just whatever order trends
+    happen to be in."""
+
+    async def _fake_embed(texts: list[str]) -> list[list[float]]:
+        # niche text and "Cycling gear" both embed to [1, 0] (exact
+        # match); "Knitting patterns" embeds to [0, 1] (orthogonal, no
+        # match at all).
+        vectors = {"an indie cycling gear brand": [1.0, 0.0], "Cycling gear": [1.0, 0.0]}
+        return [vectors.get(t, [0.0, 1.0]) for t in texts]
+
+    monkeypatch.setattr(relevance_module, "embed_documents", _fake_embed)
+    db_session.add_all(
+        [_trend("Cycling gear", global_score=None), _trend("Knitting patterns", global_score=None)]
+    )
+    await db_session.commit()
+
+    scored = await score_trends_for_niche(db_session, "an indie cycling gear brand")
+
+    assert [t.title for t, _ in scored] == ["Cycling gear", "Knitting patterns"]
+    assert scored[0][1] == 1.0  # cosine 1.0 -> normalized (1+1)/2
+    assert scored[1][1] == 0.5  # cosine 0.0 (orthogonal) -> normalized 0.5
+
+
+async def test_score_trends_for_niche_excludes_trends_older_than_the_window(
+    monkeypatch, db_session
+):
+    async def _fake_embed(texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(relevance_module, "embed_documents", _fake_embed)
+    db_session.add_all(
+        [
+            _trend("Fresh", global_score=None, age_days=1),
+            _trend("Stale", global_score=None, age_days=30),
+        ]
+    )
+    await db_session.commit()
+
+    scored = await score_trends_for_niche(db_session, "anything", max_age_days=14)
+
+    assert [t.title for t, _ in scored] == ["Fresh"]
+
+
+async def test_score_trends_for_niche_returns_empty_without_any_trends(db_session):
+    assert await score_trends_for_niche(db_session, "a brand new niche") == []
+
+
+async def test_score_trends_for_niche_returns_empty_on_embedding_failure(monkeypatch, db_session):
+    async def _failed_embed(texts: list[str]) -> list[None]:
+        return [None for _ in texts]
+
+    monkeypatch.setattr(relevance_module, "embed_documents", _failed_embed)
+    db_session.add(_trend("Some trend", global_score=None))
+    await db_session.commit()
+
+    assert await score_trends_for_niche(db_session, "a niche") == []
+
+
+async def test_score_trends_for_niche_respects_limit(monkeypatch, db_session):
+    async def _fake_embed(texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(relevance_module, "embed_documents", _fake_embed)
+    db_session.add_all([_trend(f"Trend {i}", global_score=None) for i in range(5)])
+    await db_session.commit()
+
+    scored = await score_trends_for_niche(db_session, "anything", limit=2)
+
+    assert len(scored) == 2

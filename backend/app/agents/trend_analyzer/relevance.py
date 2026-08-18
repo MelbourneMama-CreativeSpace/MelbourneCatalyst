@@ -31,6 +31,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.knowledge_base.embeddings import embed_documents
+from app.agents.trend_analyzer.graph import _cosine_similarity
 from app.config import settings
 from app.db.models import CompanyTrendRelevance, Trend
 
@@ -108,6 +110,59 @@ async def fetch_scored_trends(
     # relevance_score is non-null by the filter above; the `or 0.0` is for
     # type-checkers, not a real case.
     return [(trend, trend.relevance_score or 0.0) for trend in trends]
+
+
+async def score_trends_for_niche(
+    session: AsyncSession,
+    niche: str,
+    *,
+    limit: int = 10,
+    max_age_days: int = 14,
+) -> list[ScoredTrend]:
+    """On-demand relevance scoring against free text, computed fresh —
+    same embedding-cosine-similarity mechanic `_score_relevance_node`
+    already uses for an onboarded company's `niche_keywords` (see
+    `graph.py`), just run at query time against arbitrary text instead
+    of requiring a persisted `Company` row (and a prior collection run
+    to have scored it) first. A handle just looked up via
+    `analyze_social_profile`, or a niche the user typed out in chat, is
+    real context worth matching trends against even with no company
+    onboarded for it yet.
+
+    Bounded to the last `max_age_days` (default 14 — this environment's
+    entire trend pool is currently within that window) rather than the
+    whole historical table, so one chat-time call embeds at most a few
+    hundred trend titles, not everything ever collected. Returns []
+    on an embedding failure (no API key, transient error) — same
+    graceful-degradation contract as every other embedding-backed path,
+    never a 500 for a missing/expired key.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    trends = (
+        await session.execute(
+            select(Trend)
+            .where(Trend.discovered_at >= cutoff)
+            .order_by(Trend.discovered_at.desc())
+        )
+    ).scalars().all()
+    if not trends:
+        return []
+
+    embeddings = await embed_documents([niche] + [t.title for t in trends])
+    niche_embedding, trend_embeddings = embeddings[0], embeddings[1:]
+    if niche_embedding is None:
+        return []
+
+    # Same [-1, 1] -> [0, 1] normalization as _score_relevance_node/
+    # _score_relevance_per_company, so a score here reads on the same
+    # scale as every other relevance number this app shows.
+    scored = [
+        (trend, (_cosine_similarity(niche_embedding, emb) + 1.0) / 2.0)
+        for trend, emb in zip(trends, trend_embeddings)
+        if emb is not None
+    ]
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return scored[:limit]
 
 
 async def get_recommended_trends(

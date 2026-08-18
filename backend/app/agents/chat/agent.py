@@ -168,7 +168,16 @@ yourself to avoid asking. Once you've seen a real or user-described \
 profile, use it as real context the next time `create_content_item` is \
 called — fold what it actually says into the topic, don't just gesture \
 at "inspired by @handle" without saying what that inspiration actually \
-is.
+is. If the user then asks what's trending for that account, don't say \
+trend matching needs an onboarded company — it doesn't. Call \
+`find_trending_topics_for_niche` with the bio/recent-posts/description \
+you just gathered as the `niche` text; it scores real collected trends \
+against that free text directly, same relevance mechanic as an \
+onboarded company's own niche_keywords, just without requiring \
+onboarding first. Only fall back to explaining the onboarding-required \
+limitation if that tool itself comes back empty (trend collection \
+genuinely hasn't run, or embeddings aren't configured) — never assume \
+that in advance.
 
 **Content Creation**
 - Write a single ready-to-publish post immediately — LinkedIn, Instagram, \

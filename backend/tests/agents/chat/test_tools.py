@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from sqlalchemy import select
 
@@ -153,6 +154,54 @@ async def test_list_trending_topics_returns_weak_matches_instead_of_hiding_them(
 
     assert str(trend_id) in result
     assert "0.12" in result
+    assert len(cards) == 1
+
+
+# --- find_trending_topics_for_niche: no company_id required ---------------
+
+
+async def test_find_trending_topics_for_niche_rejects_empty_niche(db_session):
+    result, cards = await tools.find_trending_topics_for_niche(db_session, niche="   ")
+
+    assert "Give me a niche" in result
+    assert cards == []
+
+
+async def test_find_trending_topics_for_niche_handles_empty_state(monkeypatch, db_session):
+    monkeypatch.setattr(tools, "score_trends_for_niche", AsyncMock(return_value=[]))
+
+    result, cards = await tools.find_trending_topics_for_niche(
+        db_session, niche="an indie cycling gear brand"
+    )
+
+    assert "No trending topics found" in result
+    assert "an indie cycling gear brand" in result
+    assert cards == []
+
+
+async def test_find_trending_topics_for_niche_includes_real_id_and_score(monkeypatch, db_session):
+    from datetime import datetime, timezone
+
+    from app.db.models import Trend
+
+    trend = Trend(
+        id=uuid.uuid4(),
+        source="rss",
+        title="A real matching trend",
+        insight="Why it matters.",
+        url="https://example.com/trend",
+        raw_metadata={},
+        discovered_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(tools, "score_trends_for_niche", AsyncMock(return_value=[(trend, 0.81)]))
+
+    result, cards = await tools.find_trending_topics_for_niche(
+        db_session, niche="an indie cycling gear brand"
+    )
+
+    assert str(trend.id) in result
+    assert "0.81" in result
+    assert "Why it matters." in result
     assert len(cards) == 1
 
 
