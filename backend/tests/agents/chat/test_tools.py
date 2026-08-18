@@ -1008,6 +1008,10 @@ async def test_analyze_social_profile_rejects_unsupported_platforms(db_session):
         )
         assert "isn't possible" in result
         assert platform in result
+        # A dead end isn't good enough — this must point toward the
+        # manual-description fallback every time, not just explain why
+        # automated lookup failed.
+        assert "Tell me what this account posts about" in result
 
 
 async def test_analyze_social_profile_requires_a_connected_account(
@@ -1020,6 +1024,7 @@ async def test_analyze_social_profile_requires_a_connected_account(
     )
 
     assert "doesn't have a connected twitter account" in result
+    assert "Tell me what this account posts about" in result
 
 
 async def test_analyze_social_profile_reports_not_found(
@@ -1048,6 +1053,7 @@ async def test_analyze_social_profile_reports_not_found(
     )
 
     assert "Couldn't find" in result
+    assert "Tell me what this account posts about" in result
 
 
 async def test_analyze_social_profile_formats_a_found_profile(

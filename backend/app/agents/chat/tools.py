@@ -375,8 +375,13 @@ TOOL_SCHEMAS = [
             "instagram, linkedin, and tiktok's own APIs only allow querying an "
             "account you already manage, not any public one by username, "
             "confirmed live against each platform's real capability. Calling this "
-            "for one of those three returns a clear explanation, never fabricated "
-            "profile data — say that plainly rather than inventing a bio or niche."
+            "for one of those three (or any lookup that fails — no connection, "
+            "account not found) returns a clear explanation AND a prompt to ask "
+            "the user for a manual description instead — a person's own words "
+            "about what an account posts about are a completely valid substitute "
+            "for a fetched profile, and create_content_item's topic already "
+            "accepts free-form context like that directly. Never fabricate a bio, "
+            "niche, or posts to fill the gap yourself."
         ),
         "input_schema": {
             "type": "object",
@@ -820,6 +825,18 @@ async def analyze_social_profile(
     can reason about the niche/themes/style directly from the real bio
     and posts, the same way it already does for a company's own
     onboarded profile."""
+    # Every failure path below ends the same way on purpose: the user
+    # still has a real account in mind, they just can't get it looked up
+    # automatically. Asking them to describe it — niche, content style,
+    # what they post about — and using THAT as real context is a genuine
+    # fallback, not a consolation prize; create_content_item already
+    # accepts free-form context in its `topic`, so a manual description
+    # slots in exactly the same way a fetched profile would.
+    _manual_fallback = (
+        " Tell me what this account posts about — its niche, topics, style — "
+        "and I'll use that the same way I'd use a fetched profile."
+    )
+
     if platform not in profile_lookup.SUPPORTED_PLATFORMS:
         return (
             f"Looking up an arbitrary public {platform} profile isn't possible — "
@@ -827,7 +844,7 @@ async def analyze_social_profile(
             "company) actually manage, not any public account by username. This is a "
             "real platform limitation confirmed against its API, not something a code "
             "change can work around. Twitter/X, YouTube, and Facebook (best-effort) do "
-            "support looking up any public account."
+            "support looking up any public account." + _manual_fallback
         )
 
     parsed, error = await _resolve_company_id(session, user, company_id)
@@ -847,13 +864,14 @@ async def analyze_social_profile(
             f"This company doesn't have a connected {platform} account yet. Looking up "
             f"any {platform} profile — even someone else's — has to run through a real "
             f"authenticated connection; connect one from the Integrations page first."
+            + _manual_fallback
         )
 
     profile = await profile_lookup.fetch_public_profile(platform, connection, username)
     if profile is None:
         return (
             f"Couldn't find a {platform} profile for '{username}' — double-check the "
-            "spelling, or the account may not be public."
+            "spelling, or the account may not be public." + _manual_fallback
         )
 
     lines = [
