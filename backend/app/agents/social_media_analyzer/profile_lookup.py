@@ -35,6 +35,16 @@ A public lookup still runs through a real connected account's Composio
 auth — there's no such thing as an unauthenticated call — so this always
 needs *some* company's own connection for that platform, even though the
 account actually being looked up is someone else's entirely.
+
+Beyond the profile itself, `fetch_recent_posts` pulls a handful of an
+account's actual recent posts/videos — a bio says what an account
+*claims* to be about, real recent posts are what it's actually posting,
+which is a much stronger signal for understanding its real niche/trends.
+Same three platforms, same real-capability verification, same "empty is
+an honest answer, never fabricated" contract. One genuine platform quirk
+worth knowing: Twitter's `TWITTER_RECENT_SEARCH` only covers the last 7
+days — an account with no matches there isn't necessarily inactive, it
+just hasn't posted in that window.
 """
 
 from __future__ import annotations
@@ -191,3 +201,150 @@ async def fetch_public_profile(
     except Exception:
         logger.exception("Profile lookup failed for %s/%r", platform, username)
         return None
+
+
+# --- Recent posts — a real signal for niche/topic/trend understanding, ----
+# not just the bio. Same three supported platforms, same "never fabricate,
+# empty is a valid honest answer" contract.
+
+
+async def fetch_twitter_recent_posts(
+    connection: PlatformConnection, handle: str, *, limit: int = 10
+) -> list[dict]:
+    """Recent Search only covers the last 7 days — a real API limitation,
+    not a bug here. An account that hasn't posted in a week returns an
+    empty list even though it clearly has a real posting history; callers
+    should treat that as "nothing recent," never as "this account posts
+    nothing.\""""
+    client = _client()
+    cleaned = _clean_handle(handle)
+
+    def _execute():
+        return client.tools.execute(
+            "TWITTER_RECENT_SEARCH",
+            connected_account_id=connection.composio_connected_account_id,
+            user_id=str(connection.company_id),
+            arguments={
+                "query": f"from:{cleaned} -is:retweet -is:reply",
+                # API enforces a minimum of 10 regardless of what's asked for.
+                "max_results": max(10, min(limit, 100)),
+                # "text" is already returned by default — requesting it
+                # again is explicitly documented as unnecessary.
+                "tweet_fields": ["created_at", "public_metrics"],
+            },
+        )
+
+    response = await asyncio.to_thread(_execute)
+    data = getattr(response, "data", None) or {}
+    tweets = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(tweets, list):
+        return []
+    posts = []
+    for tweet in tweets[:limit]:
+        if not isinstance(tweet, dict):
+            continue
+        metrics = tweet.get("public_metrics") or {}
+        posts.append(
+            {
+                "text": tweet.get("text"),
+                "created_at": tweet.get("created_at"),
+                "likes": metrics.get("like_count"),
+                "reposts": metrics.get("retweet_count"),
+            }
+        )
+    return posts
+
+
+async def fetch_youtube_recent_videos(
+    connection: PlatformConnection, channel_handle: str, *, limit: int = 10
+) -> list[dict]:
+    client = _client()
+
+    def _execute():
+        return client.tools.execute(
+            "YOUTUBE_LIST_CHANNEL_VIDEOS",
+            connected_account_id=connection.composio_connected_account_id,
+            user_id=str(connection.company_id),
+            # channelId genuinely accepts a handle directly (incl. the
+            # leading '@'), confirmed from the tool's own schema examples
+            # — no separate channel-id resolution call needed here.
+            arguments={"channelId": channel_handle, "maxResults": limit},
+        )
+
+    response = await asyncio.to_thread(_execute)
+    data = getattr(response, "data", None) or {}
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    videos = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        snippet = item.get("snippet") or {}
+        videos.append(
+            {
+                "title": snippet.get("title"),
+                "description": snippet.get("description"),
+                "published_at": snippet.get("publishedAt"),
+            }
+        )
+    return videos
+
+
+async def fetch_facebook_recent_posts(
+    connection: PlatformConnection, page_id: str, *, limit: int = 10
+) -> list[dict]:
+    client = _client()
+    cleaned = _clean_handle(page_id)
+
+    def _execute():
+        return client.tools.execute(
+            "FACEBOOK_GET_PAGE_POSTS",
+            connected_account_id=connection.composio_connected_account_id,
+            user_id=str(connection.company_id),
+            arguments={
+                "page_id": cleaned,
+                "limit": limit,
+                "fields": "id,message,created_time,permalink_url",
+            },
+        )
+
+    response = await asyncio.to_thread(_execute)
+    data = getattr(response, "data", None) or {}
+    posts_raw = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(posts_raw, list):
+        return []
+    posts = []
+    for post in posts_raw[:limit]:
+        if not isinstance(post, dict):
+            continue
+        posts.append(
+            {
+                "text": post.get("message"),
+                "created_at": post.get("created_time"),
+                "url": post.get("permalink_url"),
+            }
+        )
+    return posts
+
+
+_RECENT_POSTS_FETCHER_BY_PLATFORM = {
+    "twitter": fetch_twitter_recent_posts,
+    "youtube": fetch_youtube_recent_videos,
+    "facebook": fetch_facebook_recent_posts,
+}
+
+
+async def fetch_recent_posts(
+    platform: str, connection: PlatformConnection, username: str, *, limit: int = 10
+) -> list[dict]:
+    """Never raises — returns [] on any failure, including a platform
+    outside SUPPORTED_PLATFORMS or an account with nothing recent."""
+    fetcher = _RECENT_POSTS_FETCHER_BY_PLATFORM.get(platform)
+    if fetcher is None:
+        return []
+    try:
+        return await fetcher(connection, username, limit=limit)
+    except Exception:
+        logger.exception("Recent-posts lookup failed for %s/%r", platform, username)
+        return []

@@ -1079,6 +1079,11 @@ async def test_analyze_social_profile_formats_a_found_profile(
 
     monkeypatch.setattr(tools.profile_lookup, "fetch_public_profile", _fake_fetch)
 
+    async def _fake_recent_posts(platform, connection, username):
+        return []
+
+    monkeypatch.setattr(tools.profile_lookup, "fetch_recent_posts", _fake_recent_posts)
+
     result = await tools.analyze_social_profile(
         db_session, user=_USER, company_id=str(company_id), platform="twitter", username="@elonmusk"
     )
@@ -1088,3 +1093,55 @@ async def test_analyze_social_profile_formats_a_found_profile(
     assert "200000000" in result
     assert "Mars, cars, chips that talk to your brain" in result
     assert "https://x.com/elonmusk" in result
+    # No recent posts within X's 7-day search window is a real, honest
+    # possibility — must not be reported as if the account posts nothing.
+    assert "doesn't mean the account is inactive" in result
+
+
+async def test_analyze_social_profile_includes_recent_posts_for_niche_signal(
+    test_session_factory, db_session, monkeypatch
+):
+    """The bio says what an account claims to be about; real recent posts
+    are what it's actually posting — a much stronger niche/trend signal,
+    and the whole point of pulling them in at all."""
+    company_id = await _seed_company(test_session_factory)
+    async with test_session_factory() as session:
+        session.add(
+            PlatformConnection(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                platform="youtube",
+                status="connected",
+                composio_connected_account_id="conn-yt-123",
+            )
+        )
+        await session.commit()
+
+    async def _fake_fetch(platform, connection, username):
+        return {
+            "platform": "youtube",
+            "name": "MrBeast",
+            "handle": "@MrBeast",
+            "bio": "I make videos.",
+            "followers": "300000000",
+            "location": "US",
+            "url": "https://youtube.com/@MrBeast",
+        }
+
+    async def _fake_recent_posts(platform, connection, username):
+        assert username == "@MrBeast"  # the resolved handle, not the raw input
+        return [
+            {"title": "I Gave Away $1,000,000", "description": "...", "published_at": "2026-01-01"},
+            {"title": "Extreme Hide and Seek", "description": "...", "published_at": "2026-01-05"},
+        ]
+
+    monkeypatch.setattr(tools.profile_lookup, "fetch_public_profile", _fake_fetch)
+    monkeypatch.setattr(tools.profile_lookup, "fetch_recent_posts", _fake_recent_posts)
+
+    result = await tools.analyze_social_profile(
+        db_session, user=_USER, company_id=str(company_id), platform="youtube", username="MrBeast"
+    )
+
+    assert "I Gave Away $1,000,000" in result
+    assert "Extreme Hide and Seek" in result
+    assert "ACTUAL niche/topics/style" in result

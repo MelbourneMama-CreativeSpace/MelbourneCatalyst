@@ -228,3 +228,179 @@ async def test_fetch_public_profile_never_raises_on_a_failing_fetcher(monkeypatc
     result = await profile_lookup.fetch_public_profile("twitter", _connection("twitter"), "someone")
 
     assert result is None
+
+
+# --- fetch_twitter_recent_posts -------------------------------------------
+
+
+async def test_fetch_twitter_recent_posts_parses_the_real_response_shape(monkeypatch):
+    calls = []
+
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            calls.append((tool_slug, kwargs))
+            return SimpleNamespace(
+                data={
+                    "data": [
+                        {
+                            "text": "Mars mission update",
+                            "created_at": "2026-01-01T00:00:00Z",
+                            "public_metrics": {"like_count": 100, "retweet_count": 20},
+                        },
+                        {
+                            "text": "New Tesla feature",
+                            "created_at": "2026-01-02T00:00:00Z",
+                            "public_metrics": {"like_count": 50, "retweet_count": 5},
+                        },
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(profile_lookup, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    result = await profile_lookup.fetch_twitter_recent_posts(_connection("twitter"), "@elonmusk")
+
+    assert len(result) == 2
+    assert result[0]["text"] == "Mars mission update"
+    assert result[0]["likes"] == 100
+    assert result[0]["reposts"] == 20
+
+    tool_slug, kwargs = calls[0]
+    assert tool_slug == "TWITTER_RECENT_SEARCH"
+    assert kwargs["arguments"]["query"] == "from:elonmusk -is:retweet -is:reply"
+    # Twitter API enforces a minimum of 10 regardless of what's requested.
+    assert kwargs["arguments"]["max_results"] == 10
+
+
+async def test_fetch_twitter_recent_posts_returns_empty_list_with_no_recent_activity(monkeypatch):
+    """Recent Search only covers the last 7 days — an empty result here is
+    a genuine, honest possibility, not a failure."""
+
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            return SimpleNamespace(data={"meta": {"result_count": 0}})
+
+    monkeypatch.setattr(profile_lookup, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    result = await profile_lookup.fetch_twitter_recent_posts(_connection("twitter"), "quiet_account")
+
+    assert result == []
+
+
+# --- fetch_youtube_recent_videos ------------------------------------------
+
+
+async def test_fetch_youtube_recent_videos_parses_the_real_response_shape(monkeypatch):
+    calls = []
+
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            calls.append((tool_slug, kwargs))
+            return SimpleNamespace(
+                data={
+                    "items": [
+                        {
+                            "snippet": {
+                                "title": "I Gave Away $1,000,000",
+                                "description": "Watch until the end.",
+                                "publishedAt": "2026-01-01T00:00:00Z",
+                            }
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(profile_lookup, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    result = await profile_lookup.fetch_youtube_recent_videos(_connection("youtube"), "@MrBeast")
+
+    assert len(result) == 1
+    assert result[0]["title"] == "I Gave Away $1,000,000"
+
+    tool_slug, kwargs = calls[0]
+    assert tool_slug == "YOUTUBE_LIST_CHANNEL_VIDEOS"
+    # The handle is passed straight through as channelId — confirmed from
+    # the tool's own schema that it accepts a handle directly.
+    assert kwargs["arguments"]["channelId"] == "@MrBeast"
+
+
+async def test_fetch_youtube_recent_videos_returns_empty_list_for_no_uploads(monkeypatch):
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            return SimpleNamespace(data={"items": []})
+
+    monkeypatch.setattr(profile_lookup, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    result = await profile_lookup.fetch_youtube_recent_videos(_connection("youtube"), "@EmptyChannel")
+
+    assert result == []
+
+
+# --- fetch_facebook_recent_posts ------------------------------------------
+
+
+async def test_fetch_facebook_recent_posts_parses_the_real_response_shape(monkeypatch):
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            return SimpleNamespace(
+                data={
+                    "data": [
+                        {
+                            "message": "New shoe drop this Friday.",
+                            "created_time": "2026-01-01T00:00:00Z",
+                            "permalink_url": "https://facebook.com/nike/posts/1",
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(profile_lookup, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    result = await profile_lookup.fetch_facebook_recent_posts(_connection("facebook"), "nike")
+
+    assert len(result) == 1
+    assert result[0]["text"] == "New shoe drop this Friday."
+    assert result[0]["url"] == "https://facebook.com/nike/posts/1"
+
+
+async def test_fetch_facebook_recent_posts_returns_empty_list_without_data(monkeypatch):
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            return SimpleNamespace(data={})
+
+    monkeypatch.setattr(profile_lookup, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    result = await profile_lookup.fetch_facebook_recent_posts(_connection("facebook"), "not_a_real_page")
+
+    assert result == []
+
+
+# --- fetch_recent_posts (dispatcher) --------------------------------------
+
+
+async def test_fetch_recent_posts_dispatches_by_platform(monkeypatch):
+    async def fake_youtube(connection, username, *, limit=10):
+        return [{"title": "fake"}]
+
+    monkeypatch.setitem(profile_lookup._RECENT_POSTS_FETCHER_BY_PLATFORM, "youtube", fake_youtube)
+
+    result = await profile_lookup.fetch_recent_posts("youtube", _connection("youtube"), "someone")
+
+    assert result == [{"title": "fake"}]
+
+
+async def test_fetch_recent_posts_returns_empty_list_for_an_unsupported_platform():
+    result = await profile_lookup.fetch_recent_posts("instagram", _connection("instagram"), "someone")
+
+    assert result == []
+
+
+async def test_fetch_recent_posts_never_raises_on_a_failing_fetcher(monkeypatch):
+    async def fake_broken(connection, username, *, limit=10):
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(profile_lookup._RECENT_POSTS_FETCHER_BY_PLATFORM, "twitter", fake_broken)
+
+    result = await profile_lookup.fetch_recent_posts("twitter", _connection("twitter"), "someone")
+
+    assert result == []

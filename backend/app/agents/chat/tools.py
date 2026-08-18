@@ -362,18 +362,21 @@ TOOL_SCHEMAS = [
         "name": "analyze_social_profile",
         "description": (
             "Look up a PUBLIC social media profile by username/handle — real "
-            "name, bio, follower count — to understand its niche, audience, and "
-            "voice. Use this whenever the user pastes a username or profile URL "
+            "name, bio, follower count, PLUS a handful of the account's actual "
+            "recent posts — to understand its real niche, audience, and voice. "
+            "The recent posts matter more than the bio for this: a bio says what "
+            "an account claims to be about, real posts show what it's actually "
+            "posting. Use this whenever the user pastes a username or profile URL "
             "(with or without @) and wants to understand that account or create "
-            "content inspired by it; read the returned bio yourself to work out "
-            "the niche/themes, then use create_content_item for the actual post "
-            "once asked. Only twitter, youtube, and facebook genuinely support "
-            "looking up an ARBITRARY public account this way — instagram, "
-            "linkedin, and tiktok's own APIs only allow querying an account you "
-            "already manage, not any public one by username, confirmed live "
-            "against each platform's real capability. Calling this for one of "
-            "those three returns a clear explanation, never fabricated profile "
-            "data — say that plainly rather than inventing a bio or niche."
+            "content inspired by it; read the bio AND the recent posts yourself "
+            "to work out the real niche/themes/style, then use create_content_item "
+            "for the actual post once asked. Only twitter, youtube, and facebook "
+            "genuinely support looking up an ARBITRARY public account this way — "
+            "instagram, linkedin, and tiktok's own APIs only allow querying an "
+            "account you already manage, not any public one by username, "
+            "confirmed live against each platform's real capability. Calling this "
+            "for one of those three returns a clear explanation, never fabricated "
+            "profile data — say that plainly rather than inventing a bio or niche."
         ),
         "input_schema": {
             "type": "object",
@@ -807,11 +810,16 @@ async def analyze_social_profile(
 ) -> str:
     """Public-profile lookup by username — see profile_lookup.py's module
     docstring for exactly which platforms genuinely support this and
-    why. Deliberately returns the raw bio/stats as plain text rather than
-    running a separate Claude call to pre-extract a "niche" — the
-    conversational model already reading this tool result can reason
-    about the niche/themes directly from the real bio, the same way it
-    already does for a company's own onboarded profile."""
+    why. Also pulls a handful of the account's actual recent posts: a
+    bio says what an account *claims* to be about, but real recent posts
+    are what it's actually posting, which is a much stronger niche/trend
+    signal — this app's own connected account's auth is what makes that
+    call, same as the profile lookup itself. Deliberately returns raw
+    text rather than running a separate Claude call to pre-extract a
+    "niche" — the conversational model already reading this tool result
+    can reason about the niche/themes/style directly from the real bio
+    and posts, the same way it already does for a company's own
+    onboarded profile."""
     if platform not in profile_lookup.SUPPORTED_PLATFORMS:
         return (
             f"Looking up an arbitrary public {platform} profile isn't possible — "
@@ -860,6 +868,32 @@ async def analyze_social_profile(
         lines.append(f"Bio: {profile['bio']}")
     if profile["url"]:
         lines.append(f"URL: {profile['url']}")
+
+    # The account's own handle (not the raw `username` argument, which
+    # might be a pasted URL or missing a leading '@') is what each
+    # fetcher actually expects.
+    posts = await profile_lookup.fetch_recent_posts(
+        platform, connection, profile["handle"] or username
+    )
+    if posts:
+        lines.append("")
+        lines.append(
+            "Recent posts — read these for the account's ACTUAL niche/topics/style, "
+            "not just what the bio claims:"
+        )
+        for post in posts:
+            text = post.get("text") or post.get("title") or "(no text)"
+            lines.append(f"- {text}")
+    elif platform == "twitter":
+        # Not a real "no content" claim — Recent Search only covers the
+        # last 7 days, a genuine API limitation, not this account having
+        # nothing to show.
+        lines.append("")
+        lines.append(
+            "(No posts in the last 7 days — X's search API only covers that window, "
+            "so this doesn't mean the account is inactive.)"
+        )
+
     return "\n".join(lines)
 
 
