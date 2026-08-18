@@ -101,6 +101,97 @@ async def test_fetch_platform_metrics_propagates_a_real_composio_failure(monkeyp
         await metrics.fetch_platform_metrics(uuid.uuid4(), "linkedin", "conn-123")
 
 
+# --- Facebook/YouTube: real per-platform argument + response handling ----
+#
+# Confirmed live against real connected accounts (see this module's
+# docstring) -- {} arguments 400 on both in practice, and each platform's
+# response nests its numbers differently than the generic top-level-key
+# read the rest of this file already covers.
+
+
+async def test_fetch_platform_metrics_facebook_passes_page_id_and_parses_real_shape(
+    monkeypatch,
+):
+    _configure(
+        monkeypatch,
+        COMPOSIO_FACEBOOK_AUTH_CONFIG_ID="ac_facebook_123",
+        COMPOSIO_FACEBOOK_METRICS_TOOL_SLUG="FACEBOOK_GET_PAGE_INSIGHTS",
+    )
+    captured = {}
+
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            captured["tool_slug"] = tool_slug
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(
+                data={
+                    "data": [
+                        {"name": "page_follows", "values": [{"value": 26627}]},
+                        {"name": "page_media_view", "values": [{"value": 0}]},
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(metrics, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    snapshot = await metrics.fetch_platform_metrics(
+        uuid.uuid4(), "facebook", "conn-fb", "2109922212367336", "company-1"
+    )
+
+    assert captured["tool_slug"] == "FACEBOOK_GET_PAGE_INSIGHTS"
+    assert captured["kwargs"]["arguments"]["page_id"] == "2109922212367336"
+    assert captured["kwargs"]["user_id"] == "company-1"
+    assert snapshot.follower_count == 26627
+    assert snapshot.engagement_rate is None
+
+
+async def test_fetch_platform_metrics_youtube_passes_mine_and_parses_real_shape(monkeypatch):
+    _configure(
+        monkeypatch,
+        COMPOSIO_YOUTUBE_AUTH_CONFIG_ID="ac_youtube_123",
+        COMPOSIO_YOUTUBE_METRICS_TOOL_SLUG="YOUTUBE_GET_CHANNEL_STATISTICS",
+    )
+    captured = {}
+
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(
+                data={
+                    "channels": [
+                        {"statistics": {"subscriberCount": "1", "videoCount": "2", "viewCount": "20"}}
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(metrics, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    snapshot = await metrics.fetch_platform_metrics(uuid.uuid4(), "youtube", "conn-yt")
+
+    assert captured["kwargs"]["arguments"] == {"mine": True}
+    assert snapshot.follower_count == 1
+    assert snapshot.engagement_rate is None
+
+
+async def test_fetch_platform_metrics_facebook_tolerates_a_missing_page_follows_entry(monkeypatch):
+    _configure(
+        monkeypatch,
+        COMPOSIO_FACEBOOK_AUTH_CONFIG_ID="ac_facebook_123",
+        COMPOSIO_FACEBOOK_METRICS_TOOL_SLUG="FACEBOOK_GET_PAGE_INSIGHTS",
+    )
+
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            return SimpleNamespace(data={"data": []})
+
+    monkeypatch.setattr(metrics, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    snapshot = await metrics.fetch_platform_metrics(uuid.uuid4(), "facebook", "conn-fb")
+
+    assert snapshot.follower_count is None
+    assert snapshot.raw_metadata == {"data": []}
+
+
 # --- run_scheduled_metrics_sync (batch job) -------------------------------
 
 
