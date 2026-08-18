@@ -13,9 +13,13 @@ from __future__ import annotations
 import uuid
 from datetime import date
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import httpx
+import respx
 
 from app.agents.chat import agent
-from app.db.models import ContentItem, ContentPlan
+from app.db.models import Company, ContentItem, ContentPlan, Document
 from app.security.auth import CurrentUser
 
 _USER = CurrentUser(id="test-user-id", email="test@example.com")
@@ -460,3 +464,163 @@ async def test_describe_action_uses_company_name_not_raw_id(test_session_factory
 
     assert description == "Create a new content plan for Acme (7 days)"
     assert str(company_id) not in description
+
+
+# --- _auto_ingest_document_attachments ------------------------------------
+#
+# Real bug this fixes: attaching a file in chat only ever uploaded it to
+# storage and dropped a link in the message text — nothing made it
+# searchable, so "use this doc to write this week's posts" silently had
+# no real document behind it (reported live, see the screenshot this was
+# built from).
+
+from sqlalchemy import select as _select  # noqa: E402  (grouped near its one use below)
+
+_ATTACHMENT_URL = "https://test-project.supabase.co/storage/v1/object/public/chat-attachments/report.txt"
+
+
+async def _fake_embed(texts):
+    return [[0.1] * 1024 for _ in texts]
+
+
+async def _seed_company_for_ingest(test_session_factory) -> uuid.UUID:
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url=f"https://example.com/{company_id}", status="complete"))
+        await session.commit()
+    return company_id
+
+
+async def test_auto_ingest_returns_empty_without_a_company(db_session):
+    result = await agent._auto_ingest_document_attachments(
+        db_session, None, "here's the doc [report.txt](https://example.com/report.txt)"
+    )
+
+    assert result == []
+
+
+@respx.mock
+async def test_auto_ingest_extracts_and_persists_a_document_attachment(
+    monkeypatch, test_session_factory
+):
+    from app.agents.knowledge_base import ingestion as ingestion_module
+
+    monkeypatch.setattr(ingestion_module, "embed_documents", _fake_embed)
+    monkeypatch.setattr(agent, "validate_public_url", lambda url: None)
+    respx.get(_ATTACHMENT_URL).mock(
+        return_value=httpx.Response(200, content=b"Q3 revenue grew 40% year over year.")
+    )
+    company_id = await _seed_company_for_ingest(test_session_factory)
+
+    async with test_session_factory() as session:
+        result = await agent._auto_ingest_document_attachments(
+            session,
+            company_id,
+            f"use this docs to write the content [Research Report.txt]({_ATTACHMENT_URL})",
+        )
+        await session.commit()
+
+    assert result == ["Research Report.txt"]
+    async with test_session_factory() as session:
+        rows = (
+            await session.execute(_select(Document).where(Document.company_id == company_id))
+        ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].source_type == "chat_attachment"
+    assert "Q3 revenue grew 40%" in rows[0].content
+
+
+@respx.mock
+async def test_auto_ingest_ignores_image_attachments(monkeypatch, test_session_factory):
+    """`![...]` is an image (see chat-attachments.ts) — must not be
+    treated as a document to extract."""
+    from app.agents.knowledge_base import ingestion as ingestion_module
+
+    monkeypatch.setattr(ingestion_module, "embed_documents", _fake_embed)
+    monkeypatch.setattr(agent, "validate_public_url", lambda url: None)
+    company_id = await _seed_company_for_ingest(test_session_factory)
+
+    async with test_session_factory() as session:
+        result = await agent._auto_ingest_document_attachments(
+            session, company_id, "![photo.png](https://example.com/photo.png)"
+        )
+
+    assert result == []
+
+
+async def test_auto_ingest_ignores_non_document_extensions(test_session_factory):
+    company_id = await _seed_company_for_ingest(test_session_factory)
+
+    async with test_session_factory() as session:
+        result = await agent._auto_ingest_document_attachments(
+            session, company_id, "[video.mp4](https://example.com/video.mp4)"
+        )
+
+    assert result == []
+
+
+@respx.mock
+async def test_auto_ingest_never_raises_on_a_fetch_failure(monkeypatch, test_session_factory):
+    monkeypatch.setattr(agent, "validate_public_url", lambda url: None)
+    respx.get(_ATTACHMENT_URL).mock(return_value=httpx.Response(404))
+    company_id = await _seed_company_for_ingest(test_session_factory)
+
+    async with test_session_factory() as session:
+        result = await agent._auto_ingest_document_attachments(
+            session, company_id, f"[report.txt]({_ATTACHMENT_URL})"
+        )
+
+    assert result == []
+
+
+async def test_auto_ingest_refuses_an_unsafe_url(test_session_factory):
+    """The URL in a chat message is attacker-controllable — must go
+    through the same SSRF guard used before fetching any other
+    user-supplied URL, never fetched unconditionally."""
+    company_id = await _seed_company_for_ingest(test_session_factory)
+
+    async with test_session_factory() as session:
+        result = await agent._auto_ingest_document_attachments(
+            session, company_id, "[report.txt](http://169.254.169.254/latest/meta-data/report.txt)"
+        )
+
+    assert result == []
+
+
+async def test_run_chat_turn_annotates_the_message_when_a_doc_was_ingested(
+    monkeypatch, test_session_factory
+):
+    """The model must actually be told ingestion happened within the same
+    turn — otherwise "use this doc" on the very message that attached it
+    has nothing real to search yet from the model's point of view."""
+    monkeypatch.setattr(agent.settings, "ANTHROPIC_API_KEY", "test-key")
+    company_id = await _seed_company_for_ingest(test_session_factory)
+
+    fake_ingest = AsyncMock(return_value=["Research Report.txt"])
+    monkeypatch.setattr(agent, "_auto_ingest_document_attachments", fake_ingest)
+
+    captured_kwargs = {}
+    text_block = SimpleNamespace(type="text", text="Got it.")
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(stop_reason="end_turn", content=[text_block])
+
+    class _FakeClient:
+        messages = _FakeMessages()
+
+    monkeypatch.setattr(agent, "_client", lambda: _FakeClient())
+
+    async with test_session_factory() as session:
+        await agent.run_chat_turn(
+            [{"role": "user", "content": "use this doc [Research Report.txt](https://x/report.txt)"}],
+            company_id,
+            session,
+            _USER,
+        )
+
+    fake_ingest.assert_awaited_once()
+    sent_messages = captured_kwargs["messages"]
+    assert "automatically added to the knowledge base" in sent_messages[-1]["content"]
+    assert "Research Report.txt" in sent_messages[-1]["content"]

@@ -6,9 +6,11 @@ from __future__ import annotations
 import uuid
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from app.agents.chat import tools
 from app.agents.social_media_analyzer.publish import DeleteNotSupportedError
-from app.db.models import Company, PlatformConnection, YouTubeUploadJob
+from app.db.models import Company, Document, PlatformConnection, YouTubeUploadJob
 from app.security.auth import CurrentUser
 
 _USER = CurrentUser(id="test-user-id", email="test@example.com")
@@ -1151,3 +1153,55 @@ async def test_analyze_social_profile_includes_recent_posts_for_niche_signal(
     assert "I Gave Away $1,000,000" in result
     assert "Extreme Hide and Seek" in result
     assert "ACTUAL niche/topics/style" in result
+
+
+# --- save_to_knowledge_base -------------------------------------------------
+#
+# Real feature request this covers: "conversation is important so it should
+# be added" — a tool the model can call mid-chat to persist a stated
+# requirement/decision/fact, not just an auto-ingested file attachment.
+
+async def _fake_embed(texts):
+    return [[0.1] * 1024 for _ in texts]
+
+
+async def test_save_to_knowledge_base_persists_a_document(monkeypatch, test_session_factory, db_session):
+    from app.agents.knowledge_base import ingestion as ingestion_module
+
+    monkeypatch.setattr(ingestion_module, "embed_documents", _fake_embed)
+    company_id = await _seed_company(test_session_factory)
+
+    result = await tools.save_to_knowledge_base(
+        db_session,
+        user=_USER,
+        company_id=str(company_id),
+        title="Brand voice preference",
+        content="Always write in second person, never use exclamation marks.",
+    )
+
+    assert "Brand voice preference" in result
+    assert "Saved" in result
+    rows = (
+        await db_session.execute(select(Document).where(Document.company_id == company_id))
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].source_type == "chat_insight"
+    assert "second person" in rows[0].content
+
+
+async def test_save_to_knowledge_base_rejects_empty_content(test_session_factory, db_session):
+    company_id = await _seed_company(test_session_factory)
+
+    result = await tools.save_to_knowledge_base(
+        db_session, user=_USER, company_id=str(company_id), title="Empty note", content="   "
+    )
+
+    assert "Nothing to save" in result
+
+
+async def test_save_to_knowledge_base_no_company_available(db_session):
+    result = await tools.save_to_knowledge_base(
+        db_session, user=_USER, company_id=None, title="Note", content="Some real content here."
+    )
+
+    assert "No onboarded company" in result

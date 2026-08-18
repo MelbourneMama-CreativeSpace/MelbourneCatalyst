@@ -45,6 +45,8 @@ from app.agents.content_management.content_plan_graph import (
     run_content_plan_generation,
 )
 from app.agents.knowledge_base.generated_content_indexing import index_on_approval
+from app.agents.knowledge_base.ingestion import ingest_raw_document
+from app.agents.knowledge_base.schemas import RawDocument
 from app.agents.knowledge_base.search import similarity_search
 from app.agents.social_media_analyzer import profile_lookup
 from app.agents.social_media_analyzer.publish import (
@@ -197,6 +199,41 @@ TOOL_SCHEMAS = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "save_to_knowledge_base",
+        "description": (
+            "Save something the user shared in this conversation directly to the "
+            "company's knowledge base — a stated requirement, a decision, a "
+            "brand/style preference, a fact about their business or customers — "
+            "so it's searchable (via search_knowledge_base) and usable as real "
+            "context for every future conversation and piece of content, not just "
+            "remembered for this one turn. Use this when something reads as a "
+            "standing fact worth keeping, not routine back-and-forth — a person "
+            "explaining what their product does, a stated audience/tone "
+            "preference, a real customer quote they typed out, a decision they "
+            "made. Don't use it for small talk or anything already covered by the "
+            "company's own onboarded profile. Always tell the user in your reply "
+            "that you saved it — never do this silently."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "A short, descriptive title for this piece of knowledge.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The actual content to save — the user's own words/facts, not a summary.",
+                },
+                "company_id": {
+                    "type": "string",
+                    "description": "The company's UUID — OPTIONAL, resolved automatically if omitted.",
+                },
+            },
+            "required": ["title", "content"],
         },
     },
     {
@@ -550,6 +587,41 @@ async def search_knowledge_base(
         return "No matching knowledge base content found."
     lines = [f"- ({hit.source_type}, {hit.source_url}): {hit.content[:400]}" for hit in hits]
     return "Knowledge base search results:\n" + "\n".join(lines)
+
+
+async def save_to_knowledge_base(
+    session: AsyncSession,
+    *,
+    user: CurrentUser,
+    company_id: str | None = None,
+    title: str,
+    content: str,
+) -> str:
+    """Saves a real piece of conversational context — a stated
+    requirement, decision, preference, or fact the user shared in chat —
+    straight to the company's knowledge base, exactly like an uploaded
+    document or a manual KB entry would be: chunked, embedded, and
+    searchable via search_knowledge_base for every future conversation
+    and content generation, not just remembered for this one turn. No
+    real-world consequence (nothing external happens, nothing published)
+    so this doesn't need confirmation, same reasoning as
+    create_content_item — but always tell the user it was saved, in
+    plain language, right in the reply; never do this silently."""
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error
+
+    raw = RawDocument(
+        source_type="chat_insight",
+        source_url=f"chat://{uuid.uuid4()}",
+        content=content,
+        raw_metadata={"title": title},
+    )
+    chunks_persisted = await ingest_raw_document(session, parsed, raw)
+    if chunks_persisted == 0:
+        return "Nothing to save — that content was empty."
+    await session.commit()
+    return f'Saved "{title}" to the knowledge base — searchable for future content from now on.'
 
 
 async def get_content_pipeline_status(
@@ -920,6 +992,7 @@ TOOL_IMPLEMENTATIONS = {
     "list_trending_topics": list_trending_topics,
     "get_company_summary": get_company_summary,
     "search_knowledge_base": search_knowledge_base,
+    "save_to_knowledge_base": save_to_knowledge_base,
     "get_content_pipeline_status": get_content_pipeline_status,
     "find_content_items": find_content_items,
     "create_content_item": create_content_item,

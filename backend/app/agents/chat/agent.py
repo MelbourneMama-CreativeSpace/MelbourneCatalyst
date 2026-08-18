@@ -11,11 +11,14 @@ a bounded loop — the one genuinely new architectural pattern here.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
+import re
 import uuid
 from collections.abc import AsyncGenerator
 
+import httpx
 from anthropic import AsyncAnthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,8 +29,15 @@ from app.agents.chat.tools import (
     WRITE_TOOL_SCHEMAS,
     _content_item_card,
 )
+from app.agents.knowledge_base.file_extraction import (
+    UnsupportedFileTypeError,
+    extract_text_from_upload,
+)
+from app.agents.knowledge_base.ingestion import ingest_raw_document
+from app.agents.knowledge_base.schemas import RawDocument
 from app.config import settings
 from app.db.models import Company, ContentItem, ContentPlan
+from app.security import UnsafeUrlError, validate_public_url
 from app.security.auth import CurrentUser
 
 logger = logging.getLogger(__name__)
@@ -98,6 +108,19 @@ first.
 voice, summary, and strategic context (`get_company_summary`).
 - Search the company's knowledge base: website content, uploaded \
 documents, historical approved content (`search_knowledge_base`).
+- A document attached in chat (PDF/DOCX/TXT/MD) is added to the \
+knowledge base automatically the moment it's sent — you don't need to do \
+anything for that to happen, and by the time you're reading the message \
+it's already searchable via `search_knowledge_base`. When it was, the \
+message you're replying to carries a system note saying so; trust that \
+note over assuming a fresh attachment needs a manual step, and actually \
+search it rather than describing the doc from its filename alone. \
+Separately, when the user shares something in plain conversation worth \
+remembering beyond this one turn — a stated requirement, a decision, a \
+brand/tone preference, a real customer quote — save it with \
+`save_to_knowledge_base` and say plainly in your reply that you did; \
+never save something silently, and never use this for routine back-and- \
+forth that isn't actually a standing fact.
 
 **Content Pipeline & Status**
 - Check the current pipeline: strategies, content plans, campaigns, and \
@@ -496,6 +519,75 @@ async def _preview_card_for_write_tool(
     return [_content_item_card(item, content_plan.company_id, card_context=card_context)]
 
 
+# Non-image markdown attachment syntax — `[filename](url)`, distinct from
+# an image's `![filename](url)` (see chat.py's own `upload_chat_attachment`
+# and the frontend's `chat-attachments.ts`, which is the actual source of
+# truth for this exact syntax).
+_DOCUMENT_ATTACHMENT_PATTERN = re.compile(r"(?<!!)\[([^\]]+)\]\((https?://[^\s)]+)\)")
+_INGESTIBLE_EXTENSIONS = (".pdf", ".docx", ".txt", ".md")
+_ATTACHMENT_FETCH_TIMEOUT_SECONDS = 30.0
+
+
+async def _auto_ingest_document_attachments(
+    session: AsyncSession, company_id: uuid.UUID | None, content: str
+) -> list[str]:
+    """A document attached in chat (PDF/DOCX/TXT/MD) is added to the
+    company's knowledge base automatically — the same extraction/chunking/
+    embedding `documents/upload` already does, just triggered by pasting
+    the file in a message instead of a separate trip to Content Studio.
+    Real bug this fixes: attaching a file in chat only ever uploaded it to
+    storage and dropped a link in the message — nothing made it
+    searchable, so "use this doc to write this week's posts" silently had
+    no real document behind it.
+
+    No company means no knowledge base to add to — returns [] immediately
+    rather than guessing which company the attachment belongs to. Never
+    raises: a fetch/extraction failure for one attachment is logged and
+    skipped, never blocks the actual chat turn or the other attachments.
+    Returns the filenames actually ingested, so the caller can tell the
+    model about it within the same turn instead of a search silently
+    finding nothing extra."""
+    if company_id is None:
+        return []
+
+    ingested: list[str] = []
+    for match in _DOCUMENT_ATTACHMENT_PATTERN.finditer(content):
+        filename, url = match.group(1), match.group(2)
+        if not filename.lower().endswith(_INGESTIBLE_EXTENSIONS):
+            continue
+        try:
+            # SSRF defense — this URL is attacker-controllable (it's
+            # whatever text the user's own message contains), same check
+            # already used before fetching a user-supplied URL elsewhere
+            # (youtube_upload.py's attached-video fetch).
+            await asyncio.to_thread(validate_public_url, url)
+            async with httpx.AsyncClient(
+                timeout=_ATTACHMENT_FETCH_TIMEOUT_SECONDS, follow_redirects=True
+            ) as http_client:
+                response = await http_client.get(url)
+                response.raise_for_status()
+            text = await asyncio.to_thread(extract_text_from_upload, filename, response.content)
+            raw = RawDocument(
+                source_type="chat_attachment",
+                source_url=url,
+                content=text,
+                raw_metadata={"filename": filename},
+            )
+            chunks_persisted = await ingest_raw_document(session, company_id, raw)
+            if chunks_persisted > 0:
+                await session.commit()
+                ingested.append(filename)
+        except UnsafeUrlError:
+            logger.warning("Refused to fetch unsafe attachment URL for auto-ingestion: %r", url)
+        except UnsupportedFileTypeError:
+            # Extension looked ingestible but the real content didn't
+            # parse as one — not every possibility is worth a log spam.
+            pass
+        except Exception:
+            logger.exception("Auto-ingestion failed for chat attachment %r", filename)
+    return ingested
+
+
 async def run_chat_turn(
     conversation_history: list[dict],
     company_id: uuid.UUID | None,
@@ -517,6 +609,17 @@ async def run_chat_turn(
         return (_NOT_CONFIGURED_MESSAGE, [], False, None, [])
 
     messages = list(conversation_history)
+    if messages and messages[-1].get("role") == "user":
+        ingested = await _auto_ingest_document_attachments(
+            session, company_id, str(messages[-1].get("content", ""))
+        )
+        if ingested:
+            messages[-1] = {
+                **messages[-1],
+                "content": str(messages[-1]["content"])
+                + "\n\n[System: automatically added to the knowledge base and already "
+                f"searchable via search_knowledge_base: {', '.join(ingested)}.]",
+            }
     tools_used: list[str] = []
     cards: list[dict] = []
     try:
@@ -636,6 +739,17 @@ async def run_chat_turn_stream(
         return
 
     messages = list(conversation_history)
+    if messages and messages[-1].get("role") == "user":
+        ingested = await _auto_ingest_document_attachments(
+            session, company_id, str(messages[-1].get("content", ""))
+        )
+        if ingested:
+            messages[-1] = {
+                **messages[-1],
+                "content": str(messages[-1]["content"])
+                + "\n\n[System: automatically added to the knowledge base and already "
+                f"searchable via search_knowledge_base: {', '.join(ingested)}.]",
+            }
     tools_used: list[str] = []
     cards: list[dict] = []
 
