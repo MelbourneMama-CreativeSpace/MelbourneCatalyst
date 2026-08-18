@@ -6,9 +6,11 @@ from __future__ import annotations
 import uuid
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from app.agents.chat import tools
 from app.agents.social_media_analyzer.publish import DeleteNotSupportedError
-from app.db.models import Company, PlatformConnection, YouTubeUploadJob
+from app.db.models import Company, Document, PlatformConnection, YouTubeUploadJob
 from app.security.auth import CurrentUser
 
 _USER = CurrentUser(id="test-user-id", email="test@example.com")
@@ -992,3 +994,214 @@ async def test_upload_youtube_video_tool_reports_immediate_success_with_a_real_l
     )
 
     assert "https://www.youtube.com/watch?v=6OnF6SGB8k8" in result
+
+
+# --- analyze_social_profile -----------------------------------------------
+
+
+async def test_analyze_social_profile_rejects_unsupported_platforms(db_session):
+    """Instagram/LinkedIn/TikTok genuinely can't look up an arbitrary
+    public account (confirmed live against each platform's real API,
+    see profile_lookup.py) — this must say so plainly, never fabricate
+    a bio to fill the gap."""
+    for platform in ("instagram", "linkedin", "tiktok"):
+        result = await tools.analyze_social_profile(
+            db_session, user=_USER, platform=platform, username="someone"
+        )
+        assert "isn't possible" in result
+        assert platform in result
+        # A dead end isn't good enough — this must point toward the
+        # manual-description fallback every time, not just explain why
+        # automated lookup failed.
+        assert "Tell me what this account posts about" in result
+
+
+async def test_analyze_social_profile_requires_a_connected_account(
+    test_session_factory, db_session
+):
+    company_id = await _seed_company(test_session_factory)
+
+    result = await tools.analyze_social_profile(
+        db_session, user=_USER, company_id=str(company_id), platform="twitter", username="elonmusk"
+    )
+
+    assert "doesn't have a connected twitter account" in result
+    assert "Tell me what this account posts about" in result
+
+
+async def test_analyze_social_profile_reports_not_found(
+    test_session_factory, db_session, monkeypatch
+):
+    company_id = await _seed_company(test_session_factory)
+    async with test_session_factory() as session:
+        session.add(
+            PlatformConnection(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                platform="twitter",
+                status="connected",
+                composio_connected_account_id="conn-tw-123",
+            )
+        )
+        await session.commit()
+
+    async def _fake_fetch(platform, connection, username):
+        return None
+
+    monkeypatch.setattr(tools.profile_lookup, "fetch_public_profile", _fake_fetch)
+
+    result = await tools.analyze_social_profile(
+        db_session, user=_USER, company_id=str(company_id), platform="twitter", username="nobody_real"
+    )
+
+    assert "Couldn't find" in result
+    assert "Tell me what this account posts about" in result
+
+
+async def test_analyze_social_profile_formats_a_found_profile(
+    test_session_factory, db_session, monkeypatch
+):
+    company_id = await _seed_company(test_session_factory)
+    async with test_session_factory() as session:
+        session.add(
+            PlatformConnection(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                platform="twitter",
+                status="connected",
+                composio_connected_account_id="conn-tw-123",
+            )
+        )
+        await session.commit()
+
+    async def _fake_fetch(platform, connection, username):
+        return {
+            "platform": "twitter",
+            "name": "Elon Musk",
+            "handle": "elonmusk",
+            "bio": "Mars, cars, chips that talk to your brain",
+            "followers": 200000000,
+            "location": "Austin, TX",
+            "url": "https://x.com/elonmusk",
+        }
+
+    monkeypatch.setattr(tools.profile_lookup, "fetch_public_profile", _fake_fetch)
+
+    async def _fake_recent_posts(platform, connection, username):
+        return []
+
+    monkeypatch.setattr(tools.profile_lookup, "fetch_recent_posts", _fake_recent_posts)
+
+    result = await tools.analyze_social_profile(
+        db_session, user=_USER, company_id=str(company_id), platform="twitter", username="@elonmusk"
+    )
+
+    assert "Elon Musk" in result
+    assert "@elonmusk" in result
+    assert "200000000" in result
+    assert "Mars, cars, chips that talk to your brain" in result
+    assert "https://x.com/elonmusk" in result
+    # No recent posts within X's 7-day search window is a real, honest
+    # possibility — must not be reported as if the account posts nothing.
+    assert "doesn't mean the account is inactive" in result
+
+
+async def test_analyze_social_profile_includes_recent_posts_for_niche_signal(
+    test_session_factory, db_session, monkeypatch
+):
+    """The bio says what an account claims to be about; real recent posts
+    are what it's actually posting — a much stronger niche/trend signal,
+    and the whole point of pulling them in at all."""
+    company_id = await _seed_company(test_session_factory)
+    async with test_session_factory() as session:
+        session.add(
+            PlatformConnection(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                platform="youtube",
+                status="connected",
+                composio_connected_account_id="conn-yt-123",
+            )
+        )
+        await session.commit()
+
+    async def _fake_fetch(platform, connection, username):
+        return {
+            "platform": "youtube",
+            "name": "MrBeast",
+            "handle": "@MrBeast",
+            "bio": "I make videos.",
+            "followers": "300000000",
+            "location": "US",
+            "url": "https://youtube.com/@MrBeast",
+        }
+
+    async def _fake_recent_posts(platform, connection, username):
+        assert username == "@MrBeast"  # the resolved handle, not the raw input
+        return [
+            {"title": "I Gave Away $1,000,000", "description": "...", "published_at": "2026-01-01"},
+            {"title": "Extreme Hide and Seek", "description": "...", "published_at": "2026-01-05"},
+        ]
+
+    monkeypatch.setattr(tools.profile_lookup, "fetch_public_profile", _fake_fetch)
+    monkeypatch.setattr(tools.profile_lookup, "fetch_recent_posts", _fake_recent_posts)
+
+    result = await tools.analyze_social_profile(
+        db_session, user=_USER, company_id=str(company_id), platform="youtube", username="MrBeast"
+    )
+
+    assert "I Gave Away $1,000,000" in result
+    assert "Extreme Hide and Seek" in result
+    assert "ACTUAL niche/topics/style" in result
+
+
+# --- save_to_knowledge_base -------------------------------------------------
+#
+# Real feature request this covers: "conversation is important so it should
+# be added" — a tool the model can call mid-chat to persist a stated
+# requirement/decision/fact, not just an auto-ingested file attachment.
+
+async def _fake_embed(texts):
+    return [[0.1] * 1024 for _ in texts]
+
+
+async def test_save_to_knowledge_base_persists_a_document(monkeypatch, test_session_factory, db_session):
+    from app.agents.knowledge_base import ingestion as ingestion_module
+
+    monkeypatch.setattr(ingestion_module, "embed_documents", _fake_embed)
+    company_id = await _seed_company(test_session_factory)
+
+    result = await tools.save_to_knowledge_base(
+        db_session,
+        user=_USER,
+        company_id=str(company_id),
+        title="Brand voice preference",
+        content="Always write in second person, never use exclamation marks.",
+    )
+
+    assert "Brand voice preference" in result
+    assert "Saved" in result
+    rows = (
+        await db_session.execute(select(Document).where(Document.company_id == company_id))
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].source_type == "chat_insight"
+    assert "second person" in rows[0].content
+
+
+async def test_save_to_knowledge_base_rejects_empty_content(test_session_factory, db_session):
+    company_id = await _seed_company(test_session_factory)
+
+    result = await tools.save_to_knowledge_base(
+        db_session, user=_USER, company_id=str(company_id), title="Empty note", content="   "
+    )
+
+    assert "Nothing to save" in result
+
+
+async def test_save_to_knowledge_base_no_company_available(db_session):
+    result = await tools.save_to_knowledge_base(
+        db_session, user=_USER, company_id=None, title="Note", content="Some real content here."
+    )
+
+    assert "No onboarded company" in result

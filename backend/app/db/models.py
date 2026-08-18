@@ -29,8 +29,13 @@ _MetadataType = JSON().with_variant(JSONB(), "postgresql")
 # Postgres ARRAY(String) for niche_keywords; JSON list on SQLite for tests.
 _StringArrayType = JSON().with_variant(ARRAY(String()), "postgresql")
 
-# Voyage voyage-3-lite embedding dimensionality.
-EMBEDDING_DIM = 1024
+# Voyage voyage-3-lite embedding dimensionality -- confirmed live against
+# the real Voyage API, not assumed: voyage-3-lite only ever produces 512
+# dimensions and explicitly rejects output_dimension=1024 ("accepted
+# values for 'voyage-3-lite' are [512]"). Was wrongly 1024 before,
+# which meant every real (non-null) embedding insert raised at commit
+# time -- see migration 0036 for the fix and how it was discovered.
+EMBEDDING_DIM = 512
 # Vector column on Postgres via pgvector; JSON list on SQLite so the ORM
 # still loads/saves it (semantic-search queries are Postgres-only anyway).
 _EmbeddingType = JSON().with_variant(Vector(EMBEDDING_DIM), "postgresql")

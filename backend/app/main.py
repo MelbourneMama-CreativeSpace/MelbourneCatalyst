@@ -3,6 +3,7 @@
 import hmac
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -42,6 +43,13 @@ async def lifespan(_app: FastAPI):
         id="kb_reindex",
         coalesce=True,
         max_instances=1,
+        # Same reasoning as scheduled_post_metrics_sync below — a 24h
+        # interval is the highest-risk of all these jobs for never
+        # accumulating enough continuous uptime on Render's free tier.
+        # Confirmed live: the knowledge base's own website-crawl documents
+        # still show their original ingest timestamps with no evidence of
+        # a successful re-index since.
+        next_run_time=datetime.now(timezone.utc),
     )
     scheduler.add_job(
         run_scheduled_daily_reports,
@@ -50,6 +58,7 @@ async def lifespan(_app: FastAPI):
         id="trend_daily_reports",
         coalesce=True,
         max_instances=1,
+        next_run_time=datetime.now(timezone.utc),
     )
     scheduler.add_job(
         run_scheduled_publishing,
@@ -66,6 +75,10 @@ async def lifespan(_app: FastAPI):
         id="scheduled_metrics_sync",
         coalesce=True,
         max_instances=1,
+        # Confirmed live: platform_metric_snapshots had zero rows ever,
+        # same "never accumulates a full interval of uptime" root cause
+        # as scheduled_post_metrics_sync below.
+        next_run_time=datetime.now(timezone.utc),
     )
     scheduler.add_job(
         run_scheduled_youtube_uploads,
@@ -82,6 +95,17 @@ async def lifespan(_app: FastAPI):
         id="scheduled_post_metrics_sync",
         coalesce=True,
         max_instances=1,
+        # A plain "interval" trigger's default first run is `now +
+        # interval`, not immediately — confirmed live in production: 0
+        # rows ever synced across a full day on Render's free tier, which
+        # spins the process down on inactivity and on every redeploy,
+        # resetting this in-memory timer before it ever accumulates a
+        # full interval of continuous uptime. Firing once immediately on
+        # every startup (still governed by max_instances=1/coalesce, so
+        # a fast redeploy loop can't stack overlapping runs) means the
+        # Analysis page has real numbers shortly after a post goes out
+        # instead of depending on the process staying up for hours.
+        next_run_time=datetime.now(timezone.utc),
     )
     scheduler.start()
     logger.info("Trend collection scheduled every %s hour(s)", settings.TREND_COLLECTION_INTERVAL_HOURS)

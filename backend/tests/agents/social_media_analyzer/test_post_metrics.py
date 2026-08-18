@@ -79,24 +79,31 @@ async def test_fetch_facebook_post_metrics_falls_back_to_plain_likes_without_rea
 
 
 async def test_fetch_instagram_post_metrics_parses_the_real_insights_list_shape(monkeypatch):
-    """Confirmed against INSTAGRAM_GET_POST_INSIGHTS's real output
-    schema — a list of {name, values: [{value}]} objects, the standard
-    Graph API Insights shape, not a flat dict."""
+    """Confirmed live against a real INSTAGRAM_GET_POST_INSIGHTS call —
+    `response.data` is a *dict* wrapping the list under its own "data"
+    key (`{"data": [{name, values: [{value}]}, ...]}`), not a bare list
+    at the top level. That mismatch (this test previously mocked a bare
+    list, matching the code's wrong assumption instead of reality) was
+    the real production bug: every real insight got silently discarded
+    as `None`/0, indistinguishable from genuinely-zero engagement,
+    without ever raising."""
     calls = []
 
     class _FakeTools:
         def execute(self, tool_slug, **kwargs):
             calls.append((tool_slug, kwargs))
             if kwargs["arguments"]["metric"] == "views":
-                return SimpleNamespace(data=[{"name": "views", "values": [{"value": 500}]}])
+                return SimpleNamespace(data={"data": [{"name": "views", "values": [{"value": 500}]}]})
             return SimpleNamespace(
-                data=[
-                    {"name": "reach", "values": [{"value": 1000}]},
-                    {"name": "likes", "values": [{"value": 50}]},
-                    {"name": "comments", "values": [{"value": 5}]},
-                    {"name": "saved", "values": [{"value": 12}]},
-                    {"name": "shares", "values": [{"value": 3}]},
-                ]
+                data={
+                    "data": [
+                        {"name": "reach", "values": [{"value": 1000}]},
+                        {"name": "likes", "values": [{"value": 50}]},
+                        {"name": "comments", "values": [{"value": 5}]},
+                        {"name": "saved", "values": [{"value": 12}]},
+                        {"name": "shares", "values": [{"value": 3}]},
+                    ]
+                }
             )
 
     monkeypatch.setattr(post_metrics, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
@@ -112,6 +119,24 @@ async def test_fetch_instagram_post_metrics_parses_the_real_insights_list_shape(
     assert calls[0][1]["arguments"]["ig_post_id"] == "media-1"
 
 
+async def test_fetch_instagram_post_metrics_also_tolerates_a_bare_list_shape(monkeypatch):
+    """Defensive fallback only — a bare list isn't what a real call
+    returns today (confirmed above), but _extract_insight_items still
+    accepts it in case a future Composio version reverts the shape."""
+
+    class _FakeTools:
+        def execute(self, tool_slug, **kwargs):
+            if kwargs["arguments"]["metric"] == "views":
+                return SimpleNamespace(data=[])
+            return SimpleNamespace(data=[{"name": "likes", "values": [{"value": 9}]}])
+
+    monkeypatch.setattr(post_metrics, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
+
+    result = await post_metrics.fetch_instagram_post_metrics(_connection("instagram"), "media-1")
+
+    assert result["likes"] == 9
+
+
 async def test_fetch_instagram_post_metrics_tolerates_views_being_unsupported(monkeypatch):
     """Not every media type supports "views" (e.g. a plain image) — a
     400 on that specific call shouldn't take down the whole fetch."""
@@ -120,7 +145,7 @@ async def test_fetch_instagram_post_metrics_tolerates_views_being_unsupported(mo
         def execute(self, tool_slug, **kwargs):
             if kwargs["arguments"]["metric"] == "views":
                 raise RuntimeError("Composio: 400 unsupported metric for media type")
-            return SimpleNamespace(data=[{"name": "likes", "values": [{"value": 20}]}])
+            return SimpleNamespace(data={"data": [{"name": "likes", "values": [{"value": 20}]}]})
 
     monkeypatch.setattr(post_metrics, "_client", lambda: SimpleNamespace(tools=_FakeTools()))
 

@@ -45,7 +45,10 @@ from app.agents.content_management.content_plan_graph import (
     run_content_plan_generation,
 )
 from app.agents.knowledge_base.generated_content_indexing import index_on_approval
+from app.agents.knowledge_base.ingestion import ingest_raw_document
+from app.agents.knowledge_base.schemas import RawDocument
 from app.agents.knowledge_base.search import similarity_search
+from app.agents.social_media_analyzer import profile_lookup
 from app.agents.social_media_analyzer.publish import (
     DeleteNotSupportedError,
     delete_post,
@@ -196,6 +199,41 @@ TOOL_SCHEMAS = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "save_to_knowledge_base",
+        "description": (
+            "Save something the user shared in this conversation directly to the "
+            "company's knowledge base — a stated requirement, a decision, a "
+            "brand/style preference, a fact about their business or customers — "
+            "so it's searchable (via search_knowledge_base) and usable as real "
+            "context for every future conversation and piece of content, not just "
+            "remembered for this one turn. Use this when something reads as a "
+            "standing fact worth keeping, not routine back-and-forth — a person "
+            "explaining what their product does, a stated audience/tone "
+            "preference, a real customer quote they typed out, a decision they "
+            "made. Don't use it for small talk or anything already covered by the "
+            "company's own onboarded profile. Always tell the user in your reply "
+            "that you saved it — never do this silently."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "A short, descriptive title for this piece of knowledge.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The actual content to save — the user's own words/facts, not a summary.",
+                },
+                "company_id": {
+                    "type": "string",
+                    "description": "The company's UUID — OPTIONAL, resolved automatically if omitted.",
+                },
+            },
+            "required": ["title", "content"],
         },
     },
     {
@@ -357,6 +395,58 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "name": "analyze_social_profile",
+        "description": (
+            "Look up a PUBLIC social media profile by username/handle — real "
+            "name, bio, follower count, PLUS a handful of the account's actual "
+            "recent posts — to understand its real niche, audience, and voice. "
+            "The recent posts matter more than the bio for this: a bio says what "
+            "an account claims to be about, real posts show what it's actually "
+            "posting. Use this whenever the user pastes a username or profile URL "
+            "(with or without @) and wants to understand that account or create "
+            "content inspired by it; read the bio AND the recent posts yourself "
+            "to work out the real niche/themes/style, then use create_content_item "
+            "for the actual post once asked. Only twitter, youtube, and facebook "
+            "genuinely support looking up an ARBITRARY public account this way — "
+            "instagram, linkedin, and tiktok's own APIs only allow querying an "
+            "account you already manage, not any public one by username, "
+            "confirmed live against each platform's real capability. Calling this "
+            "for one of those three (or any lookup that fails — no connection, "
+            "account not found) returns a clear explanation AND a prompt to ask "
+            "the user for a manual description instead — a person's own words "
+            "about what an account posts about are a completely valid substitute "
+            "for a fetched profile, and create_content_item's topic already "
+            "accepts free-form context like that directly. Never fabricate a bio, "
+            "niche, or posts to fill the gap yourself."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "platform": {
+                    "type": "string",
+                    "enum": ["twitter", "youtube", "facebook", "instagram", "linkedin", "tiktok"],
+                    "description": "Which platform the username/handle belongs to.",
+                },
+                "username": {
+                    "type": "string",
+                    "description": (
+                        "The handle/username (with or without @) or a full profile URL, "
+                        "exactly as pasted."
+                    ),
+                },
+                "company_id": {
+                    "type": "string",
+                    "description": (
+                        "The company's UUID — OPTIONAL, resolved automatically if omitted. "
+                        "Needed because even a public lookup runs through that company's own "
+                        "connected account for the platform."
+                    ),
+                },
+            },
+            "required": ["platform", "username"],
+        },
+    },
 ]
 
 
@@ -497,6 +587,41 @@ async def search_knowledge_base(
         return "No matching knowledge base content found."
     lines = [f"- ({hit.source_type}, {hit.source_url}): {hit.content[:400]}" for hit in hits]
     return "Knowledge base search results:\n" + "\n".join(lines)
+
+
+async def save_to_knowledge_base(
+    session: AsyncSession,
+    *,
+    user: CurrentUser,
+    company_id: str | None = None,
+    title: str,
+    content: str,
+) -> str:
+    """Saves a real piece of conversational context — a stated
+    requirement, decision, preference, or fact the user shared in chat —
+    straight to the company's knowledge base, exactly like an uploaded
+    document or a manual KB entry would be: chunked, embedded, and
+    searchable via search_knowledge_base for every future conversation
+    and content generation, not just remembered for this one turn. No
+    real-world consequence (nothing external happens, nothing published)
+    so this doesn't need confirmation, same reasoning as
+    create_content_item — but always tell the user it was saved, in
+    plain language, right in the reply; never do this silently."""
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error
+
+    raw = RawDocument(
+        source_type="chat_insight",
+        source_url=f"chat://{uuid.uuid4()}",
+        content=content,
+        raw_metadata={"title": title},
+    )
+    chunks_persisted = await ingest_raw_document(session, parsed, raw)
+    if chunks_persisted == 0:
+        return "Nothing to save — that content was empty."
+    await session.commit()
+    return f'Saved "{title}" to the knowledge base — searchable for future content from now on.'
 
 
 async def get_content_pipeline_status(
@@ -752,15 +877,127 @@ async def get_youtube_video_analytics(
     )
 
 
+async def analyze_social_profile(
+    session: AsyncSession,
+    *,
+    user: CurrentUser,
+    company_id: str | None = None,
+    platform: str,
+    username: str,
+) -> str:
+    """Public-profile lookup by username — see profile_lookup.py's module
+    docstring for exactly which platforms genuinely support this and
+    why. Also pulls a handful of the account's actual recent posts: a
+    bio says what an account *claims* to be about, but real recent posts
+    are what it's actually posting, which is a much stronger niche/trend
+    signal — this app's own connected account's auth is what makes that
+    call, same as the profile lookup itself. Deliberately returns raw
+    text rather than running a separate Claude call to pre-extract a
+    "niche" — the conversational model already reading this tool result
+    can reason about the niche/themes/style directly from the real bio
+    and posts, the same way it already does for a company's own
+    onboarded profile."""
+    # Every failure path below ends the same way on purpose: the user
+    # still has a real account in mind, they just can't get it looked up
+    # automatically. Asking them to describe it — niche, content style,
+    # what they post about — and using THAT as real context is a genuine
+    # fallback, not a consolation prize; create_content_item already
+    # accepts free-form context in its `topic`, so a manual description
+    # slots in exactly the same way a fetched profile would.
+    _manual_fallback = (
+        " Tell me what this account posts about — its niche, topics, style — "
+        "and I'll use that the same way I'd use a fetched profile."
+    )
+
+    if platform not in profile_lookup.SUPPORTED_PLATFORMS:
+        return (
+            f"Looking up an arbitrary public {platform} profile isn't possible — "
+            f"{platform}'s own API only allows querying an account you (or a connected "
+            "company) actually manage, not any public account by username. This is a "
+            "real platform limitation confirmed against its API, not something a code "
+            "change can work around. Twitter/X, YouTube, and Facebook (best-effort) do "
+            "support looking up any public account." + _manual_fallback
+        )
+
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error
+
+    connection = (
+        await session.execute(
+            select(PlatformConnection).where(
+                PlatformConnection.company_id == parsed,
+                PlatformConnection.platform == platform,
+            )
+        )
+    ).scalar_one_or_none()
+    if connection is None or connection.composio_connected_account_id is None:
+        return (
+            f"This company doesn't have a connected {platform} account yet. Looking up "
+            f"any {platform} profile — even someone else's — has to run through a real "
+            f"authenticated connection; connect one from the Integrations page first."
+            + _manual_fallback
+        )
+
+    profile = await profile_lookup.fetch_public_profile(platform, connection, username)
+    if profile is None:
+        return (
+            f"Couldn't find a {platform} profile for '{username}' — double-check the "
+            "spelling, or the account may not be public." + _manual_fallback
+        )
+
+    lines = [
+        f"{profile['platform'].title()} profile: {profile['name'] or profile['handle']} "
+        f"(@{profile['handle']})" if profile["handle"] else f"{profile['platform'].title()} profile: {profile['name']}"
+    ]
+    if profile["followers"] is not None:
+        lines.append(f"Followers: {profile['followers']}")
+    if profile["location"]:
+        lines.append(f"Location: {profile['location']}")
+    if profile["bio"]:
+        lines.append(f"Bio: {profile['bio']}")
+    if profile["url"]:
+        lines.append(f"URL: {profile['url']}")
+
+    # The account's own handle (not the raw `username` argument, which
+    # might be a pasted URL or missing a leading '@') is what each
+    # fetcher actually expects.
+    posts = await profile_lookup.fetch_recent_posts(
+        platform, connection, profile["handle"] or username
+    )
+    if posts:
+        lines.append("")
+        lines.append(
+            "Recent posts — read these for the account's ACTUAL niche/topics/style, "
+            "not just what the bio claims:"
+        )
+        for post in posts:
+            text = post.get("text") or post.get("title") or "(no text)"
+            lines.append(f"- {text}")
+    elif platform == "twitter":
+        # Not a real "no content" claim — Recent Search only covers the
+        # last 7 days, a genuine API limitation, not this account having
+        # nothing to show.
+        lines.append("")
+        lines.append(
+            "(No posts in the last 7 days — X's search API only covers that window, "
+            "so this doesn't mean the account is inactive.)"
+        )
+
+    return "\n".join(lines)
+
+
 TOOL_IMPLEMENTATIONS = {
     "list_companies": list_companies,
     "list_trending_topics": list_trending_topics,
     "get_company_summary": get_company_summary,
     "search_knowledge_base": search_knowledge_base,
+    "save_to_knowledge_base": save_to_knowledge_base,
     "get_content_pipeline_status": get_content_pipeline_status,
     "find_content_items": find_content_items,
     "create_content_item": create_content_item,
     "get_youtube_video_analytics": get_youtube_video_analytics,
+    "analyze_social_profile": analyze_social_profile,
 }
 
 

@@ -93,6 +93,22 @@ async def fetch_facebook_post_metrics(connection: PlatformConnection, post_id: s
     }
 
 
+def _extract_insight_items(data: object) -> list[dict]:
+    """`response.data` for INSTAGRAM_GET_POST_INSIGHTS is genuinely a dict
+    wrapping the list under its own "data" key (`{"data": [...]}`),
+    confirmed live against a real call — not a bare list at the top
+    level as this used to assume. That mismatch silently discarded every
+    real insight (every field defaulted to `None`/0, indistinguishable
+    from genuinely-zero engagement) without ever raising, since the old
+    code just fell through to `[]` for anything that wasn't a list.
+    Still accepts a bare list too, in case a future Composio version
+    changes shape back."""
+    if isinstance(data, dict):
+        nested = data.get("data")
+        return nested if isinstance(nested, list) else []
+    return data if isinstance(data, list) else []
+
+
 async def fetch_instagram_post_metrics(connection: PlatformConnection, media_id: str) -> dict:
     client = _client()
 
@@ -120,8 +136,7 @@ async def fetch_instagram_post_metrics(connection: PlatformConnection, media_id:
         )
 
     response = await asyncio.to_thread(_execute)
-    data = getattr(response, "data", None)
-    items = data if isinstance(data, list) else []
+    items = _extract_insight_items(getattr(response, "data", None))
     values = {
         item.get("name"): (item.get("values") or [{}])[0].get("value")
         for item in items
@@ -131,8 +146,7 @@ async def fetch_instagram_post_metrics(connection: PlatformConnection, media_id:
     views = None
     try:
         views_response = await asyncio.to_thread(_execute_views)
-        views_data = getattr(views_response, "data", None)
-        views_items = views_data if isinstance(views_data, list) else []
+        views_items = _extract_insight_items(getattr(views_response, "data", None))
         if views_items and isinstance(views_items[0], dict):
             views = (views_items[0].get("values") or [{}])[0].get("value")
     except Exception:

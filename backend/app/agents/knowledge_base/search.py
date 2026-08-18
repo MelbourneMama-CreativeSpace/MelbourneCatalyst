@@ -12,12 +12,13 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import ColumnElement, select
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import ColumnElement, select, type_coerce
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.knowledge_base.embeddings import embed_query
 from app.agents.knowledge_base.schemas import SearchHit
-from app.db.models import Document
+from app.db.models import EMBEDDING_DIM, Document
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,20 @@ async def similarity_search(
     if query_embedding is None:
         return []
 
-    distance = Document.embedding.cosine_distance(query_embedding)
+    # Document.embedding is declared JSON().with_variant(Vector(...),
+    # "postgresql") so SQLite (tests) can still load/store it -- but
+    # with_variant only swaps the type used for DDL/bind/result
+    # processing per-dialect, never which comparator class governs a
+    # Python-side query expression like `.cosine_distance(...)`. The
+    # mapped attribute's comparator is fixed to the base JSON type at
+    # class-definition time regardless of dialect, so calling
+    # cosine_distance directly on Document.embedding always raised
+    # AttributeError on real Postgres -- confirmed live, this is what
+    # made every semantic search silently fail. type_coerce re-types
+    # just this expression to Vector (no SQL-level CAST emitted) so its
+    # comparator -- and cosine_distance -- becomes available, without
+    # touching the column's actual declared/stored type.
+    distance = type_coerce(Document.embedding, Vector(EMBEDDING_DIM)).cosine_distance(query_embedding)
     stmt = select(Document, distance.label("distance")).where(Document.embedding.is_not(None))
     if company_id is not None:
         stmt = stmt.where(Document.company_id == company_id)
