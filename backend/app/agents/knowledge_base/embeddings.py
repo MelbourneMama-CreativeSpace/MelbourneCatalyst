@@ -17,7 +17,8 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# voyage-3-lite: 32k context, 1024-dim default (matches EMBEDDING_DIM in models).
+# voyage-3-lite: 32k context, 512-dim only (confirmed live -- it rejects
+# any other output_dimension; matches EMBEDDING_DIM in models.py).
 _BATCH_SIZE = 128
 
 
