@@ -46,6 +46,7 @@ from app.agents.content_management.content_plan_graph import (
 )
 from app.agents.knowledge_base.generated_content_indexing import index_on_approval
 from app.agents.knowledge_base.search import similarity_search
+from app.agents.social_media_analyzer import profile_lookup
 from app.agents.social_media_analyzer.publish import (
     DeleteNotSupportedError,
     delete_post,
@@ -355,6 +356,50 @@ TOOL_SCHEMAS = [
                     "description": "Substring to match against the video's uploaded title (optional).",
                 },
             },
+        },
+    },
+    {
+        "name": "analyze_social_profile",
+        "description": (
+            "Look up a PUBLIC social media profile by username/handle — real "
+            "name, bio, follower count — to understand its niche, audience, and "
+            "voice. Use this whenever the user pastes a username or profile URL "
+            "(with or without @) and wants to understand that account or create "
+            "content inspired by it; read the returned bio yourself to work out "
+            "the niche/themes, then use create_content_item for the actual post "
+            "once asked. Only twitter, youtube, and facebook genuinely support "
+            "looking up an ARBITRARY public account this way — instagram, "
+            "linkedin, and tiktok's own APIs only allow querying an account you "
+            "already manage, not any public one by username, confirmed live "
+            "against each platform's real capability. Calling this for one of "
+            "those three returns a clear explanation, never fabricated profile "
+            "data — say that plainly rather than inventing a bio or niche."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "platform": {
+                    "type": "string",
+                    "enum": ["twitter", "youtube", "facebook", "instagram", "linkedin", "tiktok"],
+                    "description": "Which platform the username/handle belongs to.",
+                },
+                "username": {
+                    "type": "string",
+                    "description": (
+                        "The handle/username (with or without @) or a full profile URL, "
+                        "exactly as pasted."
+                    ),
+                },
+                "company_id": {
+                    "type": "string",
+                    "description": (
+                        "The company's UUID — OPTIONAL, resolved automatically if omitted. "
+                        "Needed because even a public lookup runs through that company's own "
+                        "connected account for the platform."
+                    ),
+                },
+            },
+            "required": ["platform", "username"],
         },
     },
 ]
@@ -752,6 +797,72 @@ async def get_youtube_video_analytics(
     )
 
 
+async def analyze_social_profile(
+    session: AsyncSession,
+    *,
+    user: CurrentUser,
+    company_id: str | None = None,
+    platform: str,
+    username: str,
+) -> str:
+    """Public-profile lookup by username — see profile_lookup.py's module
+    docstring for exactly which platforms genuinely support this and
+    why. Deliberately returns the raw bio/stats as plain text rather than
+    running a separate Claude call to pre-extract a "niche" — the
+    conversational model already reading this tool result can reason
+    about the niche/themes directly from the real bio, the same way it
+    already does for a company's own onboarded profile."""
+    if platform not in profile_lookup.SUPPORTED_PLATFORMS:
+        return (
+            f"Looking up an arbitrary public {platform} profile isn't possible — "
+            f"{platform}'s own API only allows querying an account you (or a connected "
+            "company) actually manage, not any public account by username. This is a "
+            "real platform limitation confirmed against its API, not something a code "
+            "change can work around. Twitter/X, YouTube, and Facebook (best-effort) do "
+            "support looking up any public account."
+        )
+
+    parsed, error = await _resolve_company_id(session, user, company_id)
+    if error:
+        return error
+
+    connection = (
+        await session.execute(
+            select(PlatformConnection).where(
+                PlatformConnection.company_id == parsed,
+                PlatformConnection.platform == platform,
+            )
+        )
+    ).scalar_one_or_none()
+    if connection is None or connection.composio_connected_account_id is None:
+        return (
+            f"This company doesn't have a connected {platform} account yet. Looking up "
+            f"any {platform} profile — even someone else's — has to run through a real "
+            f"authenticated connection; connect one from the Integrations page first."
+        )
+
+    profile = await profile_lookup.fetch_public_profile(platform, connection, username)
+    if profile is None:
+        return (
+            f"Couldn't find a {platform} profile for '{username}' — double-check the "
+            "spelling, or the account may not be public."
+        )
+
+    lines = [
+        f"{profile['platform'].title()} profile: {profile['name'] or profile['handle']} "
+        f"(@{profile['handle']})" if profile["handle"] else f"{profile['platform'].title()} profile: {profile['name']}"
+    ]
+    if profile["followers"] is not None:
+        lines.append(f"Followers: {profile['followers']}")
+    if profile["location"]:
+        lines.append(f"Location: {profile['location']}")
+    if profile["bio"]:
+        lines.append(f"Bio: {profile['bio']}")
+    if profile["url"]:
+        lines.append(f"URL: {profile['url']}")
+    return "\n".join(lines)
+
+
 TOOL_IMPLEMENTATIONS = {
     "list_companies": list_companies,
     "list_trending_topics": list_trending_topics,
@@ -761,6 +872,7 @@ TOOL_IMPLEMENTATIONS = {
     "find_content_items": find_content_items,
     "create_content_item": create_content_item,
     "get_youtube_video_analytics": get_youtube_video_analytics,
+    "analyze_social_profile": analyze_social_profile,
 }
 
 

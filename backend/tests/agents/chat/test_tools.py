@@ -992,3 +992,99 @@ async def test_upload_youtube_video_tool_reports_immediate_success_with_a_real_l
     )
 
     assert "https://www.youtube.com/watch?v=6OnF6SGB8k8" in result
+
+
+# --- analyze_social_profile -----------------------------------------------
+
+
+async def test_analyze_social_profile_rejects_unsupported_platforms(db_session):
+    """Instagram/LinkedIn/TikTok genuinely can't look up an arbitrary
+    public account (confirmed live against each platform's real API,
+    see profile_lookup.py) — this must say so plainly, never fabricate
+    a bio to fill the gap."""
+    for platform in ("instagram", "linkedin", "tiktok"):
+        result = await tools.analyze_social_profile(
+            db_session, user=_USER, platform=platform, username="someone"
+        )
+        assert "isn't possible" in result
+        assert platform in result
+
+
+async def test_analyze_social_profile_requires_a_connected_account(
+    test_session_factory, db_session
+):
+    company_id = await _seed_company(test_session_factory)
+
+    result = await tools.analyze_social_profile(
+        db_session, user=_USER, company_id=str(company_id), platform="twitter", username="elonmusk"
+    )
+
+    assert "doesn't have a connected twitter account" in result
+
+
+async def test_analyze_social_profile_reports_not_found(
+    test_session_factory, db_session, monkeypatch
+):
+    company_id = await _seed_company(test_session_factory)
+    async with test_session_factory() as session:
+        session.add(
+            PlatformConnection(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                platform="twitter",
+                status="connected",
+                composio_connected_account_id="conn-tw-123",
+            )
+        )
+        await session.commit()
+
+    async def _fake_fetch(platform, connection, username):
+        return None
+
+    monkeypatch.setattr(tools.profile_lookup, "fetch_public_profile", _fake_fetch)
+
+    result = await tools.analyze_social_profile(
+        db_session, user=_USER, company_id=str(company_id), platform="twitter", username="nobody_real"
+    )
+
+    assert "Couldn't find" in result
+
+
+async def test_analyze_social_profile_formats_a_found_profile(
+    test_session_factory, db_session, monkeypatch
+):
+    company_id = await _seed_company(test_session_factory)
+    async with test_session_factory() as session:
+        session.add(
+            PlatformConnection(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                platform="twitter",
+                status="connected",
+                composio_connected_account_id="conn-tw-123",
+            )
+        )
+        await session.commit()
+
+    async def _fake_fetch(platform, connection, username):
+        return {
+            "platform": "twitter",
+            "name": "Elon Musk",
+            "handle": "elonmusk",
+            "bio": "Mars, cars, chips that talk to your brain",
+            "followers": 200000000,
+            "location": "Austin, TX",
+            "url": "https://x.com/elonmusk",
+        }
+
+    monkeypatch.setattr(tools.profile_lookup, "fetch_public_profile", _fake_fetch)
+
+    result = await tools.analyze_social_profile(
+        db_session, user=_USER, company_id=str(company_id), platform="twitter", username="@elonmusk"
+    )
+
+    assert "Elon Musk" in result
+    assert "@elonmusk" in result
+    assert "200000000" in result
+    assert "Mars, cars, chips that talk to your brain" in result
+    assert "https://x.com/elonmusk" in result
