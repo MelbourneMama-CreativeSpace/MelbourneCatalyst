@@ -130,7 +130,19 @@ async def lifespan(_app: FastAPI):
         settings.POST_METRICS_SYNC_INTERVAL_MINUTES,
     )
     yield
-    scheduler.shutdown(wait=False)
+    # wait=True (APScheduler's own default — this used to explicitly
+    # override it to False, no rationale on record) matters as much as
+    # the dispose() below: confirmed live on Render, the exact same
+    # "RuntimeError: greenlet is being finalized" crash kept recurring
+    # even after dispose() was added, because wait=False lets shutdown
+    # proceed while a job is still mid-execution. That job's own DB
+    # session/connection is then still checked out — not pooled, so
+    # dispose() can't touch it — and gets garbage-collected outside any
+    # event loop shortly after, hitting the same crash from a different
+    # connection. Waiting here gives an in-flight job's own `async with
+    # session:` block a chance to actually finish and return its
+    # connection to the pool first.
+    scheduler.shutdown(wait=True)
     # Without this, pooled asyncpg connections are only ever closed by the
     # garbage collector, which runs after the event loop that could await
     # their real async close() is already gone — surfaces in production

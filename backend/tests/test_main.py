@@ -26,3 +26,20 @@ async def test_lifespan_disposes_the_db_engine_on_shutdown(monkeypatch):
         fake_dispose.assert_not_awaited()  # not yet — only on the way out
 
     fake_dispose.assert_awaited_once()
+
+
+async def test_lifespan_shutdown_waits_for_in_flight_jobs_before_disposing(monkeypatch):
+    """Real bug, confirmed live on Render: the greenlet-finalization crash
+    kept recurring even after engine.dispose() was added, because
+    scheduler.shutdown(wait=False) let shutdown proceed while a job was
+    still mid-execution — that job's own DB connection was still checked
+    out (not pooled), so dispose() couldn't reach it. wait=True must be
+    passed, and must happen before dispose()."""
+    monkeypatch.setattr(type(main_module.engine), "dispose", AsyncMock())
+    calls = []
+    monkeypatch.setattr(main_module.scheduler, "shutdown", lambda wait: calls.append(wait))
+
+    async with main_module.lifespan(None):
+        pass
+
+    assert calls == [True]
