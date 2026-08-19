@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _MODEL = "claude-sonnet-5"
 _MAX_CONTEXT_CHARS = 100_000
 
-_CONTENT_TYPES = ["post", "video", "article", "carousel", "story", "newsletter", "podcast"]
+_CONTENT_TYPES = ["post", "video", "reel", "article", "carousel", "story", "newsletter", "podcast"]
 _PLATFORMS = ["instagram", "linkedin", "twitter", "tiktok", "youtube", "blog", "facebook", "threads"]
 
 # Fixed-date (non-movable) commercial/awareness dates worth planning content

@@ -263,6 +263,40 @@ async def test_create_content_item_with_explicit_company_id(
     assert cards[0]["card_context"] == "preview"
 
 
+async def test_create_content_item_accepts_reel_as_a_content_type(
+    test_session_factory, db_session, monkeypatch
+):
+    """Regression test: "reel" is a real, distinct format a user can ask
+    for explicitly (e.g. "just give me a reel idea, not podcast") — it
+    used to be missing from both the chat tool's own enum and the
+    generator's _CONTENT_TYPES, so it could never actually reach a
+    ContentItem no matter how clearly the user asked for one."""
+    company_id = await _seed_company(test_session_factory)
+    captured = {}
+
+    async def _fake_create_manual_item(company_id, topic, platform, content_type, media_url=None, trend_id=None):
+        captured["content_type"] = content_type
+        item = SimpleNamespace(
+            id=uuid.uuid4(), title="A reel", platform=platform, content_type=content_type,
+            draft_copy="...", hashtags=None, media_url=None, approval_status="pending",
+            scheduled_at=None, published_at=None,
+        )
+        return item, True
+
+    monkeypatch.setattr(tools, "create_manual_item", _fake_create_manual_item)
+
+    text, cards = await tools.create_content_item(
+        db_session,
+        user=_USER,
+        company_id=str(company_id),
+        topic="a fun 15-second idea",
+        content_type="reel",
+    )
+
+    assert captured["content_type"] == "reel"
+    assert "Created" in text
+
+
 async def test_create_content_item_passes_through_a_real_trend_id(
     test_session_factory, db_session, monkeypatch
 ):
