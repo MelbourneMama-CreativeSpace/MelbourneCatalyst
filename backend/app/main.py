@@ -1,5 +1,6 @@
 """MMCS Social Network - FastAPI Application Entry Point."""
 
+import asyncio
 import hmac
 import logging
 from contextlib import asynccontextmanager
@@ -130,19 +131,34 @@ async def lifespan(_app: FastAPI):
         settings.POST_METRICS_SYNC_INTERVAL_MINUTES,
     )
     yield
-    # wait=True (APScheduler's own default — this used to explicitly
-    # override it to False, no rationale on record) matters as much as
-    # the dispose() below: confirmed live on Render, the exact same
-    # "RuntimeError: greenlet is being finalized" crash kept recurring
-    # even after dispose() was added, because wait=False lets shutdown
-    # proceed while a job is still mid-execution. That job's own DB
-    # session/connection is then still checked out — not pooled, so
-    # dispose() can't touch it — and gets garbage-collected outside any
-    # event loop shortly after, hitting the same crash from a different
-    # connection. Waiting here gives an in-flight job's own `async with
-    # session:` block a chance to actually finish and return its
-    # connection to the pool first.
-    scheduler.shutdown(wait=True)
+    # scheduler.shutdown(wait=True) does NOT actually wait for an
+    # in-flight job on AsyncIOScheduler — confirmed by reading the
+    # installed apscheduler source directly, after wait=True alone
+    # turned out not to fix this in production (the exact same crash
+    # kept recurring on Render even after that change shipped).
+    # AsyncIOExecutor.shutdown()'s own comment admits it: "There is no
+    # way to honor wait=True without converting this method into a
+    # coroutine method" — it unconditionally CANCELS every pending job
+    # task regardless of what `wait` was passed. A cancelled job's own
+    # `async with session:` doesn't get a clean chance to return its
+    # connection to the pool, which is what actually produces
+    # "RuntimeError: greenlet is being finalized" — dispose() can't
+    # reach a connection that's still checked out, and it gets
+    # garbage-collected outside any event loop shortly after.
+    #
+    # The real fix has to bypass the library's own (broken) wait
+    # mechanism entirely: reach into the executor's own bookkeeping of
+    # in-flight job futures and genuinely await them ourselves, with a
+    # bounded timeout so one stuck job can't hang shutdown forever.
+    # `_pending_futures`/`_executors` are private APScheduler internals,
+    # not a public API — defensive getattr/dict.get so a future
+    # apscheduler version that removes them just skips this rather than
+    # crashing the shutdown path.
+    executor = getattr(scheduler, "_executors", {}).get("default")
+    pending = getattr(executor, "_pending_futures", None)
+    if pending:
+        await asyncio.wait(pending, timeout=30)
+    scheduler.shutdown(wait=False)  # wait is a no-op for AsyncIOExecutor either way
     # Without this, pooled asyncpg connections are only ever closed by the
     # garbage collector, which runs after the event loop that could await
     # their real async close() is already gone — surfaces in production

@@ -11,6 +11,7 @@ free-tier instance spinning down after inactivity, or a redeploy).
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 from app import main as main_module
@@ -28,18 +29,53 @@ async def test_lifespan_disposes_the_db_engine_on_shutdown(monkeypatch):
     fake_dispose.assert_awaited_once()
 
 
-async def test_lifespan_shutdown_waits_for_in_flight_jobs_before_disposing(monkeypatch):
+async def test_lifespan_shutdown_awaits_a_genuinely_in_flight_job_before_disposing(
+    monkeypatch,
+):
     """Real bug, confirmed live on Render: the greenlet-finalization crash
-    kept recurring even after engine.dispose() was added, because
-    scheduler.shutdown(wait=False) let shutdown proceed while a job was
-    still mid-execution — that job's own DB connection was still checked
-    out (not pooled), so dispose() couldn't reach it. wait=True must be
-    passed, and must happen before dispose()."""
+    kept recurring even after switching to scheduler.shutdown(wait=True),
+    because AsyncIOExecutor.shutdown() cannot actually honor wait=True at
+    all — confirmed by reading the installed apscheduler source directly
+    (its own comment: "There is no way to honor wait=True without
+    converting this method into a coroutine method"). It unconditionally
+    CANCELS every in-flight job task regardless of what `wait` was
+    passed, so a job's own `async with session:` never gets a clean
+    chance to return its connection to the pool.
+
+    The real fix bypasses scheduler.shutdown()'s (broken) wait mechanism
+    entirely and awaits the executor's own pending futures directly —
+    this test proves that with a genuine asyncio task actually injected
+    into the real, module-level scheduler's real executor (not a
+    replacement double for it — this scheduler is a shared singleton
+    other tests in this file also start/stop, and swapping out its real
+    executor for a fake one left it unable to clean up its own job
+    store, breaking every test that ran after it)."""
     monkeypatch.setattr(type(main_module.engine), "dispose", AsyncMock())
-    calls = []
-    monkeypatch.setattr(main_module.scheduler, "shutdown", lambda wait: calls.append(wait))
+
+    completed = False
+
+    async def _slow_job():
+        nonlocal completed
+        await asyncio.sleep(0.05)
+        completed = True
+
+    task_holder: dict = {}
+    real_start = main_module.scheduler.start
+
+    def _start_then_inject(*args, **kwargs):
+        real_start(*args, **kwargs)
+        # Only after start() does the real AsyncIOExecutor exist to
+        # inject into — same object lifespan()'s own shutdown code reads
+        # _pending_futures off of.
+        task_holder["task"] = asyncio.ensure_future(_slow_job())
+        main_module.scheduler._executors["default"]._pending_futures.add(task_holder["task"])
+
+    monkeypatch.setattr(main_module.scheduler, "start", _start_then_inject)
 
     async with main_module.lifespan(None):
         pass
 
-    assert calls == [True]
+    # The real assertion: the job actually ran to completion, not just
+    # that some call happened with some argument.
+    assert completed is True
+    assert task_holder["task"].done() and not task_holder["task"].cancelled()
