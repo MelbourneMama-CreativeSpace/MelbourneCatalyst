@@ -376,8 +376,15 @@ TOOL_SCHEMAS = [
                 },
                 "content_type": {
                     "type": "string",
-                    "enum": ["post", "video", "article", "carousel", "story", "newsletter", "podcast"],
-                    "description": "Infer from what the user said; default to post if genuinely unclear.",
+                    "enum": ["post", "video", "reel", "article", "carousel", "story", "newsletter", "podcast"],
+                    "description": (
+                        "The FORMAT to write in — infer from what the user explicitly said "
+                        "first (\"give me a reel idea\" -> reel, even if the account's usual "
+                        "format is podcast-style). Only fall back to the account's own typical "
+                        "presentation style (from analyze_social_profile's recent posts, or the "
+                        "company's own history) when the user didn't name a format. Default to "
+                        "post if genuinely neither is known."
+                    ),
                 },
                 "trend_id": {
                     "type": "string",

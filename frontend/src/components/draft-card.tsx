@@ -50,6 +50,7 @@ const REPURPOSE_PLATFORMS: Platform[] = [
 const REPURPOSE_CONTENT_TYPES: ContentType[] = [
   "post",
   "video",
+  "reel",
   "article",
   "carousel",
   "story",

@@ -25,6 +25,7 @@ const PLATFORMS: Platform[] = [
 const CONTENT_TYPES: ContentType[] = [
   "post",
   "video",
+  "reel",
   "article",
   "carousel",
   "story",

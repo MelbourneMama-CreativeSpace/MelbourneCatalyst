@@ -191,6 +191,7 @@ export interface StrategyListResponse {
 export type ContentType =
   | "post"
   | "video"
+  | "reel"
   | "article"
   | "carousel"
   | "story"
