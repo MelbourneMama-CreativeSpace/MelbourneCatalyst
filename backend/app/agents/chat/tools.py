@@ -107,6 +107,12 @@ def _content_item_card(
         "scheduled_at": item.scheduled_at.isoformat() if item.scheduled_at else None,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "card_context": card_context,
+        # Non-null means this draft is inspired by / about an external
+        # account (see ContentItem.inspired_by_handle's docstring) — the
+        # frontend shows a distinct badge/warning on it rather than
+        # rendering it as indistinguishable from this company's own
+        # genuine content.
+        "inspired_by_handle": item.inspired_by_handle,
     }
 
 
@@ -348,7 +354,11 @@ TOOL_SCHEMAS = [
             "clarifying question first instead of guessing. Any attached "
             "file appears in the conversation as a markdown link/image; "
             "include it verbatim in `topic`. The result is shown to the "
-            "user as a card with its own Post/Schedule actions."
+            "user as a card with its own Post/Schedule actions. "
+            "IMPORTANT: if this post is inspired by / about an external "
+            "account looked up via analyze_social_profile rather than the "
+            "onboarded company's own content, set `inspired_by_handle` — "
+            "see its own description for why this matters."
         ),
         "input_schema": {
             "type": "object",
@@ -393,6 +403,23 @@ TOOL_SCHEMAS = [
                         "list_trending_topics' own result text, when the user wants "
                         "content built around ONE particular trend. Omit for a regular "
                         "post; ambient trend context is already included either way."
+                    ),
+                },
+                "inspired_by_handle": {
+                    "type": "string",
+                    "description": (
+                        "OPTIONAL, but set it whenever this post is inspired by / about "
+                        "an EXTERNAL account you looked up with analyze_social_profile "
+                        "(a competitor, a reference creator, a not-yet-onboarded client) "
+                        "rather than the onboarded company's own organic content — the "
+                        "handle/username, verbatim (e.g. \"@melbournemamaaus\"). This is "
+                        "NOT optional-and-usually-omitted the way company_id is: omitting "
+                        "it for reference content is the exact bug this field exists to "
+                        "fix — the company's own knowledge base and brand voice used to "
+                        "get silently pulled into content that was actually about someone "
+                        "else's account, and the result was indistinguishable from the "
+                        "company's own genuine content once created. Leave it unset ONLY "
+                        "for the company's own organic content."
                     ),
                 },
             },
@@ -803,6 +830,7 @@ async def create_content_item(
     platform: str | None = None,
     content_type: str | None = None,
     trend_id: str | None = None,
+    inspired_by_handle: str | None = None,
 ) -> tuple[str, list[dict]]:
     if company_id:
         parsed = _parse_uuid(company_id, "company_id")
@@ -849,6 +877,7 @@ async def create_content_item(
     # way, so a bad UUID string here isn't worth refusing the whole post
     # over.
     parsed_trend_id = _parse_uuid(trend_id, "trend_id") if trend_id else None
+    inspired_by_handle = inspired_by_handle.strip() if inspired_by_handle else None
     item, ok = await create_manual_item(
         parsed,
         topic,
@@ -856,6 +885,7 @@ async def create_content_item(
         content_type or "post",
         media_url=media_url,
         trend_id=parsed_trend_id,
+        inspired_by_handle=inspired_by_handle,
     )
     if not ok or item is None:
         return "Content generation failed (check ANTHROPIC_API_KEY / Claude API availability).", []
@@ -867,6 +897,17 @@ async def create_content_item(
         f"Created \"{item.title}\" (id: {item.id}) — a {item.platform} {item.content_type} "
         "draft, ready to review."
     )
+    if inspired_by_handle:
+        # Real bug this guards against: a draft written in a different
+        # account's voice/branding used to be indistinguishable from this
+        # company's own genuine content once persisted — say plainly,
+        # every time, that this one isn't, so nobody one-click-publishes
+        # it under this company's own connected accounts by mistake.
+        text += (
+            f" This is a reference draft inspired by {inspired_by_handle}, not this "
+            "company's own organic content — review and adapt it before publishing "
+            "under this company's own connected accounts."
+        )
     return text, [_content_item_card(item, parsed)]
 
 

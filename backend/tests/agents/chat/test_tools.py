@@ -235,11 +235,13 @@ async def test_create_content_item_with_explicit_company_id(
 
     item_id = uuid.uuid4()
 
-    async def _fake_create_manual_item(company_id, topic, platform, content_type, media_url=None, trend_id=None):
+    async def _fake_create_manual_item(
+        company_id, topic, platform, content_type, media_url=None, trend_id=None, inspired_by_handle=None
+    ):
         item = SimpleNamespace(
             id=item_id, title="A post", platform=platform, content_type=content_type,
             draft_copy="...", hashtags=None, media_url=None, approval_status="pending",
-            scheduled_at=None, published_at=None,
+            scheduled_at=None, published_at=None, inspired_by_handle=None,
         )
         return item, True
 
@@ -274,12 +276,14 @@ async def test_create_content_item_accepts_reel_as_a_content_type(
     company_id = await _seed_company(test_session_factory)
     captured = {}
 
-    async def _fake_create_manual_item(company_id, topic, platform, content_type, media_url=None, trend_id=None):
+    async def _fake_create_manual_item(
+        company_id, topic, platform, content_type, media_url=None, trend_id=None, inspired_by_handle=None
+    ):
         captured["content_type"] = content_type
         item = SimpleNamespace(
             id=uuid.uuid4(), title="A reel", platform=platform, content_type=content_type,
             draft_copy="...", hashtags=None, media_url=None, approval_status="pending",
-            scheduled_at=None, published_at=None,
+            scheduled_at=None, published_at=None, inspired_by_handle=None,
         )
         return item, True
 
@@ -308,12 +312,14 @@ async def test_create_content_item_passes_through_a_real_trend_id(
 
     captured = {}
 
-    async def _fake_create_manual_item(company_id, topic, platform, content_type, media_url=None, trend_id=None):
+    async def _fake_create_manual_item(
+        company_id, topic, platform, content_type, media_url=None, trend_id=None, inspired_by_handle=None
+    ):
         captured["trend_id"] = trend_id
         item = SimpleNamespace(
             id=uuid.uuid4(), title="A post", platform=platform, content_type=content_type,
             draft_copy="...", hashtags=None, media_url=None, approval_status="pending",
-            scheduled_at=None, published_at=None,
+            scheduled_at=None, published_at=None, inspired_by_handle=None,
         )
         return item, True
 
@@ -340,12 +346,14 @@ async def test_create_content_item_ignores_an_invalid_trend_id(
 
     captured = {}
 
-    async def _fake_create_manual_item(company_id, topic, platform, content_type, media_url=None, trend_id=None):
+    async def _fake_create_manual_item(
+        company_id, topic, platform, content_type, media_url=None, trend_id=None, inspired_by_handle=None
+    ):
         captured["trend_id"] = trend_id
         item = SimpleNamespace(
             id=uuid.uuid4(), title="A post", platform=platform, content_type=content_type,
             draft_copy="...", hashtags=None, media_url=None, approval_status="pending",
-            scheduled_at=None, published_at=None,
+            scheduled_at=None, published_at=None, inspired_by_handle=None,
         )
         return item, True
 
@@ -370,12 +378,14 @@ async def test_create_content_item_auto_attaches_an_image_already_in_the_message
 
     captured = {}
 
-    async def _fake_create_manual_item(company_id, topic, platform, content_type, media_url=None, trend_id=None):
+    async def _fake_create_manual_item(
+        company_id, topic, platform, content_type, media_url=None, trend_id=None, inspired_by_handle=None
+    ):
         captured["media_url"] = media_url
         item = SimpleNamespace(
             id=uuid.uuid4(), title="A post", platform=platform, content_type=content_type,
             draft_copy="...", hashtags=None, media_url=media_url, approval_status="pending",
-            scheduled_at=None, published_at=None,
+            scheduled_at=None, published_at=None, inspired_by_handle=None,
         )
         return item, True
 
@@ -399,12 +409,14 @@ async def test_create_content_item_leaves_media_url_unset_without_an_attachment(
 
     captured = {}
 
-    async def _fake_create_manual_item(company_id, topic, platform, content_type, media_url=None, trend_id=None):
+    async def _fake_create_manual_item(
+        company_id, topic, platform, content_type, media_url=None, trend_id=None, inspired_by_handle=None
+    ):
         captured["media_url"] = media_url
         item = SimpleNamespace(
             id=uuid.uuid4(), title="A post", platform=platform, content_type=content_type,
             draft_copy="...", hashtags=None, media_url=media_url, approval_status="pending",
-            scheduled_at=None, published_at=None,
+            scheduled_at=None, published_at=None, inspired_by_handle=None,
         )
         return item, True
 
@@ -424,12 +436,14 @@ async def test_create_content_item_auto_resolves_single_accessible_company(
 
     captured = {}
 
-    async def _fake_create_manual_item(company_id, topic, platform, content_type, media_url=None, trend_id=None):
+    async def _fake_create_manual_item(
+        company_id, topic, platform, content_type, media_url=None, trend_id=None, inspired_by_handle=None
+    ):
         captured["company_id"] = company_id
         item = SimpleNamespace(
             id=uuid.uuid4(), title="A post", platform=platform, content_type=content_type,
             draft_copy="...", hashtags=None, media_url=None, approval_status="pending",
-            scheduled_at=None, published_at=None,
+            scheduled_at=None, published_at=None, inspired_by_handle=None,
         )
         return item, True
 

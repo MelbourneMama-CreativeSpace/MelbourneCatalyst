@@ -100,6 +100,42 @@ def format_context(
     return "\n".join(lines)
 
 
+def format_reference_context(inspired_by_handle: str, trends: list[ScoredTrend]) -> str:
+    """Context for content inspired by / about an *external* account
+    (`inspired_by_handle`) rather than this company's own organic content
+    — deliberately does NOT include format_context's company profile,
+    brand voice, or KB references at all. Real bug this fixes: content
+    generated for "give me a reel idea for @other_handle" used to get
+    this company's own industry/brand-voice/summary and a semantic
+    search over this company's own knowledge base injected as generation
+    context — irrelevant at best (a different account's content has
+    nothing to do with this company's brand voice) and actively
+    misleading at worst (this company's real private KB content bleeding
+    into a draft about someone else's account). The model already has
+    the account's own bio/recent-posts/niche from analyze_social_profile
+    earlier in the conversation — that's the only "profile" this prompt
+    needs, and it's already in the conversation, not repeated here.
+    """
+    lines = [
+        f"# Reference account: {inspired_by_handle}",
+        "This content is inspired by / about the external account above, NOT this "
+        "company's own brand — do not use this company's industry, brand voice, or "
+        "knowledge base (none is included here on purpose). Write in a way consistent "
+        "with what's already been established about this account earlier in the "
+        "conversation (its bio, recent posts, niche, presentation style, tone).",
+    ]
+    lines.append("\n# Currently Relevant Trends")
+    if trends:
+        for trend, score in trends:
+            line = f"- {trend.title} (relevance: {score:.2f})"
+            if trend.insight:
+                line += f" — {trend.insight}"
+            lines.append(line)
+    else:
+        lines.append("None available.")
+    return "\n".join(lines)
+
+
 async def fetch_kb_references(
     session: AsyncSession, company_id: uuid.UUID, query: str, *, k: int = 3
 ) -> list[SearchHit]:
@@ -317,6 +353,7 @@ async def create_manual_item(
     content_type: str,
     media_url: str | None = None,
     trend_id: uuid.UUID | None = None,
+    inspired_by_handle: str | None = None,
 ) -> tuple[ContentItem | None, bool]:
     """Generate one ad-hoc ContentItem from a free-text brief and persist it
     into the company's manual plan — the single-post counterpart to
@@ -342,6 +379,20 @@ async def create_manual_item(
     it — the same linkage `run_content_plan_generation` already gives its
     own trend-inspired items. An unknown/invalid `trend_id` degrades to
     the ambient-only behavior rather than failing the whole generation.
+
+    `inspired_by_handle` marks this item as inspired by / about an
+    *external* account (set whenever the chat agent is drafting
+    something based on an analyze_social_profile lookup, not this
+    company's own organic content) — when set, this company's own
+    profile/brand-voice/KB context is deliberately NOT included (see
+    `format_reference_context`; real bug this fixes: that context used
+    to always get injected regardless, and the resulting item was
+    otherwise indistinguishable from this company's own genuine content
+    once persisted, publishable through this company's own connected
+    accounts as if it were their own) and the ambient company-relevance
+    trend scoring is skipped too (irrelevant to a different account's
+    niche) — an explicit `trend_id` still applies, since that's a
+    specific choice, not company-scoped ambient context.
 
     Returns `(None, False)` if the company doesn't exist, isn't ready, or
     generation itself fails."""
@@ -370,8 +421,16 @@ async def create_manual_item(
             session.add(manual_plan)
             await session.flush()
 
-        trends_with_scores = await fetch_scored_trends(
-            session, company_id, limit=settings.MANUAL_ITEM_MAX_TRENDS
+        # Ambient company-relevance trend scoring only applies to this
+        # company's own content — a different account's niche isn't
+        # scored against this company's niche_keywords, so it's not
+        # meaningful context for inspired_by_handle content. An explicit
+        # trend_id below still applies either way; that's a specific
+        # choice being made, not ambient company-scoped context.
+        trends_with_scores = (
+            []
+            if inspired_by_handle is not None
+            else await fetch_scored_trends(session, company_id, limit=settings.MANUAL_ITEM_MAX_TRENDS)
         )
 
         source_trend: Trend | None = None
@@ -384,8 +443,15 @@ async def create_manual_item(
                     (source_trend, source_trend.relevance_score or 0.0)
                 ] + trends_with_scores
 
-        kb_references = await fetch_kb_references(session, company_id, topic)
-        context = format_context(company, None, trends_with_scores, kb_references)
+        if inspired_by_handle is not None:
+            # Deliberately no fetch_kb_references call here — this
+            # company's own knowledge base has nothing to do with a
+            # different account's content, and searching it anyway is
+            # exactly the bug this whole parameter exists to fix.
+            context = format_reference_context(inspired_by_handle, trends_with_scores)
+        else:
+            kb_references = await fetch_kb_references(session, company_id, topic)
+            context = format_context(company, None, trends_with_scores, kb_references)
 
         effective_topic = topic
         if source_trend is not None:
@@ -413,6 +479,7 @@ async def create_manual_item(
             hashtags=generated.hashtags,
             media_url=media_url,
             source_trend_id=source_trend.id if source_trend is not None else None,
+            inspired_by_handle=inspired_by_handle,
             approval_status="pending",
         )
         session.add(item)

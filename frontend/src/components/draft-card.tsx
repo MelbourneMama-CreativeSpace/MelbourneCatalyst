@@ -242,6 +242,19 @@ export function DraftCard({
           <p className="text-xs text-muted-foreground">
             {item.company_name ?? "Unknown company"} · {item.suggested_date}
           </p>
+          {/* This draft is inspired by / about someone else's account,
+              not this company's own organic content — this is the
+              persistent Content Studio view, reached without ever
+              seeing the original chat's warning, so it needs its own
+              badge, not just the chat card's. */}
+          {item.inspired_by_handle && (
+            <Badge
+              variant="outline"
+              className="mt-1 border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-400"
+            >
+              Inspired by {item.inspired_by_handle}
+            </Badge>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <Badge variant="outline" className="capitalize">
@@ -347,6 +360,17 @@ export function DraftCard({
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
             )}
             <span>{item.quality_check_notes ?? (item.quality_check_passed ? "Looks good." : "Needs work.")}</span>
+          </div>
+        )}
+
+        {item.inspired_by_handle && (
+          <div className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-400">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              Inspired by {item.inspired_by_handle} — not this company&apos;s own content.
+              Publishing sends it under this company&apos;s connected accounts; confirm it&apos;s
+              been adapted first.
+            </span>
           </div>
         )}
 
