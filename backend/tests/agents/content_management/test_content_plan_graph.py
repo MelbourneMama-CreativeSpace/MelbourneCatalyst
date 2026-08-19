@@ -596,3 +596,121 @@ async def test_regenerate_item_draft_copy_leaves_item_unchanged_on_failure(
 
     assert ok is False
     assert item.draft_copy == "Original draft, should survive a failed regeneration."
+
+
+# --- inspired_by_handle: content about an external account -----------------
+#
+# Real bug: "give me a reel idea for @other_handle" used to pull this
+# company's own profile/brand-voice/KB into the generation context and
+# persist the result as indistinguishable from this company's own organic
+# content — publishable through this company's own connected accounts.
+
+
+def test_format_reference_context_excludes_company_profile_entirely():
+    context = graph_module.format_reference_context("@melbournemamaaus", [])
+
+    assert "@melbournemamaaus" in context
+    assert "Company Profile" not in context
+    assert "Brand voice" not in context
+    assert "Industry" not in context
+
+
+async def test_create_manual_item_with_inspired_by_handle_skips_company_kb_and_trends(
+    monkeypatch, test_session_factory
+):
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+    monkeypatch.setattr(graph_module, "generate_content_item_from_input", _stub_generate_content_item)
+
+    kb_calls = []
+
+    async def _spy_fetch_kb_references(session, company_id, query, *, k=3):
+        kb_calls.append(company_id)
+        return []
+
+    monkeypatch.setattr(graph_module, "fetch_kb_references", _spy_fetch_kb_references)
+
+    trend_calls = []
+
+    async def _spy_fetch_scored_trends(session, company_id, *, limit):
+        trend_calls.append(company_id)
+        return []
+
+    monkeypatch.setattr(graph_module, "fetch_scored_trends", _spy_fetch_scored_trends)
+
+    company_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(
+            Company(
+                id=company_id,
+                url="https://example.com",
+                status="complete",
+                name="Mindfries",
+                brand_voice="Confident and technical",
+            )
+        )
+        await session.commit()
+
+    item, ok = await graph_module.create_manual_item(
+        company_id,
+        "a reel idea",
+        "youtube",
+        "reel",
+        inspired_by_handle="@melbournemamaaus",
+    )
+
+    assert ok is True
+    assert item.inspired_by_handle == "@melbournemamaaus"
+    # The real fix: this company's own KB search and ambient trend
+    # scoring must not even be attempted for reference content — not
+    # just "happen to return nothing useful this time".
+    assert kb_calls == []
+    assert trend_calls == []
+
+
+async def test_create_manual_item_with_inspired_by_handle_keeps_explicit_trend_id(
+    monkeypatch, test_session_factory
+):
+    """An explicit trend_id (the user picked a real trend off
+    find_trending_topics_for_niche) is a specific choice, not ambient
+    company-scoped context — it must still apply even when
+    inspired_by_handle skips the ambient company trend scoring."""
+    monkeypatch.setattr(graph_module, "async_session_factory", test_session_factory)
+
+    captured = {}
+
+    async def _capture(context: str, user_input: str, platform: str, content_type: str):
+        captured["context"] = context
+        return await _stub_generate_content_item(context, user_input, platform, content_type)
+
+    monkeypatch.setattr(graph_module, "generate_content_item_from_input", _capture)
+
+    company_id = uuid.uuid4()
+    trend_id = uuid.uuid4()
+    async with test_session_factory() as session:
+        session.add(Company(id=company_id, url="https://example.com", status="complete", name="Acme"))
+        session.add(
+            Trend(
+                id=trend_id,
+                source="rss",
+                title="Creator economy tools trending",
+                url="https://example.com/trend",
+                relevance_score=0.8,
+                raw_metadata={},
+                discovered_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    item, ok = await graph_module.create_manual_item(
+        company_id,
+        "a reel idea",
+        "youtube",
+        "reel",
+        trend_id=trend_id,
+        inspired_by_handle="@melbournemamaaus",
+    )
+
+    assert ok is True
+    assert item.source_trend_id == trend_id
+    assert "Creator economy tools trending" in captured["context"]
+    assert "Company Profile" not in captured["context"]

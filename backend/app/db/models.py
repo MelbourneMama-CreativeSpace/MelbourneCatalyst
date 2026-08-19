@@ -313,6 +313,19 @@ class ContentItem(Base):
     content_type: Mapped[str] = mapped_column(String(32), nullable=False)
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
     theme: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Set when this idea is inspired by / about an external account looked
+    # up via analyze_social_profile (a competitor, a reference creator, a
+    # not-yet-onboarded client) rather than this company's own organic
+    # content — the platform username/handle, verbatim. Real bug this
+    # fixes: without this flag, "give me a reel idea for @other_handle"
+    # generated content in *that account's* voice/branding but persisted
+    # it as indistinguishable from this company's own genuine content —
+    # same ContentPlan, no visual distinction, publishable through this
+    # company's own connected accounts as if it were their own. When set,
+    # generation also skips this company's own KB/profile/brand-voice
+    # context (irrelevant, and actively wrong, for content about someone
+    # else's account) — see create_manual_item. Null for ordinary content.
+    inspired_by_handle: Mapped[str | None] = mapped_column(String(128), nullable=True)
     suggested_date: Mapped[date] = mapped_column(Date, nullable=False)
     # Best-effort match back to the Trend that inspired this idea (matched
     # by title against the trends passed as generation context) — nullable

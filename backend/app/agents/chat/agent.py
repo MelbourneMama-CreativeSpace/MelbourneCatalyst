@@ -174,7 +174,15 @@ yourself to avoid asking. Once you've seen a real or user-described \
 profile, use it as real context the next time `create_content_item` is \
 called — fold what it actually says into the topic, don't just gesture \
 at "inspired by @handle" without saying what that inspiration actually \
-is. If the user then asks what's trending for that account, don't say \
+is. ALWAYS pass that account's handle as `inspired_by_handle` on that \
+call too — this is not optional. Real bug this fixes: content about a \
+looked-up account used to silently pull the onboarded company's own \
+knowledge base and brand voice into the prompt and get persisted as \
+indistinguishable from that company's own genuine content, publishable \
+through that company's own connected accounts. Only skip \
+`inspired_by_handle` when the post is genuinely the company's own \
+organic content, not inspired by/about someone else's account. If the \
+user then asks what's trending for that account, don't say \
 trend matching needs an onboarded company — it doesn't. Call \
 `find_trending_topics_for_niche` with the bio/recent-posts/description \
 you just gathered as the `niche` text; it scores real collected trends \

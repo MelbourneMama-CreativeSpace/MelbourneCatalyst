@@ -63,6 +63,19 @@ function ContentItemFlashcard({ card }: { card: ContentItemCard }) {
         </span>
       </div>
 
+      {/* This draft is inspired by / about someone else's account, not
+          this company's own organic content — the same content mixed
+          into this company's own pipeline is exactly the real bug this
+          badge exists to prevent silently repeating. Shown regardless of
+          card_context so it's visible even on a plain "preview" card,
+          not only right before a publish action. */}
+      {card.inspired_by_handle && (
+        <p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-800 dark:text-amber-400">
+          Inspired by {card.inspired_by_handle} — reference draft, not this company&apos;s
+          own content. Review and adapt before publishing.
+        </p>
+      )}
+
       {card.media_url && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -97,6 +110,12 @@ function ContentItemFlashcard({ card }: { card: ContentItemCard }) {
           for yet. */}
       {card.card_context === "action" && (
         <div className="mt-3 border-t border-border/60 pt-2.5">
+          {card.inspired_by_handle && (
+            <p className="mb-2 text-xs font-medium text-amber-800 dark:text-amber-400">
+              This will publish under this company&apos;s own connected accounts — confirm
+              it&apos;s been adapted, not posted as-is from {card.inspired_by_handle}.
+            </p>
+          )}
           <PublishPanel item={card} />
         </div>
       )}

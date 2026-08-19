@@ -225,6 +225,14 @@ export interface ContentItem {
   content_type: ContentType;
   platform: Platform;
   theme: string | null;
+  // Non-null means this draft is inspired by / about an external account
+  // (looked up via analyze_social_profile in chat) rather than this
+  // company's own organic content — the frontend must show this plainly
+  // rather than rendering it as indistinguishable from genuine content,
+  // since it's written in that other account's voice/branding, not this
+  // company's own, and could otherwise get one-click-published under
+  // this company's own connected accounts by mistake.
+  inspired_by_handle: string | null;
   suggested_date: string;
   source_trend_id: string | null;
   audience_interest: string | null;
@@ -571,6 +579,10 @@ export interface ContentItemCard {
   // "action" — this card is the preview attached to an actual
   // publish/schedule proposal, so publish/schedule controls belong here.
   card_context: "preview" | "action";
+  // Non-null means this draft is inspired by / about an external account
+  // rather than this company's own organic content — see ContentItem's
+  // own field for why this must be shown plainly, not hidden.
+  inspired_by_handle: string | null;
 }
 
 export interface TrendCard {

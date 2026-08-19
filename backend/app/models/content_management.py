@@ -95,6 +95,7 @@ class ContentItemOut(BaseModel):
     content_type: str
     platform: str
     theme: str | None
+    inspired_by_handle: str | None
     suggested_date: date
     source_trend_id: uuid.UUID | None
     audience_interest: str | None
