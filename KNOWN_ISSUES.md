@@ -1,5 +1,165 @@
 # Known Issues & Incomplete States
 
+## ✅ Resolved this round (Aug 18–19) — social profile lookup, chat KB grounding, and six real production bugs found by actually using the app
+
+Unlike most prior rounds, this one wasn't a feature audit — it was built
+feature-by-feature against explicit asks, then **tested live against
+real data** (real connected LinkedIn/Instagram/Facebook/YouTube
+accounts, a real uploaded docx, real Composio calls), which is what
+surfaced most of the bugs below. Six PRs (#15–#20), all merged to
+`main`.
+
+### Built
+
+- **`analyze_social_profile`** — looks up a public profile by username
+  to seed content generation. Twitter/YouTube/Facebook genuinely support
+  looking up an arbitrary public account (confirmed against Composio's
+  real toolkits, not assumed); Instagram/LinkedIn/TikTok's own APIs only
+  allow querying an account you already manage — checked exhaustively,
+  not just the obvious-named tools. Falls back to asking for a manual
+  description on any failure, used identically to a real fetched
+  profile from then on.
+- **Automatic chat knowledge-base ingestion** — a document attached in
+  chat now actually gets extracted and indexed (previously it only
+  uploaded to storage with a dead link in the message text). Plus
+  `save_to_knowledge_base`, for persisting a stated fact/decision from
+  the conversation itself, not just uploaded files.
+- **`find_trending_topics_for_niche`** — trend matching against a
+  free-text niche/handle, for a channel with no onboarded company at
+  all. Reuses the same embedding-cosine-similarity mechanic already
+  used for a company's own `niche_keywords`, just computed fresh
+  instead of requiring a prior collection run against a persisted
+  `Company` row first.
+- **Format/mood-aware content generation** — the assistant now reads a
+  looked-up account's recent posts for presentation style (interview
+  format vs. short clips) and tone, defaults generation to match, but
+  an explicit user-named format always overrides the inferred default.
+  Added "reel" as a real `content_type` — confirmed via production data
+  it never existed anywhere before this (every reel idea was silently
+  forced into "video" or "post").
+
+### Real bugs found and fixed, each verified live
+
+1. **Instagram post-metrics were silently discarded** — Composio's real
+   response nests the insights list one level deeper than the code
+   assumed (`{"data": [...]}` not a bare list). Every real value got
+   dropped as `None`, indistinguishable from genuinely-zero engagement.
+2. **The post-metrics sync job had never fired once in production**
+   (~19h, zero rows) — a plain `interval` trigger's first run isn't
+   immediate, and Render's free tier resets that in-memory timer on
+   every restart/redeploy before it can complete one. Extended the same
+   `next_run_time=now()` fix to 3 more long-interval jobs.
+3. **`documents.embedding` was declared for the wrong vector size** —
+   `voyage-3-lite` only ever produces 512 dims, the column was
+   `vector(1024)`. Every real embedding insert had silently failed
+   since the table was created (all 6 pre-existing rows had
+   `embedding = NULL`). Migration `0036`, applied to production.
+4. **Semantic search never actually worked on Postgres at all**,
+   independent of #3 — a SQLAlchemy `with_variant()` quirk meant the
+   query never had access to pgvector's comparator. Fixed with
+   `type_coerce`.
+5. **Account-level metrics (follower counts) had zero rows ever** —
+   wrong/missing request arguments and response-shape mismatches for
+   Facebook and YouTube. Fixed and verified live (Facebook: real 26,627
+   followers now syncing). LinkedIn/Instagram genuinely have no
+   equivalent tool in Composio's toolkit for this connection type —
+   documented, not guessed at.
+6. **The recurring "greenlet is being finalized" crash** — the first
+   fix (`engine.dispose()` on shutdown, prior round) was incomplete; a
+   second attempt (`scheduler.shutdown(wait=True)`) turned out to
+   change an argument `AsyncIOScheduler`'s executor **silently ignores**
+   — confirmed by reading the installed `apscheduler` source directly,
+   which admits in its own comment "there is no way to honor wait=True
+   without converting this method into a coroutine method." Real fix:
+   bypass the library's broken wait mechanism and `await` the
+   executor's own in-flight job futures directly before shutting down.
+
+### A real cross-tenant contamination bug, caught by the user in normal use
+
+Asking for a reel idea "for @melbournemamaaus" (a channel looked up via
+`analyze_social_profile`, not an onboarded company) had no way to be
+represented as anything other than the one onboarded company's own
+organic content — `create_content_item` silently auto-attached it to
+Mindfries anyway, which meant Mindfries' own knowledge base and brand
+voice got injected as context, and the result was persisted as a real
+`ContentItem` under Mindfries' own `ContentPlan`, indistinguishable
+from genuine Mindfries content and publishable through Mindfries' own
+connected accounts. Confirmed via the real database: a content item
+titled "Creators Catch-Up: Viral Growth Without the Big Ad Budget" was
+sitting in Mindfries' pipeline, written entirely in the other channel's
+voice and hashtags.
+
+Fixed with a new `ContentItem.inspired_by_handle` field (migration
+`0037`): when set, generation context excludes the company's own
+profile/brand-voice/KB entirely, and both the chat flashcard and the
+persistent Content Studio draft card show a clear warning badge before
+Publish.
+
+**Standing caveats / follow-ups — see the 🔴 section immediately below.**
+
+Full backend suite: **766/766 passing** (2 pre-existing unrelated
+failures not touched by any of this — `test_competitor_research.py`,
+`test_social_media_analyzer.py`). Frontend `tsc --noEmit` clean after
+every round.
+
+---
+
+## 🔴 Needs attention — carried out of this round, not yet done
+
+- **Retag or delete the mislabeled "Creators Catch-Up" content item**
+  already in Mindfries' production pipeline (id
+  `73fd852f-b567-4be3-ad74-34d59129f174`) — created before the
+  `inspired_by_handle` fix landed, so it's still untagged. A retroactive
+  `UPDATE` was attempted and blocked by a live-database-write
+  permission check; needs a human (or an explicitly re-authorized
+  agent) to either set `inspired_by_handle = '@melbournemamaaus'` or
+  delete the row.
+- **Add two env vars to Render's actual production environment** —
+  `COMPOSIO_FACEBOOK_METRICS_TOOL_SLUG=FACEBOOK_GET_PAGE_INSIGHTS` and
+  `COMPOSIO_YOUTUBE_METRICS_TOOL_SLUG=YOUTUBE_GET_CHANNEL_STATISTICS`.
+  Set locally in `.env` (gitignored, never reaches Render) — production
+  won't sync real follower counts until these are added there too.
+- **Reconnect Facebook** with the `pages_read_engagement` permission —
+  confirmed via a real Graph API error that the current connection can
+  publish but can't read post-level metrics back without it.
+- **Confirm migrations `0036`/`0037` have actually run against
+  production** (`alembic upgrade head`) if Render doesn't run them
+  automatically on deploy — both were applied by hand from this
+  environment during the session, but that's not the same as
+  confirming your deploy pipeline itself runs migrations.
+- **ColPali/ColiVara for document retrieval** — agreed direction:
+  replace the current text-extract + Voyage-embed + pgvector pipeline.
+  Verified live that Replicate has no ready ColPali/ColQwen model to
+  call; ColiVara (`api.colivara.com`) is a real, actively-maintained
+  hosted alternative purpose-built for this, with a simpler API
+  (`upsert_document`/`search`, PDF/DOCX/PPTX handled directly, no
+  manual text extraction). **Blocked on you** — sign up and add
+  `COLIVARA_API_KEY` yourself; not started otherwise.
+- **Metrics tool slugs are stored in `.env`, agreed to leave as-is for
+  now** — inconsistent with `post_metrics.py`'s own precedent of
+  hardcoding a once-verified Composio tool slug directly in code
+  instead of externalizing it as config, which would remove the
+  "updated locally, forgot to update Render" failure class this round
+  already hit once. Explicitly parked, not forgotten.
+- **No test coverage at all for `knowledge_base/search.py`** — and it's
+  structurally unable to get any, since `similarity_search` early-
+  returns `[]` on any non-Postgres dialect and this project's whole
+  test suite runs on SQLite. This is exactly the kind of gap that let
+  the `with_variant()` comparator bug (item 4 above) go undetected.
+  Would need a real Postgres test fixture — a bigger infrastructure
+  call than this round's scope, flagged rather than built.
+- **Two historical content items have a permanently malformed stored
+  platform post id** (from before an earlier extraction-format fix
+  landed) — their post-metrics will never sync. Low priority, affects
+  only those two specific old posts, not new ones.
+- **`inspired_by_handle` tagging is chat-agent-only** — the manual
+  Content Studio draft form (a human-driven flow, `manual-draft-form.tsx`)
+  has no UI for a person to mark their own manually-typed draft as
+  reference/inspired-by content. Not built; flagged as a possible
+  follow-up if that flow turns out to need it too.
+
+---
+
 ## ✅ Resolved this round — per-company ownership, and the multi-tenant trend-scoring gap
 
 Closes the longest-standing 🔴 item in this file and the 🟡 that was
